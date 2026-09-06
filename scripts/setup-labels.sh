@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kiro-esteira — aplica as 8 labels da esteira num repo (idempotente via --force).
+# kirocrew-deployment — aplica as 8 labels do fluxo num repo (idempotente via --force).
 # Uso: ./scripts/setup-labels.sh owner/repo [owner/repo ...]
 set -u
 
@@ -10,14 +10,15 @@ fi
 
 # nome|cor(hex sem #)|descricao
 LABELS=(
-  "idea|FEF3C7|Ideia crua, nao especificada (so humano)"
-  "needs-spec|FDE68A|Em especificacao/discussao (so humano)"
-  "queued|FBBF24|Spec revisada, na fila aguardando liberacao (a esteira nao pega)"
-  "ready|16A34A|Spec fechada, liberado - a esteira pode pegar"
-  "crew: in progress|2563EB|Sessao implementando"
-  "crew: needs-human|F97316|Travou, precisa de decisao humana"
-  "hold|DC2626|Segura o auto-merge - humano poe quando quer revisar"
-  "blocked|374151|Travado por dependencia"
+  "ideia/aguardando-spec|FEF3C7|Ideia crua ou em especificacao (so humano)"
+  "aguardando-liberacao|FBBF24|Spec revisada, na fila aguardando o humano liberar"
+  "aguardando-desenvolvimento|16A34A|Liberado - a esteira pega e implementa"
+  "em-desenvolvimento|2563EB|Sessao implementando"
+  "em-teste|0EA5E9|Validando (testes/QA) antes de abrir o PR"
+  "aguardando-code-review|8B5CF6|PR aberto, esperando revisao humana"
+  "acao-necessaria|F97316|Travou, precisa de decisao humana"
+  "segurar|DC2626|Nao fazer auto-merge (humano poe antes)"
+  "bloqueado|374151|Travado por dependencia"
 )
 
 for repo in "$@"; do

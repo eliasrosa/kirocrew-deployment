@@ -1,4 +1,4 @@
-# kiro-esteira — configuração de exemplo
+# kirocrew-deployment — configuração de exemplo
 # Copie para config.yaml e ajuste. NÃO commite o config.yaml real (está no .gitignore).
 
 # Repositórios vigiados (owner/repo). A esteira varre todos procurando issues `ready`.

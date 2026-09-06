@@ -1,7 +1,7 @@
-# kiro-esteira
+# kirocrew-deployment
 
 Esteira de desenvolvimento autônoma para o **[Kiro Crew](https://github.com/kirodotdev)**:
-uma vigia zero-token que observa issues marcadas `ready` em vários repositórios e,
+uma vigia zero-token que observa issues marcadas `aguardando-desenvolvimento` em vários repositórios e,
 opcionalmente, dispara uma **sessão de execução one-shot** que implementa a issue,
 abre o PR e mergeia — uma passada, sem loop.
 
@@ -13,8 +13,8 @@ abre o PR e mergeia — uma passada, sem loop.
 
 ```
 Cron de SCRIPT (zero token, a cada X min)
-  ├─ varre os repos configurados por issue aberta com label `ready`
-  │  (ignora quem já tem `crew: in progress`)
+  ├─ varre os repos configurados por issue aberta com label `aguardando-desenvolvimento`
+  │  (ignora quem já tem `em-desenvolvimento`)
   ├─ auto_dispatch=false → só AVISA (você aciona manual)   ← Fase 1, seguro
   └─ auto_dispatch=true  → dispara uma SESSÃO one-shot      ← Fase 2
         └─ implementa → PR → merge → limpa labels → ENCERRA (sem loop)
@@ -38,14 +38,15 @@ e morre. Sem watchdog, sem auto-nudge, sem rearme.
 
 | Label | Significado |
 |---|---|
-| `idea` | ideia crua, não especificada (só humano) |
-| `needs-spec` | em especificação (só humano) |
-| `queued` | spec revisada, na fila aguardando liberação |
-| `ready` | **liberado — a esteira pega** |
-| `crew: in progress` | sessão implementando |
-| `crew: needs-human` | travou, precisa de decisão |
-| `hold` | segura o auto-merge |
-| `blocked` | travado por dependência |
+| `ideia/aguardando-spec` | ideia crua ou em especificação (só humano) |
+| `aguardando-liberacao` | spec revisada, na fila aguardando liberação |
+| `aguardando-desenvolvimento` | **liberado — a esteira pega** |
+| `em-desenvolvimento` | sessão implementando |
+| `em-teste` | validando (testes/QA) antes do PR |
+| `aguardando-code-review` | PR aberto, esperando revisão humana |
+| `acao-necessaria` | travou, precisa de decisão |
+| `segurar` | não fazer auto-merge (põe antes) |
+| `bloqueado` | travado por dependência |
 
 Aplique-as num repo:
 ```bash
@@ -58,25 +59,25 @@ Pré-requisito: Kiro Crew rodando + `gh` autenticado (`gh auth status`).
 
 1. Copie e edite a config:
    ```bash
-   cp config.example.yaml esteira/esteira.config.yaml
+   cp config.example.yaml deployment/deployment.config.yaml
    # edite: repos, notify_chat_id, dev_root, limites
    ```
 2. Coloque o script onde o Kiro Crew lê crons e registre:
    ```bash
-   cp esteira/esteira.py ~/.kiro/crew/crons/esteira.py
-   cp esteira/esteira.config.yaml ~/.kiro/crew/crons/esteira.config.yaml
+   cp deployment/deployment.py ~/.kiro/crew/crons/deployment.py
+   cp deployment/deployment.config.yaml ~/.kiro/crew/crons/deployment.config.yaml
    # via MCP cron_add (dashboard/CLI do Kiro Crew):
-   #   name="esteira", script="~/.kiro/crew/crons/esteira.py:run", every=600
+   #   name="esteira-deployment", script="~/.kiro/crew/crons/deployment.py:run", every=600
    ```
 3. Aplique as labels nos seus repos (`scripts/setup-labels.sh`).
 4. Comece com `auto_dispatch: false` (só avisa). Quando confiar, mude para `true`.
 
 ## Fluxo de trabalho
 
-1. Você cria a issue e conversa/especifica (labels `idea` → `needs-spec` → `queued`).
-2. Quando decidir soltar, marca `ready`.
+1. Você cria a issue e conversa/especifica (labels `ideia/aguardando-spec` → `aguardando-liberacao`).
+2. Quando decidir soltar, marca `aguardando-desenvolvimento`.
 3. A esteira detecta e (Fase 1) avisa você, ou (Fase 2) dispara a sessão.
-4. A sessão implementa, abre PR e mergeia (a menos que a issue tenha `hold`).
+4. A sessão implementa, abre PR e mergeia (a menos que a issue tenha `segurar`).
 
 ## Segurança / privacidade
 
