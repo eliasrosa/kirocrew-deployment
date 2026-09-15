@@ -9,3 +9,8 @@ state/
 __pycache__/
 *.pyc
 .venv/
+
+# Config local do puppeteer pra renderizar Mermaid em ambiente sem sandbox.
+# Não versionado: desabilitar o sandbox do Chromium é decisão do ambiente de
+# quem roda, não do projeto. Ver docs/diagramas/README.md.
+.puppeteer.json

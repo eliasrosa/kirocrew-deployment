@@ -1,0 +1,68 @@
+sequenceDiagram
+    autonumber
+    actor PO as PO / PM
+    actor TL as Tech Lead / Revisor
+    actor Dev as Dev
+    participant Auto as Dev hoje →<br/>🤖 Automação (futuro)
+    actor QA as QA
+
+    Note over Auto: ⚠️ HOJE: o próprio Dev executa esta raia manualmente.<br/>A automação vai assumir estes passos incrementalmente no futuro.
+
+    Note over PO,Dev: Ideia & especificação
+    PO->>Dev: Abre a task (aguardando spec)
+    Note over Dev: Escreve a spec (ordem Kiro):<br/>1. requirements.md<br/>2. design.md<br/>3. tasks.md
+    Dev->>TL: Devolve spec p/ validação
+    TL->>Auto: Aprova & libera → "na esteira"
+    TL->>QA: Libera QA em paralelo (shift-left)
+
+    par Automação implementa
+        rect rgba(255,180,80,0.12)
+        Note over Auto: Dev hoje · 🤖 futuro
+        Auto->>Auto: Cria release/VGAT-XXX da origin/main
+        Auto->>Auto: Implementa as tasks + testes (lint, make test)
+        Auto->>Auto: Atualiza/cria docs + casos de uso<br/>(usecases + espelho Confluence)
+        Auto->>Dev: Entrega p/ dupla validação
+        end
+    and QA prepara testes (shift-left)
+        Note over QA: Desenha a automação de QA<br/>a partir dos critérios de aceite + cenários
+    end
+
+    Note over Dev: GATE 1 — Dev double-check (local ou dev*)
+    alt Precisa corrigir
+        Dev->>Auto: Solicita correção
+        Auto->>Dev: Corrige e reentrega
+    else OK
+        Dev->>Auto: Aprova → abrir PR + ficha técnica
+    end
+
+    Auto->>TL: Abre PR release/VGAT-XXX → main (Ficha Técnica)
+
+    rect rgba(255,180,80,0.12)
+    Note over Auto: Dev hoje · 🤖 futuro
+    Auto->>Auto: 🤖 Code review automatizado do PR<br/>(puxa contexto: spec/tasks + diff + critérios)
+    Auto->>TL: Entrega review enriquecido
+    end
+
+    Note over TL: GATE 2 — Code review do PR (humano) — ANTES do QA
+    alt Review pede mudança
+        TL->>Auto: Devolve com feedback
+        Auto->>TL: Corrige e reentrega
+    else Review aprova
+        TL->>Dev: Review OK → libera p/ HML
+    end
+
+    Note over Dev: Dev faz deploy HML MANUAL<br/>(branch release/VGAT-XXX) e libera a task p/ teste
+    rect rgba(255,180,80,0.12)
+    Note over Auto: Dev hoje · 🤖 futuro
+    Dev->>QA: Task liberada p/ teste em HML
+    end
+
+    Note over QA: GATE 3 — QA valida em HML<br/>(roda a automação já preparada)
+    alt QA reprova
+        QA->>Dev: Devolve o problema p/ o Dev
+        Dev->>Auto: Repassa a correção
+        Auto->>Dev: Corrige (volta ao ciclo: review → HML → QA)
+    else QA aprova
+        QA->>TL: OK — comportamento validado
+        TL->>TL: Merge MANUAL na main → dispara deploy PRD<br/>(auto-merge opcional por squad = futuro)
+    end
