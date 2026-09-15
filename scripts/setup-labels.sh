@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# KiroCrew Flow — aplica as 17 labels do padrão `crewflow:*` num repo (idempotente via --force).
+# KiroCrew Flow — aplica as 18 labels do padrão `crewflow:*` num repo (idempotente via --force).
 # Uso: ./scripts/setup-labels.sh owner/repo [owner/repo ...]
 #
 # O prefixo `crewflow:` funciona em GitHub e Jira. Confluence NÃO aceita `:`
@@ -30,6 +30,11 @@ LABELS=(
   "crewflow:blocked|DC2626|Bloqueado - para tudo (tem prioridade sobre o estado)"
   "crewflow:running|F97316|Trabalho em andamento no estado atual"
   "crewflow:reviewed|6B7280|Lock anti-loop: ja analisado neste SHA"
+  # Excecao auditada do fluxo de hotfix: pulou HML e foi direto pra PRD.
+  # Exige justificativa no comentario da issue — o motor bloqueia o merge sem
+  # ela. Existe pra tornar a excecao CONTAVEL: sem label, "quantos hotfixes
+  # pularam HML neste trimestre?" nao tem resposta.
+  "crewflow:hml-bypass|C2410C|Excecao auditada: hotfix foi direto pra PRD sem passar por HML (exige justificativa)"
 
   # ── TIPO DE FLUXO (routing: define qual workflow aplicar) ────────────
   "crewflow:feature|A855F7|Feature nova"

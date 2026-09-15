@@ -71,6 +71,7 @@ sobrepostos. **Modificador de parada tem prioridade sobre o estado.**
 | `crewflow:blocked` | 🔴 `#DC2626` | bloqueado — **para tudo** (prioridade sobre o estado) |
 | `crewflow:running` | 🟠 `#F97316` | trabalho em andamento no estado atual |
 | `crewflow:reviewed` | ⚫ `#6B7280` | lock anti-loop: já analisado neste SHA |
+| `crewflow:hml-bypass` | 🟧 `#C2410C` | **exceção auditada:** hotfix foi direto pra PRD sem HML — exige justificativa no comentário (o motor **bloqueia o merge** sem ela) |
 
 ### Tipo de fluxo (routing) e prioridade
 

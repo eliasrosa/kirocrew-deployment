@@ -47,6 +47,7 @@ crewflow:spec → crewflow:ready → crewflow:todo → crewflow:dev → crewflow
 | `crewflow:blocked` | Bloqueado — **para tudo** (tem prioridade sobre o estado) |
 | `crewflow:running` | Trabalho em andamento no estado atual |
 | `crewflow:reviewed` | Lock anti-loop: já analisado neste SHA |
+| `crewflow:hml-bypass` | **Exceção auditada:** hotfix foi direto pra PRD sem passar por HML. Exige justificativa no comentário da issue — o motor **bloqueia o merge** sem ela. |
 
 ### Tipo de fluxo (routing) e prioridade
 
