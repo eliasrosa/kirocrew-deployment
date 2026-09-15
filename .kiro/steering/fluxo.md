@@ -1,74 +1,110 @@
 ---
 inclusion: always
 name: fluxo-esteira
-description: Fluxo de desenvolvimento da esteira kirocrew-deployment — do rascunho da ideia ao merge, governado por labels, com um motor de execução one-shot sobre o Kiro Crew.
+description: Fluxo de desenvolvimento do KiroCrew Flow — da especificação ao merge, governado por labels crewflow:*, com motor de execução one-shot sobre o Kiro Crew. Merge sempre manual.
 ---
 
-# Fluxo da esteira (kirocrew-deployment)
+# Fluxo da esteira (KiroCrew Flow)
 
-Esteira de desenvolvimento autônoma sobre o **Kiro Crew**. Uma vigia zero-token
-observa issues por label e, quando uma issue está liberada, dispara uma **sessão
-de execução one-shot** que implementa, abre PR e (se permitido) mergeia — uma
-passada, sem loop.
+Orquestração de esteira de desenvolvimento sobre o **Kiro Crew**. Uma vigia
+zero-token observa issues por label `crewflow:*` e, quando uma task está
+priorizada, dispara uma **sessão de execução one-shot** que implementa e **abre o
+PR** — uma passada, sem loop.
 
-## Fluxograma
+> **Regra inviolável: a automação NUNCA mergeia e NUNCA faz deploy.** Ela entrega
+> o PR no estado `crewflow:review` e encerra. Merge e deploy são sempre manuais.
+> Auto-merge opcional por squad está no radar (futuro), não na Fase 1.
+
+## Fluxograma — Versão C (oficial: review ANTES do QA, sequencial)
 
 ```mermaid
 flowchart TD
-    A["💡 ideia/aguardando-spec<br/>(rascunho ou especificando)"] -->|spec fechada| B["🟡 aguardando-liberacao<br/>(na fila)"]
-    B -->|humano libera| C["🟢 aguardando-desenvolvimento<br/>(a esteira pega)"]
-    C -->|vigia dispara sessão one-shot| D["🔵 em-desenvolvimento<br/>(implementando)"]
-    D --> T["🔷 em-teste<br/>(validando testes/QA)"]
-    T --> E["🔀 PR aberto"]
-    E --> F{"tem label<br/>segurar?"}
-    F -->|não| G["🟢 auto-merge<br/>(squash quando verde)"]
-    F -->|sim| H["🟣 aguardando-code-review<br/>(humano revisa/mergeia)"]
-    G --> I["✔️ resolvido"]
-    H -->|humano aprova| I
-    D -.->|precisa de decisão| J["🟠 acao-necessaria<br/>(volta pro humano)"]
-    T -.->|teste falhou| J
-    D -.->|dependência| K["⚫ bloqueado"]
-    J -.->|decidido| C
+    A["💡 crewflow:spec<br/>(PM especificando)"] -->|spec fechada| G0{"GATE 1<br/>TL aprova a spec?"}
+    G0 -->|sim| B["🟡 crewflow:ready<br/>(aguardando priorização)"]
+    G0 -.->|não| A
+    B -->|priorizado| C["🟢 crewflow:todo<br/>(GATILHO — a esteira pega)"]
+    C -->|vigia dispara sessão one-shot| D["🔵 crewflow:dev<br/>(implementa + valida local)"]
+    D --> E["🔀 PR aberto<br/>release/* → main"]
+    E --> R["🟣 crewflow:review"]
+    R --> BOT["🤖 code review automatizado<br/>(marca crewflow:reviewed)"]
+    BOT --> G1{"GATE 2<br/>TL aprova o review?"}
+    G1 -.->|reprova| D
+    G1 -->|aprova| HML["🚀 Dev faz deploy HML<br/>MANUALMENTE"]
+    HML --> Q["🔷 crewflow:qa<br/>(QA testa em HML)"]
+    Q --> G2{"GATE 3<br/>QA aprova?"}
+    G2 -.->|reprova| D
+    G2 -->|aprova| M["🤝 MERGE MANUAL<br/>(humano)"]
+    M --> I["✔️ crewflow:done"]
+
+    D -.->|dependência ou<br/>precisa decisão| K["⚫ crewflow:blocked"]
+    K -.->|desbloqueado| C
 
     classDef human fill:#fde68a,stroke:#b45309,color:#000
     classDef auto fill:#bbf7d0,stroke:#15803d,color:#000
-    class A,B,H,J human
-    class C,D,T,E,G,I auto
+    classDef gate fill:#e9d5ff,stroke:#7e22ce,color:#000
+    class A,B,HML,Q,M human
+    class C,D,E,R,BOT,I auto
+    class G0,G1,G2 gate
 ```
 
-## Labels (o vocabulário do fluxo)
+## Labels — duas dimensões
+
+O modelo é **estado × modificador**. Um estado por vez; zero ou mais modificadores
+sobrepostos. **Modificador de parada tem prioridade sobre o estado.**
+
+### Estados (1 por vez, ordem canônica)
 
 | Label | Cor | Significado | Quem mexe |
 |---|---|---|---|
-| `ideia/aguardando-spec` | 🟡 `#FEF3C7` | ideia crua ou em especificação | 🔒 humano |
-| `aguardando-liberacao` | 🟨 `#FBBF24` | spec pronta, na fila | 🧠 humano libera |
-| `aguardando-desenvolvimento` | 🟢 `#16A34A` | **gatilho — a esteira pega** | 🤖 esteira |
-| `em-desenvolvimento` | 🔵 `#2563EB` | sessão implementando | 🤖 esteira |
-| `em-teste` | 🔷 `#0EA5E9` | validando (testes/QA) antes do PR | 🤖 esteira |
-| `aguardando-code-review` | 🟣 `#8B5CF6` | PR aberto, esperando revisão | 🧠 humano |
-| `acao-necessaria` | 🟠 `#F97316` | travou, precisa de decisão | 🤖→🧠 |
-| `segurar` | 🔴 `#DC2626` | não fazer auto-merge (põe antes) | 🧠 humano |
-| `bloqueado` | ⚫ `#374151` | travado por dependência | — |
+| `crewflow:spec` | 🟡 `#FEF3C7` | PM especificando | 🔒 humano |
+| `crewflow:ready` | 🟨 `#FBBF24` | spec pronta, aguardando priorização | 🧠 humano libera |
+| `crewflow:todo` | 🟢 `#16A34A` | **gatilho — a esteira pega** | 🤖 esteira |
+| `crewflow:dev` | 🔵 `#2563EB` | implementando + validando local | 🤖 esteira |
+| `crewflow:review` | 🟣 `#8B5CF6` | PR aberto: 🤖 review + TL aprova (**ANTES do QA**) | 🤖 + 🧠 TL |
+| `crewflow:qa` | 🔷 `#0EA5E9` | deploy HML manual + QA testa (**DEPOIS do review**) | 🧠 Dev + QA |
+| `crewflow:done` | 🟩 `#22C55E` | concluído | — |
 
-**Gatilho único:** só `aguardando-desenvolvimento` faz a esteira agir. Tudo antes
-dela é humano; o resto é a sessão.
+### Modificadores (0..N, sobrepõem)
+
+| Label | Cor | Significado |
+|---|---|---|
+| `crewflow:blocked` | 🔴 `#DC2626` | bloqueado — **para tudo** (prioridade sobre o estado) |
+| `crewflow:running` | 🟠 `#F97316` | trabalho em andamento no estado atual |
+| `crewflow:reviewed` | ⚫ `#6B7280` | lock anti-loop: já analisado neste SHA |
+
+### Tipo de fluxo (routing) e prioridade
+
+`crewflow:feature` · `crewflow:bug` · `crewflow:hotfix` · `crewflow:debt`
+`crewflow:p1` · `crewflow:p2` · `crewflow:p3`
+
+**Gatilho único:** só `crewflow:todo` faz a esteira agir. Tudo antes dela é humano;
+tudo depois do PR também.
 
 ## Como o motor dispara (sem loop, sem sandbox)
 
-1. Cron de **script** (zero token) varre os repos por `aguardando-desenvolvimento`
-   (ignora quem tem `em-desenvolvimento`).
+1. Cron de **script** (zero token) varre os repos por `crewflow:todo`, ignorando
+   quem tem `crewflow:dev`, `crewflow:running` ou `crewflow:blocked`.
 2. Se `auto_dispatch=true` e há vaga (respeitando `max_concurrent` e 1-por-repo),
    faz um POST loopback interno pra `/api/chat` — cria uma sessão one-shot que roda
    o turno **in-process no gateway** (sem sandbox, sem watchdog).
 3. A sessão usa um **worktree isolado** do clone local (não reclona, não bagunça),
-   implementa, abre PR, mergeia (ou para em `segurar`/`acao-necessaria`), limpa as
-   labels e **encerra**. Uma passada.
+   implementa, valida local, **abre o PR**, troca o estado pra `crewflow:review`,
+   remove `crewflow:running` e **encerra**. Uma passada.
+4. **Para aí.** Review automatizado, aprovação do TL, deploy HML, QA e merge são
+   etapas seguintes — nenhuma delas é feita por esta sessão.
+
+## Lock anti-loop: `crewflow:reviewed`
+
+Uma análise por SHA. O robô de review adiciona `crewflow:reviewed` depois de
+comentar. Se a label já está lá, o executor ignora a issue. Quando o dev faz um
+novo push, a label é removida e a próxima varredura dispara nova análise.
 
 ## Travas de segurança
 
 - `auto_dispatch=false` por padrão (só avisa até você confiar).
-- `max_concurrent` (default 2) e **1 sessão por repo** (evita colisão de merge).
+- `max_concurrent` (default 2) e **1 sessão por repo**.
 - `max_turns_per_task` — teto duro por sessão.
 - Worktree isolado + ordem de nunca tocar outros worktrees/branches.
+- **Nenhum merge e nenhum deploy automatizados** — trava de produto, não de config.
 
 > Depende do Kiro Crew rodando — é uma receita/plugin, não um app standalone.

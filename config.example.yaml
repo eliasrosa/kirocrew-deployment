@@ -1,7 +1,8 @@
-# kirocrew-deployment — configuração de exemplo
-# Copie para config.yaml e ajuste. NÃO commite o config.yaml real (está no .gitignore).
+# KiroCrew Flow — configuração de exemplo
+# Copie para deployment.config.yaml e ajuste. NÃO commite o config real (está no .gitignore).
 
-# Repositórios vigiados (owner/repo). A esteira varre todos procurando issues `ready`.
+# Repositórios vigiados (owner/repo). A esteira varre todos procurando issues
+# com o estado `crewflow:todo`.
 repos:
   - owner/repo-a
   - owner/repo-b
@@ -11,14 +12,26 @@ repos:
 notify_chat_id: "<SEU_CHAT_ID>"
 
 # Disparo automático:
-#   false = Fase 1 (a vigia só AVISA quando há issue `ready`; você aciona manual)
-#   true  = Fase 2 (dispara uma sessão one-shot que implementa a issue e encerra)
+#   false = a vigia só AVISA quando há issue em `crewflow:todo` (você aciona manual)
+#   true  = dispara uma sessão one-shot que implementa, abre o PR e encerra
 auto_dispatch: false
+
+# ── Template de workflow ──────────────────────────────────────────────────
+# Fase 1: fixo. Fase 3: editável no canvas (estilo n8n).
+workflow_template: versao-c        # versao-a | versao-b | versao-c
+
+# Parâmetros do template (configuráveis por squad)
+workflow_params:
+  # merge_mode: SEMPRE manual na Fase 1. `auto` está no radar (futuro) e ainda
+  # NÃO é implementado — o motor nunca mergeia.
+  merge_mode: manual               # manual | auto (futuro)
+  review_position: before_qa       # before_qa (Versão C) | after_qa (A) | parallel_qa (B)
+  deploy_hml_mode: manual          # manual | auto (futuro)
 
 # Limites de segurança
 max_concurrent: 2        # máx de sessões da esteira rodando ao mesmo tempo (global)
 max_turns_per_task: 60   # teto duro de turnos por sessão disparada
-one_per_repo: true       # no máx 1 sessão ativa por repo (evita colisão de merge)
+one_per_repo: true       # no máx 1 sessão ativa por repo
 
 # Onde ficam os clones locais usados como base dos worktrees (sem reclonar).
 # A esteira cria worktrees isolados em <dev_root>/.esteira-worktrees/<repo>-<n>.

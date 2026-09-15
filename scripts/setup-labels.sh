@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# kirocrew-deployment — aplica as 8 labels do fluxo num repo (idempotente via --force).
+# KiroCrew Flow — aplica as 17 labels do padrão `crewflow:*` num repo (idempotente via --force).
 # Uso: ./scripts/setup-labels.sh owner/repo [owner/repo ...]
+#
+# O prefixo `crewflow:` funciona em GitHub e Jira. Confluence NÃO aceita `:`
+# em label (só alfanumérico) — está fora de escopo.
 set -u
 
 if [ "$#" -lt 1 ]; then
@@ -9,16 +12,35 @@ if [ "$#" -lt 1 ]; then
 fi
 
 # nome|cor(hex sem #)|descricao
+#
+# Duas dimensões independentes:
+#   ESTADO      — 1 por vez, ordem canônica spec > ready > todo > dev > review > qa > done
+#   MODIFICADOR — 0..N, sobrepoem ao estado; os de parada tem prioridade
 LABELS=(
-  "ideia/aguardando-spec|FEF3C7|Ideia crua ou em especificacao (so humano)"
-  "aguardando-liberacao|FBBF24|Spec revisada, na fila aguardando o humano liberar"
-  "aguardando-desenvolvimento|16A34A|Liberado - a esteira pega e implementa"
-  "em-desenvolvimento|2563EB|Sessao implementando"
-  "em-teste|0EA5E9|Validando (testes/QA) antes de abrir o PR"
-  "aguardando-code-review|8B5CF6|PR aberto, esperando revisao humana"
-  "acao-necessaria|F97316|Travou, precisa de decisao humana"
-  "segurar|DC2626|Nao fazer auto-merge (humano poe antes)"
-  "bloqueado|374151|Travado por dependencia"
+  # ── ESTADOS (1 por vez) ──────────────────────────────────────────────
+  "crewflow:spec|FEF3C7|PM especificando"
+  "crewflow:ready|FBBF24|Especificacao pronta, aguardando priorizacao"
+  "crewflow:todo|16A34A|Priorizado, aguardando dev pegar (GATILHO da esteira)"
+  "crewflow:dev|2563EB|Em desenvolvimento"
+  "crewflow:review|8B5CF6|PR aberto: review automatizado + aprovacao do TL (ANTES do QA)"
+  "crewflow:qa|0EA5E9|Deploy HML manual + QA testa (DEPOIS do review)"
+  "crewflow:done|22C55E|Concluido"
+
+  # ── MODIFICADORES (0..N, sobrepoem) ──────────────────────────────────
+  "crewflow:blocked|DC2626|Bloqueado - para tudo (tem prioridade sobre o estado)"
+  "crewflow:running|F97316|Trabalho em andamento no estado atual"
+  "crewflow:reviewed|6B7280|Lock anti-loop: ja analisado neste SHA"
+
+  # ── TIPO DE FLUXO (routing: define qual workflow aplicar) ────────────
+  "crewflow:feature|A855F7|Feature nova"
+  "crewflow:bug|EF4444|Correcao de bug"
+  "crewflow:hotfix|B91C1C|Correcao urgente em producao"
+  "crewflow:debt|78716C|Debito tecnico"
+
+  # ── PRIORIDADE ───────────────────────────────────────────────────────
+  "crewflow:p1|B91C1C|Critico"
+  "crewflow:p2|F59E0B|Alto"
+  "crewflow:p3|3B82F6|Normal"
 )
 
 for repo in "$@"; do

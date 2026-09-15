@@ -1,8 +1,8 @@
-"""kirocrew-deployment — vigia de issues `aguardando-desenvolvimento` + motor de execução one-shot.
+"""KiroCrew Flow — vigia de issues `crewflow:todo` + motor de execução one-shot.
 
 Cron de SCRIPT do Kiro Crew (sem LLM, zero token no polling). Bate no GitHub via
-`gh` em cada repo configurado, e para cada issue nova com label `aguardando-desenvolvimento` (sem
-`crew: in progress`):
+`gh` em cada repo configurado, e para cada issue nova com o estado `crewflow:todo`
+(sem `crewflow:dev`, `crewflow:running` ou `crewflow:blocked`):
 
   - auto_dispatch=false (Fase 1): só AVISA (ctx.notify) — você aciona manual.
   - auto_dispatch=true  (Fase 2): dispara uma SESSÃO ONE-SHOT (POST /api/chat via
@@ -21,14 +21,19 @@ import json
 import os
 import subprocess
 
-# ── Labels da esteira (taxonomia pt-BR, sem prefixo crew:) ─────────────────
-LABEL_READY = "aguardando-desenvolvimento"   # gatilho: a esteira pega
-LABEL_IN_PROGRESS = "em-desenvolvimento"     # sessão implementando
-LABEL_TESTING = "em-teste"                    # validando (testes/QA) antes do PR
-LABEL_NEEDS_HUMAN = "acao-necessaria"        # travou, precisa de decisão
-LABEL_HOLD = "segurar"                        # não fazer auto-merge
-LABEL_BLOCKED = "bloqueado"                   # travado por dependência
-LABEL_REVIEW = "aguardando-code-review"       # PR aberto, esperando revisão
+# ── Labels da esteira (padrão oficial `crewflow:*`) ───────────────────────
+# Estados (1 por vez, ordem canônica):
+#   crewflow:spec → ready → todo → dev → review → qa → done
+LABEL_TODO = "crewflow:todo"          # gatilho: liberado, a esteira pega
+LABEL_DEV = "crewflow:dev"            # em desenvolvimento
+LABEL_REVIEW = "crewflow:review"      # PR aberto: 🤖 review prévio + TL aprova
+LABEL_QA = "crewflow:qa"              # deploy HML manual + QA testa (DEPOIS do review)
+LABEL_DONE = "crewflow:done"          # concluído
+
+# Modificadores (0..N, sobrepõem ao estado)
+LABEL_RUNNING = "crewflow:running"    # trabalho em andamento no estado atual
+LABEL_BLOCKED = "crewflow:blocked"    # travado: dependência técnica OU espera humana
+LABEL_REVIEWED = "crewflow:reviewed"  # lock anti-loop: já analisado neste SHA
 
 # ── carregamento de config ────────────────────────────────────────────────
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -94,7 +99,7 @@ def _state_file(repo):
 def _ready_issues(repo):
     out = subprocess.run(
         ["gh", "issue", "list", "--repo", repo, "--state", "open",
-         "--label", LABEL_READY, "--json", "number,title,url,labels", "--limit", "30"],
+         "--label", LABEL_TODO, "--json", "number,title,url,labels", "--limit", "30"],
         capture_output=True, text=True, timeout=60,
     )
     if out.returncode != 0:
@@ -106,9 +111,12 @@ def _ready_issues(repo):
     filtered = []
     for i in issues:
         names = {lb.get("name", "") for lb in i.get("labels", [])}
-        if LABEL_IN_PROGRESS in names:
+        # já em andamento: outro executor pegou
+        if LABEL_DEV in names or LABEL_RUNNING in names:
             continue
-        i["_has_hold"] = LABEL_HOLD in names
+        # modificador de parada tem prioridade sobre o estado
+        if LABEL_BLOCKED in names:
+            continue
         filtered.append(i)
     return filtered
 
@@ -168,8 +176,8 @@ def _dispatch_prompt(repo, issue, cfg):
         "de título/mover-sessão existir; senão siga sem travar — é só acabamento).\n"
         "1. Leia a issue (gh issue view) e a doc do repo (.kiro/steering/, README).\n"
         "2. ESCOPO: se a issue exige decisão de design não-tomada ou é vaga, NÃO implemente — "
-        f"comente, marque `{LABEL_NEEDS_HUMAN}`, avise e ENCERRE.\n"
-        f"3. Marque `{LABEL_IN_PROGRESS}`. NÃO faça `git clone`. Use o clone em `{dev_root}/{short}` "
+        f"comente, marque `{LABEL_BLOCKED}`, avise e ENCERRE.\n"
+        f"3. Marque `{LABEL_DEV}` + `{LABEL_RUNNING}`. NÃO faça `git clone`. Use o clone em `{dev_root}/{short}` "
         f"como base e crie um WORKTREE ISOLADO:\n"
         f"   `cd {dev_root}/{short} && git fetch origin && git worktree add -b "
         f"feat/issue-{issue['number']} {dev_root}/.esteira-worktrees/{short}-{issue['number']} "
@@ -177,18 +185,19 @@ def _dispatch_prompt(repo, issue, cfg):
         "   Trabalhe DENTRO do worktree; remova-o ao fim (`git worktree remove --force ...`). "
         "NUNCA toque em outros worktrees/branches.\n"
         "4. Implemente EXATAMENTE o escopo — nada além.\n"
-        f"5. Troque a label da issue para `{LABEL_TESTING}` e valide localmente "
-        "(build/testes/QA). Se falhar e não conseguir corrigir no escopo, pare em "
-        f"`{LABEL_NEEDS_HUMAN}`.\n"
-        f"6. Abra PR com 'Closes #{issue['number']}'. Se a issue tem `{LABEL_HOLD}`: NÃO "
-        f"mergeie — troque a label da issue para `{LABEL_REVIEW}` e deixe o PR pro humano. "
-        "Senão, mergeie via squash quando verde (auto-merge).\n"
-        f"7. Ao terminar: {notify_step}LIMPE as labels de fluxo "
-        f"(`{LABEL_READY}`/`{LABEL_IN_PROGRESS}`/`{LABEL_TESTING}`) da issue, e ENCERRE.\n"
+        "5. Valide localmente (build/testes) AINDA dentro do estado `dev`. Se falhar e não "
+        f"conseguir corrigir no escopo, pare em `{LABEL_BLOCKED}`.\n"
+        f"6. Abra PR com 'Closes #{issue['number']}' e troque a label da issue para "
+        f"`{LABEL_REVIEW}`. **NUNCA mergeie.** O merge é SEMPRE manual — o gate de code "
+        "review (🤖 análise prévia + aprovação humana do TL) e o deploy HML acontecem "
+        "DEPOIS, fora desta sessão.\n"
+        f"7. Ao terminar: {notify_step}remova o modificador `{LABEL_RUNNING}` da issue "
+        f"(mantenha o estado `{LABEL_REVIEW}`), e ENCERRE.\n"
         f"{vault_step}\n"
         "REGRAS CRÍTICAS:\n"
         "- UMA passada. Terminou, acabou. NÃO fique verificando, NÃO entre em loop.\n"
-        f"- Se algo bloquear, marque `{LABEL_BLOCKED}`/`{LABEL_NEEDS_HUMAN}`, avise, e pare.\n"
+        "- NUNCA mergeie um PR. NUNCA faça deploy. Ambos são ações humanas manuais.\n"
+        f"- Se algo bloquear, marque `{LABEL_BLOCKED}`, avise, e pare.\n"
         "------------------------------------------"
     )
 
@@ -289,16 +298,16 @@ def run(ctx):
             fila = "\n".join(f"  - {r}#{i['number']}: {i['title']}" for r, i in adiadas)
             extra = f"\n\nNA FILA (limite/1-por-repo, disparam depois):\n{fila}"
         ctx.notify(
-            f"kirocrew-deployment: disparei sessão(ões) one-shot pra issue(s) `ready`. Avise o dono{vm} "
+            f"KiroCrew Flow: disparei sessão(ões) one-shot pra issue(s) `ready`. Avise o dono{vm} "
             f"que o disparo aconteceu.\n{linhas}{extra}"
         )
     elif auto and adiadas:
         fila = "\n".join(f"  - {r}#{i['number']}: {i['title']}" for r, i in adiadas)
-        ctx.notify(f"kirocrew-deployment: {len(adiadas)} issue(s) `ready` na fila (limite cheio).{vm}\n{fila}")
+        ctx.notify(f"KiroCrew Flow: {len(adiadas)} issue(s) `ready` na fila (limite cheio).{vm}\n{fila}")
     elif achados:
         blocos = [f"{r}:\n" + "\n".join(f"  - #{i['number']}: {i['title']} ({i['url']})"
                   for i in ns) for r, ns in achados]
         ctx.notify(
-            f"kirocrew-deployment (Fase 1): há issue(s) `ready` esperando. Avise o dono{vm} com o TL;DR.\n"
+            f"KiroCrew Flow (Fase 1): há issue(s) `ready` esperando. Avise o dono{vm} com o TL;DR.\n"
             + "\n".join(blocos)
         )
