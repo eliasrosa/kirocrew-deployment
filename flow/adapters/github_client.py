@@ -97,15 +97,17 @@ def upsert_state_comment(project: str, key: str, body: str) -> None:
 
 
 def get_state_comment(project: str, key: str) -> str | None:
-    """Retorna o conteúdo do comentário de estado, ou None."""
+    """Retorna o conteúdo do comentário de estado mais recente, ou None."""
     number = _parse_issue_number(key)
     comments = transport.get_issue_comments(project, number)
 
+    # Retorna o ÚLTIMO comentário com o marker (o mais recente)
+    last: str | None = None
     for comment in comments:
         body = comment.get("body", "")
         if norm.STATE_COMMENT_MARKER in body:
-            return body
-    return None
+            last = body
+    return last
 
 
 def get_pr_for_issue(project: str, issue_number: int) -> dict | None:
