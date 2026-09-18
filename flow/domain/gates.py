@@ -257,6 +257,37 @@ def has_equivalence_test(item: WorkItem, test_exists: bool) -> Result:
 
 
 # ---------------------------------------------------------------------------
+# Teto de iterações review↔dev (anti-loop infinito)
+# ---------------------------------------------------------------------------
+
+DEFAULT_MAX_REVIEW_ITERATIONS = 3
+
+
+def exceeded_review_iterations(
+    item: WorkItem,
+    iterations: int,
+    max_iterations: int = DEFAULT_MAX_REVIEW_ITERATIONS,
+) -> Result:
+    """Verifica se o ciclo review↔dev atingiu o teto configurado.
+
+    Evita loop infinito quando dev e reviewer nunca chegam a acordo.
+    Quando o teto é atingido, o motor escala para NOTIFY_HUMAN tl em vez de
+    continuar despachando sessões dev automaticamente.
+
+    ``iterations`` é o número de iterações completas já realizadas (cada
+    round de re-trabalho conta como +1). Injetado pelo executor a partir do
+    ``StateComment.review_iterations`` — nunca buscado aqui.
+    """
+    if iterations >= max_iterations:
+        return Result.fail(
+            f"teto de iterações review↔dev atingido ({iterations}/{max_iterations}). "
+            f"Escalando para TL — revise se o ciclo está progredindo ou se há "
+            f"um conflito de requisitos não resolvido."
+        )
+    return Result.success()
+
+
+# ---------------------------------------------------------------------------
 # Validação do bypass do HML (hotfix)
 # ---------------------------------------------------------------------------
 

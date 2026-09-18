@@ -72,6 +72,7 @@ sobrepostos. **Modificador de parada tem prioridade sobre o estado.**
 | `crewflow:running` | 🟠 `#F97316` | trabalho em andamento no estado atual |
 | `crewflow:reviewed` | ⚫ `#6B7280` | lock anti-loop: já analisado neste SHA |
 | `crewflow:hml-bypass` | 🟧 `#C2410C` | **exceção auditada:** hotfix foi direto pra PRD sem HML — exige justificativa no comentário (o motor **bloqueia o merge** sem ela) |
+| `crewflow:changes-requested` | 🟣 `#9333EA` | reviewer pediu mudança — **re-trabalho na mesma PR** (teto: N rounds → NOTIFY_HUMAN tl) |
 
 ### Tipo de fluxo (routing) e prioridade
 
@@ -93,6 +94,7 @@ squads/*.yaml
     → deployment.run() executa a decisão:
         DISPATCH_DEV       → sessão one-shot (implementa + abre PR)
         DISPATCH_REVIEWER  → notifica que kiro-reviewer foi disparado
+        DISPATCH_REWORK    → sessão dev de re-trabalho (pedidos do reviewer na mesma PR)
         NOTIFY_HUMAN       → avisa TL / Dev / QA pelo papel correto
         BLOCK              → notifica bypass sem justificativa
         REBRAND            → atualiza labels (GATE 0 do hotfix)

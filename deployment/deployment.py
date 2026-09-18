@@ -455,6 +455,7 @@ def _dry_run_report(
     scan_results: list,
     dispatch_devs: list,
     dispatch_reviewers: list,
+    dispatch_reworks: list,
     needs_human: list,
     blocked_bypass: list,
     rebranded: list,
@@ -473,6 +474,9 @@ def _dry_run_report(
 
     for repo, issue in dispatch_reviewers:
         print(f"[DRY-RUN] {repo}#{issue['number']} → DISPATCH_REVIEWER — {issue['title']}")
+
+    for repo, issue, _sc in dispatch_reworks:
+        print(f"[DRY-RUN] {repo}#{issue['number']} → DISPATCH_REWORK — {issue['title']}")
 
     for repo, issue in merge_prs:
         print(f"[DRY-RUN] {repo}#{issue['number']} → MERGE_PR — {issue['title']}")
@@ -494,7 +498,7 @@ def _dry_run_report(
         print(f"[DRY-RUN] {r.item.key} → SPEC_INVALID (sem repo no título) — {r.item.title}")
 
     total_actions = (
-        len(dispatch_devs) + len(dispatch_reviewers) + len(merge_prs)
+        len(dispatch_devs) + len(dispatch_reviewers) + len(dispatch_reworks) + len(merge_prs)
         + len(needs_human) + len(rebranded) + len(blocked_bypass) + len(spec_invalid)
     )
     skipped = max(0, len(scan_results) - total_actions)
@@ -511,22 +515,16 @@ def _log_cycle_summary(
     scan_total: int,
     dispatch_dev: int,
     dispatch_reviewer: int,
+    dispatch_rework: int,
     merge_pr: int,
     notify_human: int,
     block: int,
     rebrand: int,
     spec_invalid: int,
 ) -> None:
-    """Emite 1 linha de resumo do ciclo no log e no ctx.notify() quando configurado.
-
-    Formato:
-        deployment: ciclo concluído — scan:5 dispatch_dev:1 dispatch_reviewer:1
-                    merge_pr:0 notify_human:0 block:0 rebrand:0 skip:3
-
-    Sempre emitida, mesmo quando tudo é SKIP (counters zerados).
-    """
+    """Emite 1 linha de resumo do ciclo no log e no ctx.notify() quando configurado."""
     total_actions = (
-        dispatch_dev + dispatch_reviewer + merge_pr
+        dispatch_dev + dispatch_reviewer + dispatch_rework + merge_pr
         + notify_human + block + rebrand + spec_invalid
     )
     skipped = max(0, scan_total - total_actions)
@@ -535,6 +533,7 @@ def _log_cycle_summary(
         f"scan:{scan_total} "
         f"dispatch_dev:{dispatch_dev} "
         f"dispatch_reviewer:{dispatch_reviewer} "
+        f"dispatch_rework:{dispatch_rework} "
         f"merge_pr:{merge_pr} "
         f"notify_human:{notify_human} "
         f"block:{block} "
@@ -649,6 +648,7 @@ def run(ctx: object) -> None:
     spec_invalid: list[ScanResult] = []
     dispatch_devs: list[tuple[str, dict, object]] = []   # (repo, issue, decision)
     dispatch_reviewers: list[tuple[str, dict]] = []      # (repo, issue)
+    dispatch_reworks: list[tuple[str, dict, str | None]] = []  # (repo, issue, state_comment)
     needs_human: list[tuple[ScanResult, object, str | None]] = []  # (result, decision, sc)
     blocked_bypass: list[ScanResult] = []                # result com bypass sem justif
     rebranded: list[tuple[ScanResult, object]] = []      # (result, decision)
@@ -670,6 +670,8 @@ def run(ctx: object) -> None:
             or (result.current_state is State.TODO and "crewflow:debt" in result.item.labels)
             # GATE 2: lê o resultado do reviewer quando em review+reviewed
             or (result.current_state is State.REVIEW and Modifier.REVIEWED in result.modifiers)
+            # Ciclo de re-trabalho: lê iterações para checar teto
+            or (Modifier.CHANGES_REQUESTED in result.modifiers)
         )
         state_comment: str | None = None
         if needs_comment:
@@ -726,6 +728,12 @@ def run(ctx: object) -> None:
             repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
             issue = _scan_result_to_issue(result)
             merge_prs.append((repo, issue, state_comment))
+        elif decision.action is ActionKind.DISPATCH_REWORK:
+            repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            if not repo:
+                repo = repos[0] if repos else ""
+            issue = _scan_result_to_issue(result)
+            dispatch_reworks.append((repo, issue, state_comment))
         elif decision.action is ActionKind.DISPATCH_DEV:
             repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
             if not repo:
@@ -740,6 +748,7 @@ def run(ctx: object) -> None:
         scan_total=len(scan_results),
         dispatch_dev=len(dispatch_devs),
         dispatch_reviewer=len(dispatch_reviewers),
+        dispatch_rework=len(dispatch_reworks),
         merge_pr=len(merge_prs),
         notify_human=len(needs_human),
         block=len(blocked_bypass),
@@ -748,7 +757,7 @@ def run(ctx: object) -> None:
     )
 
     # Sem nada a fazer?
-    if not any([spec_invalid, dispatch_devs, dispatch_reviewers,
+    if not any([spec_invalid, dispatch_devs, dispatch_reviewers, dispatch_reworks,
                 needs_human, blocked_bypass, rebranded, merge_prs]):
         return
 
@@ -758,6 +767,7 @@ def run(ctx: object) -> None:
             scan_results=scan_results,
             dispatch_devs=dispatch_devs,
             dispatch_reviewers=dispatch_reviewers,
+            dispatch_reworks=dispatch_reworks,
             needs_human=needs_human,
             blocked_bypass=blocked_bypass,
             rebranded=rebranded,
@@ -870,6 +880,25 @@ def run(ctx: object) -> None:
     # Notificações para humanos (NOTIFY_HUMAN)
     if needs_human:
         _notify_human_actions(ctx, needs_human, chat_id)
+        # Aplica mudanças de label da decisão (ex: crewflow:changes-requested)
+        for result, decision, _sc in needs_human:  # type: ignore[assignment]
+            _add = getattr(decision, "add_labels", ())
+            _remove = getattr(decision, "remove_labels", ())
+            if not _add and not _remove:
+                continue
+            import contextlib
+            with contextlib.suppress(Exception):
+                _key = result.item.key
+                _repo_lbl = _key.split("/issues/")[0].replace("https://github.com/", "") or (repos[0] if repos else "")
+                current_labels = list(result.item.labels)
+                for lbl in _remove:
+                    if lbl in current_labels:
+                        current_labels.remove(lbl)
+                for lbl in _add:
+                    if lbl not in current_labels:
+                        current_labels.append(lbl)
+                provider.set_labels(_repo_lbl, _key, current_labels)
+                logger.info("deployment: labels atualizadas para %s: +%s -%s", _key, list(_add), list(_remove))
 
     if dispatch_reviewers:
         for repo, issue in dispatch_reviewers:
@@ -885,6 +914,65 @@ def run(ctx: object) -> None:
             except Exception as exc:
                 logger.error(
                     "deployment: erro ao despachar reviewer para %s#%s: %s",
+                    repo, issue_number, exc,
+                )
+
+    if dispatch_reworks:
+        for repo, issue, state_comment_rework in dispatch_reworks:
+            issue_number = issue["number"]
+            if not auto:
+                vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
+                ctx.notify(  # type: ignore[attr-defined]
+                    f"KiroCrew Flow (Fase 1): re-trabalho pendente — "
+                    f"{repo}#{issue_number}: {issue['title']}.{vm}\n"
+                    f"  Reviewer pediu mudanças. Ative auto_dispatch para despachar automaticamente."
+                )
+                continue
+            if _rework_has_active(repo, issue_number):
+                logger.info(
+                    "deployment: sessão de re-trabalho já ativa para %s#%s — dispatch ignorado",
+                    repo, issue_number,
+                )
+                continue
+            # Localiza PR e lê iterações atuais para o prompt
+            branch = f"feat/issue-{issue_number}"
+            pr_number_rework: int | None = None
+            try:
+                import subprocess as _sp
+                _pr_res = _sp.run(
+                    ["gh", "pr", "list", "--repo", repo, "--head", branch,
+                     "--state", "open", "--json", "number"],
+                    capture_output=True, text=True, timeout=15, check=False,
+                )
+                if _pr_res.returncode == 0:
+                    _prs = json.loads(_pr_res.stdout or "[]")
+                    if _prs:
+                        pr_number_rework = int(_prs[0]["number"])
+            except Exception as exc_pr:
+                logger.warning(
+                    "deployment: erro ao localizar PR para rework %s#%s: %s",
+                    repo, issue_number, exc_pr,
+                )
+            if pr_number_rework is None:
+                vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
+                logger.warning(
+                    "deployment: PR aberto não encontrado para rework %s#%s — notificando",
+                    repo, issue_number,
+                )
+                ctx.notify(  # type: ignore[attr-defined]
+                    f"KiroCrew Flow: re-trabalho pendente mas PR não localizado — "
+                    f"{repo}#{issue_number}.{vm}"
+                )
+                continue
+            from flow.audit.state_comment import get_review_iterations_from_comment
+            iteration = get_review_iterations_from_comment(state_comment_rework) + 1
+            try:
+                prompt_extra_rework = squad.dispatch_prompt_extra if squad else ""
+                _dispatch_rework(ctx, repo, issue, pr_number_rework, iteration, cfg,
+                                 prompt_extra=prompt_extra_rework)
+            except Exception as exc:
+                logger.error(
+                    "deployment: erro ao despachar rework para %s#%s: %s",
                     repo, issue_number, exc,
                 )
 
@@ -1105,6 +1193,190 @@ def _reviewer_prompt(repo: str, pr_number: int, issue_number: int) -> str:
             repo, pr_number,
         )
         raise
+
+
+_REWORK_PROMPT_FALLBACK = (
+    "------------ AGENT HEADER ----------------\n"
+    "REPO: {{repo}}\n"
+    "ISSUE: #{{issue_number}} — {{issue_title}}\n"
+    "PR: #{{pr_number}}\n"
+    "URL: {{issue_url}}\n"
+    "SESSION TITLE: {{session_title}}\n"
+    "------------ CONTEXT TASK ----------------\n"
+    "Você é um agente de RE-TRABALHO pós-review ONE-SHOT. Tarefa ÚNICA, sem loop, sem watchdog.\n"
+    "Seu único objetivo: aplicar os pedidos de mudança do reviewer na PR existente e devolver a issue para review.\n\n"
+    "FLUXO (execute UMA vez, do início ao fim, e PARE):\n"
+    "0. TÍTULO: como PRIMEIRA ação, defina o título da sessão = `SESSION TITLE`.\n"
+    "1. CONTEXTO — leia tudo antes de agir:\n"
+    "   - `.kiro/steering/*.md` (steerings do projeto)\n"
+    "   - A issue e seus comentários:\n"
+    "     `gh issue view {{issue_number}} --repo {{repo}}`\n"
+    "     `gh issue view {{issue_number}} --repo {{repo}} --comments`\n"
+    "   - O diff da PR e os comentários do reviewer:\n"
+    "     `gh pr diff {{pr_number}} --repo {{repo}}`\n"
+    "     `gh pr view {{pr_number}} --repo {{repo}} --comments`\n"
+    "   Os comentários do reviewer NA PR são a FONTE DA VERDADE dos pedidos de mudança.\n"
+    "   Leia-os todos antes de escrever qualquer código.\n"
+    "2. ESCOPO: aplique APENAS os pedidos de mudança listados pelo reviewer.\n"
+    "   - NÃO adicione features extras.\n"
+    "   - NÃO refatore código não mencionado.\n"
+    "   - Se um pedido for ambíguo, comente na PR pedindo esclarecimento, marque `crewflow:blocked` e ENCERRE.\n"
+    "3. USE O WORKTREE E BRANCH EXISTENTES — NÃO crie branch nova, NÃO abra PR novo.\n"
+    "   A branch feat/issue-{{issue_number}} já existe. Use-a:\n"
+    "   `cd {{worktree_path}}`\n"
+    "   Se o worktree não existir (foi removido após a PR), re-crie-o:\n"
+    "   `cd {{dev_root}}/{{repo_short}} && git fetch origin && git worktree add {{worktree_path}} feat/issue-{{issue_number}}`\n"
+    "   Trabalhe DENTRO do worktree; NUNCA toque em outros worktrees.\n"
+    "4. Implemente as correções solicitadas pelo reviewer.\n"
+    "5. Valide localmente (build/testes). Se falhar e não conseguir corrigir, pare em `crewflow:blocked`.\n"
+    "6. Faça commit e push na branch existente:\n"
+    "   `git add -A && git commit -m \"fix: aplicar pedidos de mudança do reviewer (iteração {{iteration}})\" && git push origin feat/issue-{{issue_number}}`\n"
+    "   Isso remove automaticamente `crewflow:reviewed` (novo SHA invalida o lock anti-loop).\n"
+    "7. Atualize o state_comment da issue incrementando `review_iterations`:\n"
+    "   - Leia o comentário atual: `gh issue view {{issue_number}} --repo {{repo}} --comments`\n"
+    "   - Incremente o campo `**Iterações de review:**` (ou adicione-o se ausente)\n"
+    "   - Adicione uma linha no histórico: `| <data> | rework → review | kiro-dev |`\n"
+    "   - Atualize via `gh issue comment {{issue_number}} --repo {{repo}} --body \"...\"` (editando o comentário existente)\n"
+    "8. Troque a label de volta para review:\n"
+    "   `gh issue edit {{issue_number}} --repo {{repo}} --remove-label \"crewflow:running,crewflow:changes-requested\" --add-label \"crewflow:review\"`\n"
+    "9. Ao terminar: {{notify_step}}remova `crewflow:running`, mantenha `crewflow:review`, e ENCERRE.\n"
+    "{{vault_step}}\n"
+    "REGRAS CRÍTICAS:\n"
+    "- UMA passada. Terminou, acabou. NÃO entre em loop.\n"
+    "- NUNCA mergeie. NUNCA faça deploy.\n"
+    "- NUNCA abra PR novo — use a branch feat/issue-{{issue_number}} existente.\n"
+    "- Aplique APENAS os pedidos explícitos do reviewer. Nada além.\n"
+    "- Se bloquear, marque `crewflow:blocked`, avise, e pare.\n"
+    "------------------------------------------\n"
+    "{{prompt_extra}}"
+)
+
+
+def _rework_prompt(
+    repo: str,
+    issue: dict,
+    pr_number: int,
+    iteration: int,
+    cfg: dict,
+    prompt_extra: str = "",
+) -> str:
+    """Carrega e renderiza o template MD do estágio 'rework'.
+
+    Usa ``flow/prompts/rework.md`` como fonte primária. Em caso de arquivo ausente
+    ou corrompido, cai no fallback embutido ``_REWORK_PROMPT_FALLBACK``.
+    Variável faltando → ``PromptRenderError`` (fail-closed).
+    """
+    short = repo.split("/")[-1]
+    vault = cfg.get("vault_root") or ""
+    dev_root = cfg.get("dev_root") or os.path.expanduser("~/dev")
+    chat_id = cfg.get("notify_chat_id") or ""
+
+    vault_step = ""
+    if vault:
+        vault_step = (
+            f"   - VAULT: edite `{vault}/Projetos/{short}/backlog.md` refletindo o progresso "
+            f"e sincronize com `sh {vault}/.sync.sh \"<msg>\"` (NUNCA `git push` literal). "
+            "Se a pasta não existir, pule sem erro."
+        )
+    notify_step = (
+        f"avise via voice_maybe (chat_id {chat_id}, intent auto) com TL;DR, "
+        if chat_id else "reporte o resultado, "
+    )
+    worktree = _worktree_path(dev_root, repo, issue["number"])
+    session_title = f"rework: {short} #{issue['number']} PR #{pr_number} (iter {iteration}): {issue['title']}"
+
+    try:
+        return render_prompt(
+            "rework",
+            fallback=_REWORK_PROMPT_FALLBACK,
+            repo=repo,
+            repo_short=short,
+            issue_number=str(issue["number"]),
+            issue_title=issue["title"],
+            issue_url=issue.get("url") or f"https://github.com/{repo}/issues/{issue['number']}",
+            session_title=session_title,
+            pr_number=str(pr_number),
+            dev_root=dev_root,
+            worktree_path=worktree,
+            iteration=str(iteration),
+            notify_step=notify_step,
+            vault_step=vault_step,
+            prompt_extra=prompt_extra.strip(),
+        )
+    except PromptRenderError:
+        logger.exception(
+            "deployment: erro ao renderizar template 'rework' para %s#%s — dispatch abortado",
+            repo, issue["number"],
+        )
+        raise
+
+
+def _rework_has_active(repo: str, issue_number: int) -> bool:
+    """Retorna True se já existe sessão de re-trabalho ativa para esta issue."""
+    short = repo.split("/")[-1]
+    # Slot do re-trabalho usa o mesmo padrão da sessão dev inicial
+    locks = glob.glob(
+        os.path.join(_sessdir(), f"dashboard_esteira-{short}-{issue_number}.jsonl.lock")
+    )
+    return any(not _lock_is_stale(p) for p in locks)
+
+
+def _dispatch_rework(
+    ctx: object,
+    repo: str,
+    issue: dict,
+    pr_number: int,
+    iteration: int,
+    cfg: dict,
+    prompt_extra: str = "",
+) -> None:
+    """Fire-and-forget POST /api/chat para a sessão one-shot de re-trabalho.
+
+    Reusa o mesmo slot da sessão dev para garantir one-per-repo funcione.
+    """
+    import urllib.request as _u
+
+    short = repo.split("/")[-1]
+    slot = f"esteira-{short}-{issue['number']}"
+
+    try:
+        message = _rework_prompt(repo, issue, pr_number, iteration, cfg, prompt_extra=prompt_extra)
+    except PromptRenderError as exc:
+        logger.error(
+            "deployment: _dispatch_rework abortado — template 'rework' inválido para %s#%s: %s",
+            repo, issue["number"], exc,
+        )
+        return
+
+    body = json.dumps({
+        "message": message,
+        "agent": cfg.get("agent") or "kirocrew",
+        "slot": slot,
+        "memory_mode": "temporary",
+    }).encode()
+    req = _u.Request(
+        f"http://localhost:{ctx._port}/api/chat",  # type: ignore[attr-defined]
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Internal-Secret": ctx._secret,  # type: ignore[attr-defined]
+            "X-Session-Key": f"cron:{ctx.job.id}",  # type: ignore[attr-defined]
+        },
+        method="POST",
+    )
+    try:
+        from kiro_crew.loopback_http import loopback_urlopen  # type: ignore[import]
+        with loopback_urlopen(req, timeout=3) as resp:
+            resp.read(1)
+        logger.info(
+            "deployment: rework one-shot despachado para %s#%s (PR #%s, iter %s)",
+            repo, issue["number"], pr_number, iteration,
+        )
+    except Exception as exc:
+        logger.error(
+            "deployment: falha ao despachar rework para %s#%s: %s",
+            repo, issue["number"], exc,
+        )
 
 
 def _dispatch_reviewer(

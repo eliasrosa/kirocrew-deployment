@@ -14,6 +14,8 @@ FLUXO (execute UMA vez, do início ao fim, e PARE):
 2. Leia o diff do PR e os comentários do PR:
    gh pr diff {{pr_number}} --repo {{repo}}
    gh pr view {{pr_number}} --repo {{repo}} --comments
+   Fixe o SHA atual do HEAD do PR (use este valor no ReviewerResult do passo 6):
+   gh pr view {{pr_number}} --repo {{repo}} --json headRefOid
 3. Leia os steerings do repo (.kiro/steering/*.md) para entender convenções.
 4. Analise: corretude, cobertura de testes, estilo, convenções do projeto.
 5. POSTE O RESULTADO DO REVIEW COMO COMENTÁRIO NO PR:
@@ -27,7 +29,10 @@ FLUXO (execute UMA vez, do início ao fim, e PARE):
    - Se APROVADO sem comentários: campo `approved: true`, `comments: []`
    - Se tem pedidos de mudança: `approved: false`, `comments: ["<mudança 1>", ...]`
    Use `upsert_state_comment` para atualizar o bloco <!-- KIRO-FLOW-STATE --> NA ISSUE.
-   O ReviewerResult deve incluir o SHA atual do HEAD do PR.
+   O ReviewerResult deve incluir o SHA atual do HEAD do PR — use o `headRefOid`
+   obtido no passo 2 (`gh pr view {{pr_number}} --repo {{repo}} --json headRefOid`),
+   NUNCA um SHA do contexto do dispatch, que pode estar desatualizado (evita o
+   falso negativo de re-analisar um commit antigo já corrigido).
    IMPORTANTE: o ReviewerResult PERMANECE na issue — é o que o scan lê pra decidir MERGE_PR.
 7. Deixe uma referência CURTA na issue #{{issue_number}} apontando pro PR e o status:
    ex.: `{{ref_issue}}` (troque para `pedidos de mudança` se houver comentários).

@@ -244,6 +244,28 @@ python3 -m ruff check flow/ && python3 -m mypy flow/ --ignore-missing-imports &&
 Os prompts das sessões one-shot (dev e reviewer) vivem em arquivos MD editáveis em
 `flow/prompts/`. O motor carrega e interpola esses templates via `flow/prompts/loader.py`.
 
+### Templates disponíveis
+
+| Arquivo | Sessão | Quando é usado |
+|---|---|---|
+| `dev.md` | implementação inicial | `DISPATCH_DEV` — issue em `crewflow:todo` |
+| `reviewer.md` | code review | `DISPATCH_REVIEWER` — issue em `crewflow:review` |
+| `rework.md` | re-trabalho pós-review | `DISPATCH_REWORK` — issue com `crewflow:changes-requested` |
+
+### Ciclo de re-trabalho (crewflow:changes-requested)
+
+Quando o reviewer pede mudança, o motor adiciona `crewflow:changes-requested` à issue
+e despacha uma sessão `rework` que:
+1. Lê os pedidos de mudança nos comentários do PR
+2. Aplica as correções na **mesma branch/PR** (nunca cria PR novo)
+3. Commita e faz push (o novo SHA invalida `crewflow:reviewed` automaticamente)
+4. Volta a issue para `crewflow:review`
+
+Teto de iterações: `gates.exceeded_review_iterations()` controla o cap (default 3).
+Após o teto, o executor escala para `NOTIFY_HUMAN tl` em vez de continuar despachando.
+O número de iterações é registrado em `StateComment.review_iterations` (campo
+`**Iterações de review:**` no comentário da issue).
+
 ### Convenção de placeholders
 
 Os templates usam `{{nome_da_variavel}}` (duplas chaves). O loader substitui
@@ -253,9 +275,8 @@ cada placeholder pelo valor correspondente passado como keyword argument.
 
 - **Variável faltando** → `PromptRenderError` — o dispatch é abortado, nunca envia
   prompt incompleto.
-- **Template ausente/ilegível** → usa o **fallback embutido** (`_DEV_PROMPT_FALLBACK`
-  / `_reviewer_fallback`) definido em `deployment.py` — mesmo conteúdo que o MD
-  versiona, nunca silencioso.
+- **Template ausente/ilegível** → usa o **fallback embutido** definido em `deployment.py`
+  — mesmo conteúdo que o MD versiona, nunca silencioso.
 
 ### Adicionar um novo estágio
 

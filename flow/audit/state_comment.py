@@ -105,6 +105,7 @@ class StateComment:
     exceptions: list[ExceptionEntry] = field(default_factory=list)
     approvals: list[ApprovalEntry] = field(default_factory=list)
     reviewer_result: ReviewerResult | None = None
+    review_iterations: int = 0  # contagem de ciclos review↔dev (re-trabalho pós-review)
 
     def add_transition(
         self, from_state: str, to_state: str, actor: str, when: str | None = None
@@ -177,8 +178,10 @@ def render(sc: StateComment) -> str:
         f"**Nó atual:** {sc.current_node}",
         f"**Status:** {sc.status}",
         f"**Repo:** {sc.repo}",
-        "",
     ]
+    if sc.review_iterations > 0:
+        lines.append(f"**Iterações de review:** {sc.review_iterations}")
+    lines.append("")
 
     if sc.history:
         lines += [
@@ -285,12 +288,14 @@ def _parse_block(block: str) -> StateComment:
     current_node = _extract_field(lines, "Nó atual")
     status = _extract_field(lines, "Status")
     repo = _extract_field(lines, "Repo")
+    review_iterations_str = _extract_field(lines, "Iterações de review")
 
     sc = StateComment(
         workflow=workflow or "",
         current_node=current_node or "",
         status=status or "",
         repo=repo or "",
+        review_iterations=int(review_iterations_str) if review_iterations_str and review_iterations_str.isdigit() else 0,
     )
 
     # Parseia histórico
@@ -473,6 +478,16 @@ def get_reviewer_result_from_comment(comment_body: str | None) -> ReviewerResult
     if sc is None:
         return None
     return sc.reviewer_result
+
+
+def get_review_iterations_from_comment(comment_body: str | None) -> int:
+    """Atalho: retorna o número de iterações review↔dev registradas, ou 0."""
+    if not comment_body:
+        return 0
+    sc = parse(comment_body)
+    if sc is None:
+        return 0
+    return sc.review_iterations
 
 
 def render_pr_review_comment(

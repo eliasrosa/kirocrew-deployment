@@ -34,6 +34,7 @@ crewflow:spec → crewflow:ready → crewflow:todo → crewflow:dev → crewflow
 | `crewflow:running` | Trabalho em andamento |
 | `crewflow:reviewed` | Lock anti-loop: já analisado neste SHA |
 | `crewflow:hml-bypass` | Exceção auditada: hotfix pulou o HML (exige justificativa) |
+| `crewflow:changes-requested` | Reviewer pediu mudança — dev corrige na mesma PR e re-submete |
 
 ### Tipo de fluxo (routing) e prioridade
 

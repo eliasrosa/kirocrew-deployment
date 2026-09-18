@@ -71,10 +71,11 @@ class Modifier(StrEnum):
     presente.
     """
 
-    BLOCKED    = "crewflow:blocked"    # para tudo — dependência ou espera humana
-    RUNNING    = "crewflow:running"    # trabalho em andamento no estado atual
-    REVIEWED   = "crewflow:reviewed"   # lock anti-loop: já analisado neste SHA
-    HML_BYPASS = "crewflow:hml-bypass" # exceção auditada: hotfix pulou o HML
+    BLOCKED           = "crewflow:blocked"           # para tudo — dependência ou espera humana
+    RUNNING           = "crewflow:running"            # trabalho em andamento no estado atual
+    REVIEWED          = "crewflow:reviewed"           # lock anti-loop: já analisado neste SHA
+    HML_BYPASS        = "crewflow:hml-bypass"         # exceção auditada: hotfix pulou o HML
+    CHANGES_REQUESTED = "crewflow:changes-requested"  # reviewer pediu mudança — volta pro dev
 
 
 # Modificadores que impedem dispatch mesmo com o estado correto.

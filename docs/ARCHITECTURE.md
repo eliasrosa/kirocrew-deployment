@@ -133,6 +133,7 @@ crewflow:blocked   # para tudo (prioridade sobre o estado)
 crewflow:running   # trabalho em andamento
 crewflow:reviewed  # lock anti-loop de code review
 crewflow:hml-bypass  # bypass auditado do HML
+crewflow:changes-requested  # reviewer pediu mudança — re-trabalho na mesma PR
 ```
 
 ## O comentário de estado

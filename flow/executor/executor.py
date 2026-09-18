@@ -23,13 +23,14 @@ from enum import StrEnum
 # ---------------------------------------------------------------------------
 
 class ActionKind(StrEnum):
-    DISPATCH_DEV   = "dispatch_dev"      # dispara sessão one-shot de implementação
+    DISPATCH_DEV      = "dispatch_dev"       # dispara sessão one-shot de implementação
     DISPATCH_REVIEWER = "dispatch_reviewer"  # dispara kiro-reviewer
-    NOTIFY_HUMAN   = "notify_human"      # avisa humano (TL, QA, Dev)
-    BLOCK          = "block"             # marca crewflow:blocked + motivo
-    REBRAND        = "rebrand"           # troca de template (GATE 0 do hotfix)
-    MERGE_PR       = "merge_pr"          # merge squash automático (reviewer aprovado, zero comentários)
-    SKIP           = "skip"              # nada a fazer neste ciclo
+    DISPATCH_REWORK   = "dispatch_rework"    # dispara sessão dev de re-trabalho (pós-review com pedidos)
+    NOTIFY_HUMAN      = "notify_human"       # avisa humano (TL, QA, Dev)
+    BLOCK             = "block"              # marca crewflow:blocked + motivo
+    REBRAND           = "rebrand"            # troca de template (GATE 0 do hotfix)
+    MERGE_PR          = "merge_pr"           # merge squash automático (reviewer aprovado, zero comentários)
+    SKIP              = "skip"               # nada a fazer neste ciclo
 
 
 class HumanRole(StrEnum):
@@ -116,21 +117,24 @@ def decide(
     state_comment: str | None = None,
     squad: object | None = None,
     pr_head_sha: str | None = None,
+    max_review_iterations: int | None = None,
 ) -> ExecutorDecision:
     """Decide o que fazer com a issue.
 
     Args:
-        scan_result:   ScanResult do scan
-        state_comment: conteúdo do <!-- KIRO-FLOW-STATE --> se existir
-        squad:         SquadConfig da squad (opcional); quando fornecido,
-                       usa squad.resolve_workflow() para routing — mais
-                       preciso e configurável que o fallback por labels.
-        pr_head_sha:   SHA do HEAD atual do PR associado à issue (opcional).
-                       Quando fornecido, é comparado com o SHA registrado
-                       no ReviewerResult para detectar push pós-review.
-                       Deve ser obtido pelo driving adapter via
-                       ``get_pr_for_issue()`` e passado aqui — o executor
-                       não faz I/O.
+        scan_result:           ScanResult do scan
+        state_comment:         conteúdo do <!-- KIRO-FLOW-STATE --> se existir
+        squad:                 SquadConfig da squad (opcional); quando fornecido,
+                               usa squad.resolve_workflow() para routing — mais
+                               preciso e configurável que o fallback por labels.
+        pr_head_sha:           SHA do HEAD atual do PR associado à issue (opcional).
+                               Quando fornecido, é comparado com o SHA registrado
+                               no ReviewerResult para detectar push pós-review.
+                               Deve ser obtido pelo driving adapter via
+                               ``get_pr_for_issue()`` e passado aqui — o executor
+                               não faz I/O.
+        max_review_iterations: Teto de ciclos review↔dev antes de escalar para TL.
+                               None usa o default de ``gates.DEFAULT_MAX_REVIEW_ITERATIONS``.
 
     Returns:
         ExecutorDecision com a ação e os metadados para o executor de I/O.
@@ -190,6 +194,38 @@ def decide(
                 notify_role=HumanRole.TL,
             )
 
+    # ── Ciclo de re-trabalho pós-review: crewflow:changes-requested ───
+    # Quando o reviewer pediu mudança (marcou changes-requested), o motor
+    # despacha uma sessão dev de re-trabalho que:
+    #   - lê os pedidos de mudança do PR
+    #   - aplica os ajustes na MESMA branch/PR
+    #   - volta a issue para crewflow:review
+    # Antes de despachar, verifica o teto de iterações (anti-loop infinito).
+    if Modifier.CHANGES_REQUESTED in modifiers:
+        from flow.audit.state_comment import get_review_iterations_from_comment
+        iterations = get_review_iterations_from_comment(state_comment)
+        _max_iter = (
+            max_review_iterations
+            if max_review_iterations is not None
+            else gates.DEFAULT_MAX_REVIEW_ITERATIONS
+        )
+        iter_result = gates.exceeded_review_iterations(item, iterations, _max_iter)
+        if iter_result.failed:
+            return ExecutorDecision(
+                action=ActionKind.NOTIFY_HUMAN,
+                reason=f"TETO DE ITERAÇÕES: {iter_result.reason}",
+                notify_role=HumanRole.TL,
+            )
+        return ExecutorDecision(
+            action=ActionKind.DISPATCH_REWORK,
+            reason=(
+                f"reviewer pediu mudanças — despachando sessão de re-trabalho "
+                f"(iteração {iterations + 1}/{_max_iter})"
+            ),
+            add_labels=("crewflow:running",),
+            remove_labels=("crewflow:changes-requested",),
+        )
+
     # ── Lock anti-loop: crewflow:reviewed ─────────────────────────────
     # Se reviewed está presente, lemos o resultado do reviewer no state_comment.
     # - SHA divergiu (push pós-review) → remove reviewed e redespacha reviewer
@@ -232,12 +268,15 @@ def decide(
                 remove_labels=("crewflow:review", "crewflow:reviewed"),
             )
 
-        # Reviewer tem comentários — notifica TL com o conteúdo do review
+        # Reviewer tem comentários — marca changes-requested para disparar re-trabalho
+        # no próximo ciclo do scan, e notifica TL para acompanhar.
         comments_text = "; ".join(reviewer_result.comments) if reviewer_result.comments else "(ver comentário na issue)"
         return ExecutorDecision(
             action=ActionKind.NOTIFY_HUMAN,
             reason=f"reviewer retornou pedidos de mudança: {comments_text}",
             notify_role=HumanRole.TL,
+            add_labels=("crewflow:changes-requested",),
+            remove_labels=("crewflow:reviewed",),
         )
 
     # ── Pré-condição COV (débito técnico em dev) ───────────────────────
