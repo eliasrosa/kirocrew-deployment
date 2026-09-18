@@ -79,35 +79,51 @@ def set_labels(project: str, key: str, labels: list[str]) -> None:
 
 
 def upsert_state_comment(project: str, key: str, body: str) -> None:
-    """Cria ou atualiza o comentário <!-- KIRO-FLOW-STATE --> da issue."""
+    """Cria ou atualiza o comentário <!-- KIRO-FLOW-STATE --> da issue.
+
+    Garante que exista exatamente UM comentário com o marcador:
+    - 0 comentários com marker → cria
+    - 1 comentário com marker → atualiza in-place
+    - N > 1 comentários com marker (duplicatas acumuladas) → atualiza o
+      primeiro e deleta os demais, restaurando o invariante de 1 único comentário
+    """
     number = _parse_issue_number(key)
     comments = transport.get_issue_comments(project, number)
 
-    # Procura por comentário existente com o marcador
-    existing_id: int | None = None
-    for comment in comments:
-        if norm.STATE_COMMENT_MARKER in comment.get("body", ""):
-            existing_id = comment["id"]
-            break
+    # Coleta TODOS os comentários com o marcador (preserva a ordem de criação)
+    marker_comments: list[dict] = [
+        c for c in comments
+        if norm.STATE_COMMENT_MARKER in c.get("body", "")
+    ]
 
-    if existing_id is not None:
-        transport.update_issue_comment(project, existing_id, body)
-    else:
+    if not marker_comments:
+        # Nenhum existe ainda — cria
         transport.create_issue_comment(project, number, body)
+        return
+
+    # Atualiza o primeiro (o mais antigo, que fica como referência permanente)
+    transport.update_issue_comment(project, marker_comments[0]["id"], body)
+
+    # Remove duplicatas excedentes (resultado de ciclos anteriores que usavam
+    # `gh issue comment` em vez de upsert)
+    for duplicate in marker_comments[1:]:
+        transport.delete_issue_comment(project, duplicate["id"])
 
 
 def get_state_comment(project: str, key: str) -> str | None:
-    """Retorna o conteúdo do comentário de estado mais recente, ou None."""
+    """Retorna o conteúdo do comentário de estado, ou None.
+
+    Retorna o PRIMEIRO comentário com o marcador (o mesmo que upsert_state_comment
+    atualiza), garantindo consistência entre leitura e escrita.
+    """
     number = _parse_issue_number(key)
     comments = transport.get_issue_comments(project, number)
 
-    # Retorna o ÚLTIMO comentário com o marker (o mais recente)
-    last: str | None = None
     for comment in comments:
         body = comment.get("body", "")
         if norm.STATE_COMMENT_MARKER in body:
-            last = body
-    return last
+            return body
+    return None
 
 
 def get_pr_for_issue(project: str, issue_number: int) -> dict | None:

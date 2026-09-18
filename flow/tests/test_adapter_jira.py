@@ -212,3 +212,43 @@ class TestUpsertStateComment:
              mock.patch.object(jira_transport, "update_comment"):
             jira_client.upsert_state_comment("VGAT", "VGAT-1", "body")
             add_m.assert_not_called()
+
+    def test_idempotente_apos_multiplas_chamadas(self) -> None:
+        """Após 3 chamadas com corpos diferentes, existe 1 comentário com o marker.
+
+        Modela um store stateful de comentários: add acrescenta um comentário
+        com o marcador; update substitui in-place o corpo do comentário casado.
+        Mantém paridade com o adapter GitHub (issue #82).
+        """
+        store: list[dict] = []
+        next_id = [10001]
+
+        def fake_get_comments(key: str) -> list:
+            return list(store)
+
+        def fake_add(key: str, body_text: str) -> dict:
+            cid = str(next_id[0])
+            next_id[0] += 1
+            store.append({"id": cid, "body": body_text})
+            return {"id": cid}
+
+        def fake_update(key: str, comment_id: str, body_text: str) -> dict:
+            for c in store:
+                if c["id"] == comment_id:
+                    c["body"] = body_text
+            return {}
+
+        bodies = [
+            f"{norm.STATE_COMMENT_MARKER}\nstatus: ciclo-{i}"
+            for i in range(3)
+        ]
+
+        with mock.patch.object(jira_transport, "get_issue_comments", side_effect=fake_get_comments), \
+             mock.patch.object(jira_transport, "add_issue_comment", side_effect=fake_add), \
+             mock.patch.object(jira_transport, "update_comment", side_effect=fake_update):
+            for body in bodies:
+                jira_client.upsert_state_comment("VGAT", "VGAT-1", body)
+
+        marker_comments = [c for c in store if norm.STATE_COMMENT_MARKER in c["body"]]
+        assert len(marker_comments) == 1
+        assert marker_comments[0]["body"] == bodies[-1]

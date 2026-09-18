@@ -90,10 +90,9 @@ def list_issues_by_label(owner_repo: str, label: str, limit: int = 50) -> list:
 
 def set_issue_labels(owner_repo: str, number: int, labels: list[str]) -> None:
     """Substitui todas as labels da issue via API do GitHub (PUT /issues/{n}/labels)."""
-    import subprocess as _sp
     # gh api --input lê JSON do stdin — única forma de mandar array sem serializar como string
     body = json.dumps({"labels": labels})
-    result = _sp.run(
+    result = subprocess.run(
         ["gh", "api", f"repos/{owner_repo}/issues/{number}/labels",
          "--method", "PUT", "--input", "-"],
         input=body,
@@ -130,6 +129,26 @@ def update_issue_comment(owner_repo: str, comment_id: int, body: str) -> dict:
         "--method", "PATCH",
         "--field", f"body={body}",
     ]))
+
+
+def delete_issue_comment(owner_repo: str, comment_id: int) -> None:
+    """Deleta um comentário de issue pelo ID.
+
+    Silencioso se o comentário não existir (404 ignorado).
+    """
+    result = subprocess.run(
+        ["gh", "api", f"repos/{owner_repo}/issues/comments/{comment_id}",
+         "--method", "DELETE"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        if "404" in stderr or "Not Found" in stderr.lower():
+            return  # já deletado — não é erro
+        raise ProviderError(f"delete_issue_comment {comment_id}: {stderr}")
 
 
 def get_pr_for_issue(owner_repo: str, issue_number: int) -> dict | None:
@@ -212,7 +231,6 @@ def delete_branch(owner_repo: str, branch: str) -> None:
 
     Silencioso se o branch não existir (404 é ignorado).
     """
-    import subprocess
     result = subprocess.run(
         ["gh", "api", f"repos/{owner_repo}/git/refs/heads/{branch}",
          "--method", "DELETE"],
@@ -221,5 +239,4 @@ def delete_branch(owner_repo: str, branch: str) -> None:
     )
     # 404 = branch já deletado ou não existe — não é erro
     if result.returncode != 0 and b"404" not in result.stderr and b"Not Found" not in result.stderr:
-        from flow.ports.issue_provider import ProviderError
         raise ProviderError(f"delete_branch {branch}: {result.stderr.decode()[:200]}")
