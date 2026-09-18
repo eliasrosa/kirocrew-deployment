@@ -24,6 +24,12 @@ from flow.domain.state import Modifier, State, is_dispatchable, parse_modifiers,
 from flow.ports.issue_provider import IssueProvider, ProviderError
 from flow.scan.cache import compute_hash, get_hash, set_hash
 
+# Estados que o executor precisa monitorar ativamente em todo ciclo, mesmo sem
+# mudança de labels.  O cache filtra issues inativas com zero custo, mas issues
+# nestes estados precisam aparecer no scan para que o motor possa tomar ação
+# (ex: redisparar o reviewer em REVIEW, avisar QA em QA).
+ALWAYS_INCLUDE_STATES: frozenset[State] = frozenset({State.REVIEW, State.QA})
+
 logger = logging.getLogger(__name__)
 
 
@@ -231,7 +237,10 @@ def _evaluate_item(
     # - mudou de estado (hash diferente) e é candidato
     # - ou está em spec com problema (para flagrar sem despachar)
     # - ou é a primeira vez que vemos (changed=True porque stored_hash era None)
-    if not changed and not dispatch_candidate:
+    # - ou está em um estado 'ativo' que o executor monitora em todo ciclo
+    #   (REVIEW, QA) — mesmo sem mudança de labels, o motor pode precisar agir
+    #   (ex: redisparar o reviewer ou avisar QA)
+    if not changed and not dispatch_candidate and current_state not in ALWAYS_INCLUDE_STATES:
         return None  # nada mudou e não é candidato — skip
 
     reason = _build_reason(changed, dispatch_candidate, current_state, modifiers, spec_valid)

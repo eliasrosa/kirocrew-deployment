@@ -10,7 +10,7 @@ import pytest
 from flow.domain.state import State
 from flow.ports.issue_provider import ProviderError
 from flow.scan.cache import _SCHEMA, compute_hash, set_hash
-from flow.scan.scanner import ScanResult, SquadScanConfig, scan_candidates
+from flow.scan.scanner import ALWAYS_INCLUDE_STATES, ScanResult, SquadScanConfig, scan_candidates
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -225,3 +225,102 @@ class TestScanCandidates:
         results = scan_candidates(config, provider, conn)
         keys = {r.item.key for r in results if r.dispatch_candidate}
         assert keys == {"VGAT-1", "VGAT-2"}
+
+
+# ---------------------------------------------------------------------------
+# ALWAYS_INCLUDE_STATES — issue #79
+# Issues em REVIEW e QA devem aparecer em todos os ciclos, mesmo sem mudança
+# de labels, para que o motor possa monitorá-las ativamente.
+# ---------------------------------------------------------------------------
+
+class TestAlwaysIncludeStates:
+    def test_always_include_states_contem_review_e_qa(self) -> None:
+        """ALWAYS_INCLUDE_STATES deve cobrir REVIEW e QA."""
+        assert State.REVIEW in ALWAYS_INCLUDE_STATES
+        assert State.QA in ALWAYS_INCLUDE_STATES
+
+    def test_review_incluida_sem_mudanca_de_labels(
+        self, config: SquadScanConfig, conn: sqlite3.Connection
+    ) -> None:
+        """Issue em crewflow:review aparece no scan mesmo quando o hash não muda."""
+        labels = ["crewflow:review"]
+        item = _item("VGAT-1", labels=labels)
+        # Pré-popula o cache com o hash atual — simula segundo ciclo
+        set_hash(conn, "VGAT-1", compute_hash(labels))
+
+        provider = mock.MagicMock()
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:review" else []
+
+        results = scan_candidates(config, provider, conn)
+
+        assert len(results) == 1
+        assert results[0].item.key == "VGAT-1"
+        assert results[0].current_state is State.REVIEW
+        assert results[0].changed is False  # hash igual — mas ainda incluída
+
+    def test_qa_incluida_sem_mudanca_de_labels(
+        self, config: SquadScanConfig, conn: sqlite3.Connection
+    ) -> None:
+        """Issue em crewflow:qa aparece no scan mesmo quando o hash não muda."""
+        labels = ["crewflow:qa"]
+        item = _item("VGAT-1", labels=labels)
+        set_hash(conn, "VGAT-1", compute_hash(labels))
+
+        provider = mock.MagicMock()
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:qa" else []
+
+        results = scan_candidates(config, provider, conn)
+
+        assert len(results) == 1
+        assert results[0].current_state is State.QA
+        assert results[0].changed is False
+
+    def test_todo_sem_mudanca_ainda_filtrado(
+        self, config: SquadScanConfig, conn: sqlite3.Connection
+    ) -> None:
+        """Issue em crewflow:todo sem mudança de labels e sem dispatch NÃO aparece.
+
+        Garante que ALWAYS_INCLUDE_STATES não regride o filtro para outros estados:
+        TODO só deve aparecer quando changed=True ou quando é dispatch_candidate.
+        """
+        # TODO com running não é dispatch_candidate, e hash está no cache
+        labels = ["crewflow:todo", "crewflow:running"]
+        item = _item("VGAT-1", labels=labels)
+        set_hash(conn, "VGAT-1", compute_hash(labels))
+
+        provider = mock.MagicMock()
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:todo" else []
+
+        results = scan_candidates(config, provider, conn)
+
+        assert results == []
+
+    def test_review_inclui_mesmo_apos_multiplos_ciclos(
+        self, config: SquadScanConfig, conn: sqlite3.Connection
+    ) -> None:
+        """Simula três ciclos consecutivos: issue em REVIEW deve aparecer nos três."""
+        labels = ["crewflow:review"]
+        item = _item("VGAT-1", labels=labels)
+        provider = mock.MagicMock()
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:review" else []
+
+        for ciclo in range(1, 4):
+            results = scan_candidates(config, provider, conn)
+            assert len(results) == 1, f"ciclo {ciclo}: issue deveria aparecer"
+            assert results[0].item.key == "VGAT-1"
+
+    def test_review_dispatch_candidate_e_false(
+        self, config: SquadScanConfig, conn: sqlite3.Connection
+    ) -> None:
+        """dispatch_candidate deve continuar False para REVIEW — não é gatilho."""
+        labels = ["crewflow:review"]
+        item = _item("VGAT-1", labels=labels)
+        set_hash(conn, "VGAT-1", compute_hash(labels))
+
+        provider = mock.MagicMock()
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:review" else []
+
+        results = scan_candidates(config, provider, conn)
+
+        assert len(results) == 1
+        assert results[0].dispatch_candidate is False
