@@ -405,3 +405,73 @@ class TestGate2AutoMerge:
         assert set(d.add_labels) == {"crewflow:done"}
         assert "crewflow:review" in d.remove_labels
         assert "crewflow:reviewed" in d.remove_labels
+
+    # ── SHA verification ──────────────────────────────────────────────
+
+    def test_sha_divergente_redespacha_reviewer(self) -> None:
+        """Push pós-review: SHA do PR diverge do SHA do reviewer → redespacha."""
+        state_comment = self._make_review_result(approved=True, comments=[])
+        r = _result(
+            state=State.REVIEW,
+            labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
+            modifiers={Modifier.REVIEWED},
+        )
+        # SHA do PR mudou após a review (reviewer usou "abc123", PR agora em "deadbeef...")
+        d = decide(r, state_comment=state_comment, pr_head_sha="deadbeef123")
+        assert d.action is ActionKind.DISPATCH_REVIEWER
+        assert "SHA divergiu" in d.reason
+        assert "abc123" in d.reason    # SHA do reviewer (primeiros 8 chars)
+        assert "deadbeef" in d.reason  # SHA do PR (primeiros 8 chars)
+
+    def test_sha_igual_prossegue_merge(self) -> None:
+        """SHA do PR bate com o do reviewer (primeiros 8 chars) → merge prossegue."""
+        from flow.audit.state_comment import StateComment, render
+        sc = StateComment(
+            workflow="feature (v1)",
+            current_node="review",
+            status="reviewed",
+            repo="kirocrew-flow",
+        )
+        sc.set_reviewer_result(approved=True, comments=[], sha="abc12345def")
+        state_comment = render(sc)
+
+        r = _result(
+            state=State.REVIEW,
+            labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
+            modifiers={Modifier.REVIEWED},
+        )
+        # Mesmo prefixo de 8 chars — SHA completo do PR pode ser maior
+        d = decide(r, state_comment=state_comment, pr_head_sha="abc12345xyz")
+        assert d.action is ActionKind.MERGE_PR
+
+    def test_sha_ausente_no_reviewer_nao_bloqueia(self) -> None:
+        """Reviewer sem SHA registrado → não bloqueia (sem info suficiente)."""
+        from flow.audit.state_comment import StateComment, render
+        sc = StateComment(
+            workflow="feature (v1)",
+            current_node="review",
+            status="reviewed",
+            repo="kirocrew-flow",
+        )
+        # sha="" — reviewer antigo sem SHA
+        sc.set_reviewer_result(approved=True, comments=[], sha="")
+        state_comment = render(sc)
+
+        r = _result(
+            state=State.REVIEW,
+            labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
+            modifiers={Modifier.REVIEWED},
+        )
+        d = decide(r, state_comment=state_comment, pr_head_sha="newsha123")
+        assert d.action is ActionKind.MERGE_PR  # sem SHA do reviewer → não bloqueia
+
+    def test_pr_head_sha_ausente_nao_bloqueia(self) -> None:
+        """Sem pr_head_sha (ex: Jira) → não bloqueia (sem info suficiente)."""
+        state_comment = self._make_review_result(approved=True, comments=[])
+        r = _result(
+            state=State.REVIEW,
+            labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
+            modifiers={Modifier.REVIEWED},
+        )
+        d = decide(r, state_comment=state_comment, pr_head_sha=None)
+        assert d.action is ActionKind.MERGE_PR  # sem SHA do PR → não bloqueia

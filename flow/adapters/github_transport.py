@@ -143,7 +143,7 @@ def get_pr_for_issue(owner_repo: str, issue_number: int) -> dict | None:
             "pr", "list",
             "--repo", owner_repo,
             "--state", "open",
-            "--json", "number,title,headRefName,body,mergeable",
+            "--json", "number,title,headRefName,headRefOid,body,mergeable",
             "--limit", "50",
         ]))
     except ProviderError:

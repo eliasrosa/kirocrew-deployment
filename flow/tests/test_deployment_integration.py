@@ -307,7 +307,7 @@ class TestAutoMergeIntegration:
         def _fake_get_state_comment(repo: str, key: str) -> str:
             return state_body
 
-        fake_pr = {"number": 99, "title": "feat: Feature X", "headRefName": "feat/issue-42", "body": "Closes #42"}
+        fake_pr = {"number": 99, "title": "feat: Feature X", "headRefName": "feat/issue-42", "headRefOid": "abc123", "body": "Closes #42"}
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -332,6 +332,7 @@ class TestAutoMergeIntegration:
             mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
             mock_provider = mock.MagicMock()
             mock_provider.get_state_comment = _fake_get_state_comment
+            mock_provider.get_pr_for_issue = mock.MagicMock(return_value=fake_pr)
             mock_provider_for.return_value = mock_provider
 
             run(ctx)

@@ -470,7 +470,23 @@ def run(ctx: object) -> None:
                     result.item.key,
                 )
 
-        decision = decide(result, state_comment=state_comment, squad=squad)
+        # Busca o SHA do HEAD do PR quando em review+reviewed para que o
+        # executor possa detectar push pós-review sem fazer I/O ele mesmo.
+        pr_head_sha: str | None = None
+        if result.current_state is State.REVIEW and Modifier.REVIEWED in result.modifiers:
+            import contextlib
+            with contextlib.suppress(Exception):
+                _repo = (
+                    result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+                    or (repos[0] if repos else "")
+                )
+                _issue_number = int(result.item.key.split("/issues/")[-1]) if "/issues/" in result.item.key else 0
+                if _issue_number and hasattr(provider, "get_pr_for_issue"):
+                    _pr = provider.get_pr_for_issue(_repo, _issue_number)
+                    if _pr:
+                        pr_head_sha = _pr.get("headRefOid") or _pr.get("headRefName")
+
+        decision = decide(result, state_comment=state_comment, squad=squad, pr_head_sha=pr_head_sha)
 
         # Loga o template resolvido pelo executor e a ação decidida, para
         # cada issue processada — facilita debugar por que uma issue foi para

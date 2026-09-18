@@ -115,6 +115,7 @@ def decide(
     scan_result: object,
     state_comment: str | None = None,
     squad: object | None = None,
+    pr_head_sha: str | None = None,
 ) -> ExecutorDecision:
     """Decide o que fazer com a issue.
 
@@ -124,6 +125,12 @@ def decide(
         squad:         SquadConfig da squad (opcional); quando fornecido,
                        usa squad.resolve_workflow() para routing — mais
                        preciso e configurável que o fallback por labels.
+        pr_head_sha:   SHA do HEAD atual do PR associado à issue (opcional).
+                       Quando fornecido, é comparado com o SHA registrado
+                       no ReviewerResult para detectar push pós-review.
+                       Deve ser obtido pelo driving adapter via
+                       ``get_pr_for_issue()`` e passado aqui — o executor
+                       não faz I/O.
 
     Returns:
         ExecutorDecision com a ação e os metadados para o executor de I/O.
@@ -185,6 +192,7 @@ def decide(
 
     # ── Lock anti-loop: crewflow:reviewed ─────────────────────────────
     # Se reviewed está presente, lemos o resultado do reviewer no state_comment.
+    # - SHA divergiu (push pós-review) → remove reviewed e redespacha reviewer
     # - Aprovado sem comentários → MERGE_PR (caminho feliz)
     # - Aprovado com comentários → NOTIFY_HUMAN TL
     # - Resultado ainda não disponível (reviewer ainda rodando) → SKIP
@@ -197,6 +205,23 @@ def decide(
             return ExecutorDecision(
                 action=ActionKind.SKIP,
                 reason="crewflow:reviewed presente mas resultado do reviewer ainda não disponível — aguardando",
+            )
+
+        # Verifica se houve push após a review: SHA do PR HEAD vs SHA do reviewer.
+        # pr_head_sha é fornecido pelo driving adapter (sem I/O aqui).
+        if (
+            reviewer_result.sha
+            and pr_head_sha
+            and pr_head_sha[:8] != reviewer_result.sha[:8]
+        ):
+            return ExecutorDecision(
+                action=ActionKind.DISPATCH_REVIEWER,
+                reason=(
+                    f"SHA divergiu após review: PR HEAD={pr_head_sha[:8]} "
+                    f"vs reviewer SHA={reviewer_result.sha[:8]} — re-revisão necessária"
+                ),
+                add_labels=("crewflow:reviewed",),
+                remove_labels=("crewflow:reviewed",),
             )
 
         if reviewer_result.is_auto_mergeable:
