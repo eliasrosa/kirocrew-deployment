@@ -1,0 +1,3 @@
+id: hotfix-flow
+name: "Hotfix / Incidente PRD"
+description: "Versão C comprimida. GATE 0 filtra o que é realmente PRD. Bypass HML auditado."

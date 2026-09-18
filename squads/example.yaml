@@ -1,0 +1,54 @@
+# KiroCrew Flow — Exemplo de configuração de squad
+# Copie este arquivo, renomeie para squads/<seu-id>.yaml e ajuste.
+# Arquivos prefixados com "_" e o próprio "example.yaml" são ignorados no load.
+
+id: example-squad
+name: Squad Exemplo
+
+# Provedor de issues: "github" ou "jira"
+issue_provider: jira
+
+# Jira: chave do projeto
+# GitHub: owner/repo
+project: VGAT
+
+# Repositórios conhecidos pela squad.
+# Dupla função:
+#   1. Projetos a varrer no scan (GitHub-first; Jira usa "project" acima)
+#   2. Lista de validação do título: [repo] no título deve casar aqui
+#      Typo falha alto: [api-gatewy2] não casa → recusa em vez de despachar errado
+repos:
+  - org/api-gateway2
+  - org/api-subscription2
+
+# Template de workflow — Fase 1 = fixo, Fase 3 = editável no canvas
+# versao-c (padrão) = review ANTES do QA, sequencial
+# versao-a         = review DEPOIS do QA
+# versao-b         = review em PARALELO com QA
+workflow_template: versao-c
+
+# Parâmetros do template configuráveis por squad
+workflow_params:
+  # merge_mode: "manual" (único valor implementado na Fase 1)
+  # auto-merge é item futuro — o motor nunca mergeia
+  merge_mode: manual
+  # review_position: before_qa | after_qa | parallel_qa
+  review_position: before_qa
+  # deploy_hml_mode: "manual" (único valor implementado na Fase 1)
+  deploy_hml_mode: manual
+  # allow_hml_bypass: hotfix pode ir direto pra PRD (exige justificativa)
+  allow_hml_bypass: true
+
+# Regras de routing: issue com estas labels → usa este workflow
+# Avaliadas em ordem; a primeira que casar é usada.
+# O "default" é o fallback quando nenhuma regra casar.
+routing:
+  - match: {labels: ["crewflow:hotfix"]}
+    workflow: hotfix-flow
+  - match: {labels: ["crewflow:bug"]}
+    workflow: bug-flow
+  - match: {labels: ["crewflow:debt"]}
+    workflow: debt-flow
+  - match: {labels: ["crewflow:feature"]}
+    workflow: feature-flow
+  - default: feature-flow
