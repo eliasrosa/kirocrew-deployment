@@ -323,17 +323,72 @@ def run(ctx: object) -> None:
         conn.close()
 
     # ── Separa candidatos de dispatch dos informativos ────────────────────
-    dispatch_candidates = [r for r in scan_results if r.dispatch_candidate]
-    spec_invalid = [r for r in scan_results if r.spec_valid is False]
+    # ── Passa todos os resultados pelo executor ────────────────────────────
+    from flow.executor.executor import ActionKind, decide
 
-    if not dispatch_candidates and not spec_invalid:
-        return  # nada a fazer neste ciclo
+    # Categorias de resultado após o executor
+    spec_invalid: list = []
+    dispatch_devs: list[tuple[str, dict, object]] = []   # (repo, issue, decision)
+    dispatch_reviewers: list[tuple[str, dict]] = []      # (repo, issue)
+    needs_human: list[tuple[object, object]] = []        # (result, decision)
+    blocked_bypass: list[object] = []                    # result com bypass sem justif
+    rebranded: list[tuple[object, object]] = []          # (result, decision)
 
-    # ── Notifica specs inválidas (zero token: flagra sem despachar) ───────
+    for result in scan_results:
+        # Flags do scan que não precisam do executor
+        if result.spec_valid is False:
+            spec_invalid.append(result)
+            continue
+
+        # Passa pelo executor para decisão completa
+        # Lê o comentário de estado se precisar (bypass, COV) — só faz a
+        # chamada de I/O quando o estado pode precisar dele
+        from flow.domain.state import Modifier, State
+        needs_comment = (
+            Modifier.HML_BYPASS in result.modifiers
+            or (hasattr(result.current_state, "__eq__") and result.current_state is State.DEV)
+        )
+        state_comment: str | None = None
+        if needs_comment:
+            import contextlib
+            with contextlib.suppress(Exception):
+                state_comment = provider.get_state_comment(
+                    result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+                    or (repos[0] if repos else ""),
+                    result.item.key,
+                )
+
+        decision = decide(result, state_comment=state_comment, squad=squad)
+
+        if decision.action is ActionKind.SKIP:
+            continue
+        if decision.action is ActionKind.BLOCK:
+            blocked_bypass.append(result)
+        elif decision.action is ActionKind.REBRAND:
+            rebranded.append((result, decision))
+        elif decision.action is ActionKind.NOTIFY_HUMAN:
+            needs_human.append((result, decision))
+        elif decision.action is ActionKind.DISPATCH_REVIEWER:
+            repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            issue = _scan_result_to_issue(result)
+            dispatch_reviewers.append((repo, issue))
+        elif decision.action is ActionKind.DISPATCH_DEV:
+            repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            if not repo:
+                repo = repos[0] if repos else ""
+            issue = _scan_result_to_issue(result)
+            dispatch_devs.append((repo, issue, decision))
+
+    # Sem nada a fazer?
+    if not any([spec_invalid, dispatch_devs, dispatch_reviewers,
+                needs_human, blocked_bypass, rebranded]):
+        return
+
+    # ── Notifica specs inválidas ──────────────────────────────────────────
     if spec_invalid:
         vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
         linhas = "\n".join(
-            f"  - {r.item.key}: {r.item.title} — {r.reason}"
+            f"  - {r.item.key}: {r.item.title}"
             for r in spec_invalid
         )
         ctx.notify(  # type: ignore[attr-defined]
@@ -341,35 +396,44 @@ def run(ctx: object) -> None:
             f"corrija o título antes de priorizar.{vm}\n{linhas}"
         )
 
-    if not dispatch_candidates:
-        return
+    # ── Notifica bypass bloqueados ────────────────────────────────────────
+    if blocked_bypass:
+        vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
+        linhas = "\n".join(f"  - {r.item.key}: {r.item.title}" for r in blocked_bypass)
+        ctx.notify(  # type: ignore[attr-defined]
+            f"KiroCrew Flow: merge bloqueado — hml-bypass sem justificativa.{vm}\n{linhas}"
+        )
 
-    # ── Dispatch (Fase 2) ou aviso (Fase 1) ──────────────────────────────
+    # ── Aplica rebranding (troca de template) ─────────────────────────────
+    for result, decision in rebranded:
+        try:
+            # Atualiza as labels para refletir o novo template
+            current_labels = list(result.item.labels)
+            for lbl in decision.remove_labels:
+                if lbl in current_labels:
+                    current_labels.remove(lbl)
+            current_labels.extend(decision.add_labels)
+            repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            provider.set_labels(repo, result.item.key, current_labels)
+            logger.info("deployment: rebrand %s → %s", result.item.key, decision.new_template)
+        except Exception as exc:
+            logger.error("deployment: erro no rebrand de %s: %s", result.item.key, exc)
+
+    # ── Dispatch do executor de dev ───────────────────────────────────────
     vagas = (max_conc - _active_sessions()) if auto else 0
     disparadas: list[tuple[str, dict]] = []
     adiadas: list[tuple[str, dict]] = []
 
-    for result in dispatch_candidates:
-        # Mapeia o projeto de volta ao repo para o dispatch (GitHub-first)
-        # TODO: quando #3 implementar squad config, usar o mapeamento project→repo
-        repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
-        if not repo:
-            repo = repos[0] if repos else ""
-
-        issue = _scan_result_to_issue(result)
-
+    for repo, issue, _decision in dispatch_devs:
         if not auto:
             adiadas.append((repo, issue))
             continue
-
         if vagas <= 0:
             adiadas.append((repo, issue))
             continue
-
         if one_per_repo and _repo_has_active(repo):
             adiadas.append((repo, issue))
             continue
-
         try:
             _dispatch(ctx, repo, issue, cfg)
             disparadas.append((repo, issue))
@@ -378,7 +442,7 @@ def run(ctx: object) -> None:
             logger.error("deployment: erro ao despachar %s: %s", issue.get("number"), exc)
             adiadas.append((repo, issue))
 
-    # ── Notificação de resultado ──────────────────────────────────────────
+    # ── Notificação de resultado de dispatch ──────────────────────────────
     vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
 
     if auto and disparadas:
@@ -388,19 +452,55 @@ def run(ctx: object) -> None:
             fila = "\n".join(f"  - {r}#{i['number']}: {i['title']}" for r, i in adiadas)
             extra = f"\n\nNA FILA:\n{fila}"
         ctx.notify(  # type: ignore[attr-defined]
-            f"KiroCrew Flow: disparei sessão(ões) one-shot pra issue(s) `ready`.{vm}\n{linhas}{extra}"
+            f"KiroCrew Flow: disparei sessão(ões) one-shot.{vm}\n{linhas}{extra}"
         )
     elif auto and adiadas:
         fila = "\n".join(f"  - {r}#{i['number']}: {i['title']}" for r, i in adiadas)
         ctx.notify(  # type: ignore[attr-defined]
-            f"KiroCrew Flow: {len(adiadas)} issue(s) `ready` na fila (limite cheio).{vm}\n{fila}"
+            f"KiroCrew Flow: {len(adiadas)} issue(s) na fila (limite cheio).{vm}\n{fila}"
         )
-    elif not auto and dispatch_candidates:
+    elif not auto and dispatch_devs:
         blocos = "\n".join(
-            f"  - {r.item.key}: {r.item.title} ({r.reason})"
-            for r in dispatch_candidates
+            f"  - {repo}#{issue['number']}: {issue['title']}"
+            for repo, issue, _ in dispatch_devs
         )
         ctx.notify(  # type: ignore[attr-defined]
-            f"KiroCrew Flow (Fase 1): {len(dispatch_candidates)} issue(s) `ready` esperando.{vm}\n"
-            f"{blocos}"
+            f"KiroCrew Flow (Fase 1): {len(dispatch_devs)} issue(s) prontas.{vm}\n{blocos}"
         )
+
+    # Notificações para humanos (NOTIFY_HUMAN)
+    if needs_human:
+        _notify_human_actions(ctx, needs_human, chat_id)
+
+    if dispatch_reviewers:
+        _notify_reviewers(ctx, dispatch_reviewers, chat_id)
+
+
+def _notify_human_actions(ctx: object, items: list, chat_id: str) -> None:
+    """Notifica o humano certo sobre ações pendentes."""
+    from flow.executor.executor import HumanRole
+    vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
+
+    # Agrupa por papel
+    tl_items = [(r, d) for r, d in items if getattr(d, "notify_role", None) is HumanRole.TL]
+    dev_items = [(r, d) for r, d in items if getattr(d, "notify_role", None) is HumanRole.DEV]
+    qa_items = [(r, d) for r, d in items if getattr(d, "notify_role", None) is HumanRole.QA]
+
+    if tl_items:
+        linhas = "\n".join(f"  - {r.item.key}: {r.item.title} — {d.reason}" for r, d in tl_items)
+        ctx.notify(f"KiroCrew Flow: aguarda ação do TL.{vm}\n{linhas}")  # type: ignore[attr-defined]
+    if dev_items:
+        linhas = "\n".join(f"  - {r.item.key}: {r.item.title} — {d.reason}" for r, d in dev_items)
+        ctx.notify(f"KiroCrew Flow: aguarda ação do Dev.{vm}\n{linhas}")  # type: ignore[attr-defined]
+    if qa_items:
+        linhas = "\n".join(f"  - {r.item.key}: {r.item.title} — {d.reason}" for r, d in qa_items)
+        ctx.notify(f"KiroCrew Flow: aguarda ação do QA.{vm}\n{linhas}")  # type: ignore[attr-defined]
+
+
+def _notify_reviewers(ctx: object, items: list, chat_id: str) -> None:
+    """Notifica que o kiro-reviewer foi disparado."""
+    vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
+    linhas = "\n".join(f"  - {repo}#{issue['number']}: {issue['title']}" for repo, issue in items)
+    ctx.notify(  # type: ignore[attr-defined]
+        f"KiroCrew Flow: análise automatizada de code review disparada.{vm}\n{linhas}"
+    )
