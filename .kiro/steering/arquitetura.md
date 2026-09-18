@@ -12,19 +12,19 @@ description: Arquitetura hexagonal, stack, convenções de código e qualidade d
 |---|---|---|
 | Linguagem | **Python 3.12** | |
 | Servidor web | **aiohttp** | NÃO usar FastAPI, Flask, Starlette ou Pydantic |
-| Testes | **pytest** + **pytest-cov** | 137 testes, 75% de cobertura mínima |
+| Testes | **pytest** + **pytest-cov** | 242 testes, 75% de cobertura mínima |
 | Linting | **ruff** | zero warnings permitidos |
 | Type check | **mypy** | `--ignore-missing-imports` no CI |
 
-## Estrutura hexagonal (obrigatória)
+## Estrutura completa (Fase 1 concluída)
 
 ```
 flow/
-├── domain/       ← NÚCLEO: sem I/O, testável sem mock
-│   ├── state.py  — State, Modifier, is_dispatchable(), can_transition()
-│   └── gates.py  — Result, WorkItem, Squad, can_leave_spec(), triage_hotfix()...
+├── domain/                     ← NÚCLEO: sem I/O, testável sem mock
+│   ├── state.py                — State, Modifier, is_dispatchable(), can_transition()
+│   └── gates.py                — Result, WorkItem, Squad, can_leave_spec(), triage_hotfix()...
 ├── ports/
-│   └── issue_provider.py  — IssueProvider (Protocol), provider_for(), PROVIDERS
+│   └── issue_provider.py       — IssueProvider (Protocol), provider_for(), PROVIDERS
 ├── adapters/
 │   ├── github_transport.py     — fachada patchável sobre gh CLI
 │   ├── github_normalization.py — payload GitHub → contrato canônico
@@ -32,14 +32,44 @@ flow/
 │   ├── jira_transport.py       — REST HTTP via stdlib
 │   ├── jira_normalization.py   — payload Jira → contrato canônico
 │   └── jira_client.py          — orquestração; satisfaz IssueProvider
-└── tests/
-    ├── test_domain_boundary.py  — garante domain/ isolado (NUNCA viola)
-    ├── test_domain_state.py
-    ├── test_domain_gates.py
-    ├── test_ports_issue_provider.py
-    ├── test_adapter_github.py
-    ├── test_adapter_jira.py
-    └── test_provider_parity.py  — garante que os dois adapters expõem a mesma superfície
+├── scan/
+│   ├── cache.py                — SQLite: hash de labels por issue (zero token)
+│   └── scanner.py              — scan_candidates(): filtra candidatos a dispatch
+├── executor/
+│   └── executor.py             — decide(): decide a ação por template sem I/O
+├── audit/
+│   └── state_comment.py        — render/parse do <!-- KIRO-FLOW-STATE -->
+└── config/
+    ├── squad.py                — SquadConfig, RoutingRule, load_squad()
+    └── workflow.py             — WorkflowTemplate, get_template(), 4 templates fixos
+
+deployment/
+└── deployment.py               — driving adapter (cron do Kiro Crew)
+
+flow/tests/
+├── test_domain_boundary.py     — garante domain/ isolado (NUNCA viola)
+├── test_domain_state.py
+├── test_domain_gates.py
+├── test_ports_issue_provider.py
+├── test_adapter_github.py
+├── test_adapter_jira.py
+├── test_provider_parity.py     — garante que os dois adapters expõem a mesma superfície
+├── test_scan_cache.py
+├── test_scan_scanner.py
+├── test_executor.py
+├── test_audit_state_comment.py
+├── test_config_squad_workflow.py
+└── test_deployment_integration.py
+
+resources/mermaid/              ← fonte .mmd dos 4 fluxos (a verdade)
+docs/diagramas/                 ← PNG derivado + README com contexto
+squads/
+└── example.yaml                — schema documentado
+workflows/
+├── feature-flow.yaml
+├── bug-flow.yaml
+├── hotfix-flow.yaml
+└── debt-flow.yaml
 ```
 
 ## Regra de isolamento do domínio (INVIOLÁVEL)
@@ -65,6 +95,18 @@ Um módulo **não pode** ser verificado estaticamente contra um Protocol. O gate
 garante paridade é `test_provider_parity.py`. Se você adicionar um terceiro adapter,
 registre-o também na tabela `CLIENTS` do teste — senão o CI passa sem verificar.
 
+## Fluxo de uma issue pela arquitetura
+
+```
+squads/*.yaml  →  SquadConfig.resolve_workflow()  →  template (feature/bug/hotfix/debt)
+                                    ↓
+scan_candidates(squad_config, provider, conn)  ←  zero token, SQLite cache
+                                    ↓ ScanResult
+executor.decide(scan_result, state_comment)    ←  puro Python, sem I/O
+                                    ↓ ExecutorDecision
+deployment.py  →  set_labels() + upsert_state_comment() + _dispatch()
+```
+
 ## Convenções de código
 
 ### Enums de label
@@ -87,42 +129,32 @@ class WorkItem:
 
 ### Injeção de dependência
 
-Resultados de decisões externas (aprovação humana, existência de teste) chegam
-**como parâmetros**, nunca são buscados dentro da função:
+Resultados de decisões externas chegam como parâmetros, nunca buscados:
 ```python
 # CORRETO
 def can_start_debt(item, has_tl_approval: bool) -> Result: ...
-
-# ERRADO — não buscar credencial, sessão ou API de dentro do domínio
-def can_start_debt(item, jira_client) -> Result: ...
 ```
 
 ### Imports nos adapters
 
-Todos os imports no **topo do arquivo**. Não usar import local dentro de função
-exceto quando há circular import genuíno (documentar o motivo).
+Todos os imports no topo do arquivo. Import local dentro de função
+só em caso de circular import genuíno (documentar o motivo).
 
 ### `with` múltiplos
 
-Preferir um único `with` com múltiplos contextos:
 ```python
 # CORRETO
 with mock.patch.object(transport, "fn"), pytest.raises(Error):
     ...
-
-# EVITAR
-with mock.patch.object(transport, "fn"):
-    with pytest.raises(Error):
-        ...
 ```
 
-## Adicionar um novo provedor (além de GitHub e Jira)
+## Adicionar um novo provedor
 
 1. Criar `flow/adapters/<nome>_transport.py`, `_normalization.py` e `_client.py`
 2. Adicionar `"<nome>"` em `PROVIDERS` em `flow/ports/issue_provider.py`
 3. Adicionar ao dispatch em `_build_dispatch()`
 4. **Obrigatório:** adicionar à tabela `CLIENTS` em `test_provider_parity.py`
-5. O `test_a_tabela_cobre_todos_os_providers_registrados` quebra até o passo 4 ser feito
+5. O `test_a_tabela_cobre_todos_os_providers_registrados` quebra até o passo 4
 
 ## Rodar o CI localmente
 
@@ -143,11 +175,13 @@ python3 -m ruff check flow/ && python3 -m mypy flow/ --ignore-missing-imports &&
 ## Notas de implementação
 
 - `list_changed_since()` nos dois adapters é ingênuo na Fase 1: varre todos os
-  estados para detectar mudança. Dívida técnica documentada — a fix está na #6.
-- Os adapters são síncronos. `aiohttp` é async-first, então a migração para
-  `async def` vai ser necessária quando o scan for integrado ao cron. Os transports
-  já estão estruturados para absorver isso sem mudar a interface.
-- `deployment/deployment.py` é o **driving adapter** da Fase 1 — ele é o cron que
-  chama o domínio. Quando a arquitetura hexagonal estiver completa, a lógica de
-  dispatch do `deployment.py` migrará para consumir `provider_for()` e as regras
-  de `domain/`.
+  estados. Dívida técnica documentada — a fix está no backlog.
+- Os adapters são síncronos. `aiohttp` é async-first — a migração para `async def`
+  será necessária quando o cron for integrado ao servidor web. Os transports já
+  estão estruturados para absorver isso.
+- O executor hoje usa `_detect_template()` interno. Quando o routing da squad
+  config (`SquadConfig.resolve_workflow()`) for conectado ao executor, essa função
+  some — é a mesma lógica, em lugar permanente.
+- `deployment.py` é o **driving adapter** da Fase 1. Quando a arquitetura for
+  conectada de ponta a ponta, ele só precisará de `load_squad()`, `scan_candidates()`
+  e `executor.decide()` — toda a lógica de negócio já está nos módulos.
