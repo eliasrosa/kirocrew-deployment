@@ -17,3 +17,5 @@ __pycache__/
 # quem roda, não do projeto. Ver docs/diagramas/README.md.
 .puppeteer.json
 .coverage
+# Config de deploy real (contém paths pessoais)
+deployment/deployment.config.yaml
