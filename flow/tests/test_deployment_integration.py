@@ -16,7 +16,12 @@ _REPO_ROOT = str(Path(__file__).parent.parent.parent)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from deployment.deployment import _scan_result_to_issue, run  # noqa: E402
+import builtins  # noqa: E402
+import tempfile  # noqa: E402
+
+import pytest  # noqa: E402
+
+from deployment.deployment import _load_config, _scan_result_to_issue, run  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -74,6 +79,53 @@ class TestScanResultToIssue:
         r = _make_scan_result(title="[api-gw2] Fix urgente")
         issue = _scan_result_to_issue(r)
         assert issue["title"] == "[api-gw2] Fix urgente"
+
+
+# ---------------------------------------------------------------------------
+# _load_config — fallback sem PyYAML usa o parser compartilhado
+# ---------------------------------------------------------------------------
+
+class TestLoadConfigFallback:
+    """A config do cron deve suportar o mesmo schema de routing que a squad."""
+
+    def test_routing_multilinha_via_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_import = builtins.__import__
+
+        def fake_import(name: str, *args: object, **kwargs: object) -> object:
+            if name == "yaml":
+                raise ImportError("PyYAML indisponível (forçado no teste)")
+            return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        cfg_text = (
+            "repos:\n"
+            "  - owner/repo\n"
+            "auto_dispatch: false\n"
+            "max_concurrent: 2\n"
+            "routing:\n"
+            "  - match:\n"
+            "      labels:\n"
+            "        - crewflow:debt\n"
+            "    workflow: debt-flow\n"
+            "  - default: feature-flow\n"
+        )
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(cfg_text)
+            tmp = f.name
+
+        monkeypatch.setattr("deployment.deployment._CONFIG_CANDIDATES", [tmp])
+        cfg = _load_config()
+
+        assert cfg["repos"] == ["owner/repo"]
+        assert cfg["auto_dispatch"] is False
+        assert cfg["max_concurrent"] == 2
+        # O routing multi-linha foi parseado com a MESMA estrutura do PyYAML.
+        assert cfg["routing"][0] == {
+            "match": {"labels": ["crewflow:debt"]},
+            "workflow": "debt-flow",
+        }
+        assert cfg["routing"][-1] == {"default": "feature-flow"}
 
 
 # ---------------------------------------------------------------------------

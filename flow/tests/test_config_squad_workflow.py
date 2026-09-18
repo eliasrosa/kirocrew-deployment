@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import tempfile
 from pathlib import Path
 
@@ -349,6 +350,226 @@ class TestLoadSquad:
             squads = load_squads_dir(tmp)
             assert len(squads) == 1
             assert squads[0].id == "my-squad"
+
+
+# ---------------------------------------------------------------------------
+# Fallback _mini_yaml (sem PyYAML) — parser mínimo embutido
+# ---------------------------------------------------------------------------
+
+# YAML de routing na forma MULTI-LINHA padrão (não inline). PyYAML parseia isto
+# nativamente; o fallback _mini_yaml precisa produzir a MESMA estrutura.
+MULTILINE_ROUTING_YAML = """\
+id: my-squad
+name: My Squad
+issue_provider: github
+repos:
+  - org/api-gateway2
+  - org/api-subscription2
+workflow_template: versao-c
+workflow_params:
+  merge_mode: manual
+  review_position: before_qa
+  allow_hml_bypass: true
+routing:
+  - match:
+      labels:
+        - crewflow:hotfix
+    workflow: hotfix-flow
+  - match:
+      labels:
+        - crewflow:bug
+    workflow: bug-flow
+  - default: feature-flow
+"""
+
+
+@pytest.fixture
+def _no_pyyaml(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Força `import yaml` a levantar ImportError, exercitando o fallback.
+
+    O código guarda `try: import yaml except ImportError: return _mini_yaml(...)`,
+    então basta fazer o import do módulo `yaml` falhar.
+    """
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "yaml":
+            raise ImportError("PyYAML indisponível (forçado no teste)")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+
+class TestMiniYamlFallback:
+    """Garante que o schema de squad funciona SEM PyYAML."""
+
+    def _write(self, text: str) -> str:
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(text)
+            return f.name
+
+    def test_import_yaml_falha_no_fixture(self, _no_pyyaml: None) -> None:
+        # Sanidade: o fixture realmente bloqueia o import do PyYAML.
+        with pytest.raises(ImportError):
+            import yaml  # noqa: F401
+
+    def test_multiline_routing_via_fallback(self, _no_pyyaml: None) -> None:
+        tmp = self._write(MULTILINE_ROUTING_YAML)
+        try:
+            sc = load_squad(tmp)
+        finally:
+            Path(tmp).unlink()
+        # As duas regras multi-linha + o default foram parseadas.
+        assert len(sc.routing) == 2
+        assert sc.default_workflow == "feature-flow"
+        # resolve_workflow usa as regras corretamente.
+        assert sc.resolve_workflow(frozenset({"crewflow:hotfix"})) == "hotfix-flow"
+        assert sc.resolve_workflow(frozenset({"crewflow:bug"})) == "bug-flow"
+        assert sc.resolve_workflow(frozenset({"crewflow:feature"})) == "feature-flow"
+
+    def test_multiline_debt_routing_resolve(self, _no_pyyaml: None) -> None:
+        # Exercita o template `debt` via routing multi-linha (issue de teste do motor).
+        yaml_txt = (
+            "id: sq\n"
+            "issue_provider: github\n"
+            "repos:\n"
+            "  - org/api\n"
+            "routing:\n"
+            "  - match:\n"
+            "      labels:\n"
+            "        - crewflow:debt\n"
+            "    workflow: debt-flow\n"
+            "  - default: feature-flow\n"
+        )
+        tmp = self._write(yaml_txt)
+        try:
+            sc = load_squad(tmp)
+        finally:
+            Path(tmp).unlink()
+        assert sc.resolve_workflow(frozenset({"crewflow:debt"})) == "debt-flow"
+
+    def test_inline_routing_ainda_funciona_via_fallback(self, _no_pyyaml: None) -> None:
+        # A forma inline `- match: {labels: [...]}` não pode regredir.
+        tmp = self._write(EXAMPLE_YAML)
+        try:
+            sc = load_squad(tmp)
+        finally:
+            Path(tmp).unlink()
+        assert len(sc.routing) == 2
+        assert sc.resolve_workflow(frozenset({"crewflow:hotfix"})) == "hotfix-flow"
+        assert sc.resolve_workflow(frozenset({"crewflow:bug"})) == "bug-flow"
+
+    def test_fallback_estrutura_igual_ao_pyyaml(self, _no_pyyaml: None) -> None:
+        # A estrutura crua produzida pelo fallback casa com a do example.yaml.
+        example = Path(__file__).parent.parent.parent / "squads" / "example.yaml"
+        raw = _mini_yaml(example)
+        assert raw["routing"][0] == {
+            "match": {"labels": ["crewflow:hotfix"]},
+            "workflow": "hotfix-flow",
+        }
+        assert raw["routing"][-1] == {"default": "feature-flow"}
+        assert raw["workflow_params"]["allow_hml_bypass"] is True
+
+
+# ---------------------------------------------------------------------------
+# Regressões de indentação no fallback _mini_yaml
+# ---------------------------------------------------------------------------
+
+# PyYAML está instalado no ambiente de dev, então comparamos o fallback
+# DIRETAMENTE contra `yaml.safe_load` — sem precisar forçar ImportError, já que
+# `_mini_yaml` é chamado explicitamente.
+class TestMiniYamlIndentationRegressions:
+    """Garante paridade com PyYAML em formas de indentação não-triviais.
+
+    Estes casos FALHAVAM no parser anterior:
+      1. listas na MESMA indentação da chave (forma flush-left) viravam `[]`;
+      2. chaves de continuação de item de lista assumiam passo fixo de 2 espaços.
+    """
+
+    def _mini(self, text: str) -> object:
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(text)
+            tmp = f.name
+        try:
+            return _mini_yaml(Path(tmp))
+        finally:
+            Path(tmp).unlink()
+
+    def test_lista_flush_left_nao_vira_vazia(self) -> None:
+        # `repos:` seguido de itens na coluna 0 (mesma indentação da chave).
+        # O parser antigo devolvia {'repos': []} (perda silenciosa de dados).
+        import yaml
+
+        text = "repos:\n- owner/repo-a\n- owner/repo-b\n"
+        assert self._mini(text) == yaml.safe_load(text)
+        assert self._mini(text) == {"repos": ["owner/repo-a", "owner/repo-b"]}
+
+    def test_routing_flush_left_igual_ao_pyyaml(self) -> None:
+        # `routing:` com itens flush-left: as regras SUMIAM no parser antigo,
+        # fazendo tudo cair no default_workflow.
+        import yaml
+
+        text = (
+            "routing:\n"
+            "- match:\n"
+            "    labels:\n"
+            "    - crewflow:bug\n"
+            "  workflow: bug-flow\n"
+            "- default: feature-flow\n"
+        )
+        assert self._mini(text) == yaml.safe_load(text)
+
+    def test_continuacao_com_passo_de_4_espacos(self) -> None:
+        # Chave de continuação `workflow` a 4 espaços do `-` (não 2).
+        # O parser antigo usava child_indent = indent + 2 fixo.
+        import yaml
+
+        text = (
+            "routing:\n"
+            "  - match:\n"
+            "        labels:\n"
+            "          - crewflow:bug\n"
+            "    workflow: bug-flow\n"
+        )
+        assert self._mini(text) == yaml.safe_load(text)
+
+    def test_continuacao_com_passo_de_1_espaco(self) -> None:
+        import yaml
+
+        text = (
+            "routing:\n"
+            "  - match:\n"
+            "     labels:\n"
+            "      - crewflow:bug\n"
+            "    workflow: bug-flow\n"
+        )
+        assert self._mini(text) == yaml.safe_load(text)
+
+    def test_item_de_lista_solto_onde_mapa_esperado_lanca(self) -> None:
+        # Input ambíguo: um `- ` onde uma chave de mapa era esperada.
+        # Deve falhar ALTO em vez de descartar dados silenciosamente.
+        text = "id: sq\n- solto\n"
+        with pytest.raises(SquadConfigError, match="inesperado"):
+            self._mini(text)
+
+    def test_equivalencia_com_pyyaml_em_squads_example(self) -> None:
+        # Garante que a saída do fallback é estruturalmente idêntica à do
+        # PyYAML para o arquivo de exemplo real de squad.
+        import yaml
+
+        example = Path(__file__).parent.parent.parent / "squads" / "example.yaml"
+        with example.open() as f:
+            expected = yaml.safe_load(f)
+        assert _mini_yaml(example) == expected
+
+    def test_equivalencia_com_pyyaml_em_config_example(self) -> None:
+        # Idem para o config de cron de exemplo (deployment).
+        import yaml
+
+        cfg = Path(__file__).parent.parent.parent / "config.example.yaml"
+        with cfg.open() as f:
+            expected = yaml.safe_load(f)
+        assert _mini_yaml(cfg) == expected
 
 
 # ---------------------------------------------------------------------------

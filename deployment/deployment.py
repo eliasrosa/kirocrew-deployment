@@ -73,52 +73,17 @@ def _load_config() -> dict:
 
 
 def _mini_yaml(path: str) -> dict:
-    """Parser YAML minimalista para quando PyYAML não está disponível."""
-    cfg: dict = {}
-    cur_key: str | None = None
+    """Parser YAML minimalista para quando PyYAML não está disponível.
 
-    def _coerce(val: str) -> object:
-        if val.lower() in ("true", "false"):
-            return val.lower() == "true"
-        if val.isdigit():
-            return int(val)
-        return val
-
-    with open(path) as f:
-        for raw in f:
-            line = raw.split("#", 1)[0].rstrip()
-            if not line.strip():
-                continue
-
-            indented = line.startswith((" ", "\t"))
-            stripped = line.strip()
-
-            if stripped.startswith("- ") and cur_key and isinstance(cfg.get(cur_key), list):
-                cfg[cur_key].append(stripped[2:].strip().strip('"\''))
-                continue
-
-            if indented and ":" in stripped and cur_key:
-                if not isinstance(cfg.get(cur_key), dict):
-                    if cfg.get(cur_key):
-                        continue
-                    cfg[cur_key] = {}
-                k, _, v = stripped.partition(":")
-                v = v.strip().strip('"\'')
-                if v != "":
-                    cfg[cur_key][k.strip().strip('"\'')] = _coerce(v)
-                continue
-
-            if ":" in line and not indented:
-                key, _, val = line.partition(":")
-                key, raw_val = key.strip(), val.strip()
-                val = raw_val.strip('"\'')
-                quoted_empty = val == "" and raw_val in ('""', "''")
-                if val == "" and not quoted_empty:
-                    cfg[key], cur_key = [], key
-                else:
-                    cur_key = None
-                    cfg[key] = "" if quoted_empty else _coerce(val)
-    return cfg
+    Delega para o parser compartilhado em ``flow.config.squad`` para que a
+    config do cron e a config de squad tenham exatamente o mesmo suporte de
+    schema (incluindo `routing:` na forma multi-linha com `match.labels`
+    aninhado). Para squads com routing complexo, PyYAML continua recomendado
+    (`pip install -e '.[yaml]'`).
+    """
+    from flow.config.squad import _mini_yaml as _shared_mini_yaml
+    from pathlib import Path
+    return dict(_shared_mini_yaml(Path(path)))
 
 
 # ── Sessões ativas ────────────────────────────────────────────────────────

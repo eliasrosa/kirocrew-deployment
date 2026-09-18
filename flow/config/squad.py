@@ -196,198 +196,204 @@ def _read_yaml(path: Path) -> dict[str, Any]:
         return _mini_yaml(path)
 
 
+def _coerce_scalar(val: str) -> Any:
+    """Converte um escalar textual YAML no tipo Python correspondente.
+
+    Conjunto de escalares suportado pelo fallback (subconjunto do YAML,
+    suficiente para o schema documentado em ``squads/example.yaml`` e
+    ``config.example.yaml``):
+
+      - ``true`` / ``false`` (case-insensitive) → ``bool``;
+      - inteiros positivos sem sinal (``str.isdigit()``) → ``int``;
+      - qualquer outra coisa → ``str`` (mantida como texto).
+
+    NÃO cobre floats, inteiros negativos, ``null`` nem escalares numéricos
+    entre aspas — para esses casos, instale PyYAML (`pip install -e '.[yaml]'`).
+    Nenhum campo do schema atual usa esses tipos, então a divergência é inerte;
+    ela existe apenas para manter o fallback pequeno e previsível.
+    """
+    if val.lower() in ("true", "false"):
+        return val.lower() == "true"
+    if val.isdigit():
+        return int(val)
+    return val
+
+
+def _parse_inline_value(val: str) -> Any:
+    """Parseia um valor inline: escalar, lista `[...]` ou mapa `{...}`."""
+    if val.startswith("[") and val.endswith("]"):
+        return [
+            _coerce_scalar(x.strip().strip("\"'"))
+            for x in val[1:-1].split(",")
+            if x.strip()
+        ]
+    if val.startswith("{") and val.endswith("}"):
+        entry: dict[str, Any] = {}
+        for raw_part in val[1:-1].split(","):
+            part = raw_part.strip()
+            if ":" in part:
+                k, _, v = part.partition(":")
+                entry[k.strip().strip("\"'")] = _parse_inline_value(v.strip().strip("\"'"))
+        return entry
+    return _coerce_scalar(val.strip("\"'"))
+
+
 def _mini_yaml(path: Path) -> dict[str, Any]:
     """Parser YAML minimalista (fallback sem PyYAML).
 
     Suporta:
-    - escalares, booleans, inteiros
-    - listas simples (``- item``)
-    - mapeamentos aninhados de 1 nivel (``workflow_params:``)
-    - listas de dicts inline: ``- {key: val, key2: [a, b]}``
-    - listas de dicts multi-linha::
+      - escalares (string, int, bool) no topo e aninhados;
+      - listas simples (`- item`);
+      - mapeamentos aninhados por indentação (multi-nível);
+      - itens de lista que são dicts, tanto na forma inline
+        (`- {labels: ["x"]}`) quanto na forma multi-linha padrão do YAML::
 
-        routing:
-          - match:
-              labels:
-                - crewflow:hotfix
-            workflow: hotfix-flow
-          - default: feature-flow
+            routing:
+              - match:
+                  labels:
+                    - crewflow:bug
+                workflow: bug-flow
+              - default: feature-flow
+
+    Produz a mesma estrutura que o PyYAML geraria para o schema de squad,
+    de modo que `_parse_squad` constrói as RoutingRule de forma idêntica com
+    ou sem PyYAML instalado.
+
+    Para squads com routing complexo, PyYAML continua recomendado
+    (`pip install -e '.[yaml]'`); este fallback cobre o schema documentado
+    em ``squads/example.yaml`` mas não a especificação YAML completa.
     """
-    cfg: dict[str, Any] = {}
+    return _parse_block(_read_lines(path), 0)[0]
 
-    def _coerce(val: str) -> Any:
-        if val.lower() in ("true", "false"):
-            return val.lower() == "true"
-        if val.isdigit():
-            return int(val)
-        return val
 
-    def _parse_inline_dict(text: str) -> dict[str, Any]:
-        inner = text[1:-1].strip()
-        entry: dict[str, Any] = {}
-        for raw_part in inner.split(","):
-            part = raw_part.strip()
-            if ": " in part:
-                k, _, v = part.partition(": ")
-                k = k.strip().strip("\"'")
-                v = v.strip().strip("\"'")
-                if v.startswith("[") and v.endswith("]"):
-                    entry[k] = [
-                        x.strip().strip("\"'") for x in v[1:-1].split(",") if x.strip()
-                    ]
-                else:
-                    entry[k] = _coerce(v)
-        return entry
-
-    cur_key: str | None = None
-    list_item: dict[str, Any] | None = None
-    list_item_indent: int = 0
-    list_subkey: str | None = None
-    list_subsubkey: str | None = None
-
-    def flush_list_item() -> None:
-        nonlocal list_item, list_subkey, list_subsubkey
-        if list_item is not None and cur_key and isinstance(cfg.get(cur_key), list):
-            cfg[cur_key].append(list_item)
-        list_item = None
-        list_subkey = None
-        list_subsubkey = None
-
+def _read_lines(path: Path) -> list[tuple[int, str]]:
+    """Lê o arquivo em (indentação, conteúdo) ignorando comentários/vazios."""
+    out: list[tuple[int, str]] = []
     with path.open() as f:
         for raw in f:
             line = raw.split("#", 1)[0].rstrip()
             if not line.strip():
                 continue
+            indent = len(line) - len(line.lstrip(" "))
+            out.append((indent, line.strip()))
+    return out
 
-            indent = len(line) - len(line.lstrip())
-            stripped = line.strip()
 
-            # Nivel raiz
-            if indent == 0:
-                flush_list_item()
-                cur_key = None
-                if ":" not in line:
-                    continue
-                key, _, val = line.partition(":")
-                key = key.strip()
-                raw_val = val.strip()
-                val_stripped = raw_val.strip("\"'")
-                quoted_empty = val_stripped == "" and raw_val in ('""', "''")
-                if val_stripped == "" and not quoted_empty:
-                    cfg[key] = None  # lazy
-                    cur_key = key
+def _parse_block(lines: list[tuple[int, str]], start: int) -> tuple[dict[str, Any], int]:
+    """Parseia um bloco de mapeamento a partir de `start`.
+
+    Retorna o dict e o índice da primeira linha que não pertence ao bloco
+    (indentação menor que a do bloco).
+    """
+    result: dict[str, Any] = {}
+    if start >= len(lines):
+        return result, start
+    block_indent = lines[start][0]
+    i = start
+    while i < len(lines):
+        indent, content = lines[i]
+        if indent < block_indent:
+            break
+        if content.startswith("- "):
+            # Item de lista onde esperávamos uma chave de mapa: input ambíguo
+            # (indentação inconsistente). Falha alto em vez de descartar dados.
+            raise SquadConfigError(
+                f"YAML inválido (fallback): item de lista inesperado onde um "
+                f"mapa era esperado: {content!r}"
+            )
+        key, _, rest = content.partition(":")
+        key = key.strip().strip("\"'")
+        rest = rest.strip()
+        if rest == "":
+            # Valor em bloco na(s) próxima(s) linha(s). Em YAML, itens de lista
+            # podem estar MAIS indentados que a chave OU na MESMA indentação
+            # (forma flush-left, ex.: `repos:` seguido de `- a` na coluna 0).
+            value: Any
+            if (
+                i + 1 < len(lines)
+                and lines[i + 1][1].startswith("- ")
+                and lines[i + 1][0] >= block_indent
+            ):
+                value, i = _parse_list(lines, i + 1, lines[i + 1][0])
+                result[key] = value
+            elif i + 1 < len(lines) and lines[i + 1][0] > block_indent:
+                value, i = _parse_block(lines, i + 1)
+                result[key] = value
+            else:
+                result[key] = []
+                i += 1
+        elif rest in ('""', "''"):
+            result[key] = ""
+            i += 1
+        else:
+            result[key] = _parse_inline_value(rest)
+            i += 1
+    return result, i
+
+
+def _parse_list(
+    lines: list[tuple[int, str]], start: int, list_indent: int
+) -> tuple[list[Any], int]:
+    """Parseia uma lista de itens `- ...` na indentação `list_indent`."""
+    items: list[Any] = []
+    i = start
+    while i < len(lines):
+        indent, content = lines[i]
+        if indent < list_indent or not content.startswith("- "):
+            break
+        body = content[2:].strip()
+        if not body:
+            i += 1
+            continue
+        # Em YAML, `chave: valor` exige espaço após o `:` (ou terminar em `:`).
+        # `- crewflow:bug` sem espaço é um escalar, não um mapa.
+        is_map_item = (
+            not body.startswith(("{", "["))
+            and (": " in body or body.endswith(":"))
+        )
+        if is_map_item:
+            key, _, rest = body.partition(":")
+            # Item é um mapa; a primeira chave está na mesma linha do `-`.
+            entry: dict[str, Any] = {}
+            key = key.strip().strip("\"'")
+            rest = rest.strip()
+            if rest == "":
+                # Chave com bloco aninhado (mapa ou lista) nas próximas linhas.
+                if i + 1 < len(lines) and lines[i + 1][0] > indent:
+                    if lines[i + 1][1].startswith("- "):
+                        entry[key], i = _parse_list(lines, i + 1, lines[i + 1][0])
+                    else:
+                        entry[key], i = _parse_block(lines, i + 1)
                 else:
-                    cur_key = None
-                    cfg[key] = "" if quoted_empty else _coerce(val_stripped)
-                continue
-
-            if cur_key is None:
-                continue
-
-            cur_val = cfg.get(cur_key)
-
-            # Inicializacao lazy: decidir pelo primeiro item que chegar
-            if cur_val is None:
-                if stripped.startswith("- "):
-                    cfg[cur_key] = []
+                    entry[key] = []
+                    i += 1
+            else:
+                entry[key] = _parse_inline_value(rest)
+                i += 1
+            # Chaves adicionais do mesmo item de lista. A indentação de
+            # continuação NÃO é fixada em `indent + 2`: qualquer chave
+            # estritamente mais indentada que o marcador `-` pertence ao
+            # mesmo item (regra de block-mapping do YAML). A indentação real
+            # é derivada da primeira linha de continuação encontrada.
+            while i < len(lines) and lines[i][0] > indent and \
+                    not lines[i][1].startswith("- "):
+                extra, _, xrest = lines[i][1].partition(":")
+                extra = extra.strip().strip("\"'")
+                xrest = xrest.strip()
+                if xrest == "":
+                    if i + 1 < len(lines) and lines[i + 1][0] > lines[i][0]:
+                        if lines[i + 1][1].startswith("- "):
+                            entry[extra], i = _parse_list(lines, i + 1, lines[i + 1][0])
+                        else:
+                            entry[extra], i = _parse_block(lines, i + 1)
+                    else:
+                        entry[extra] = []
+                        i += 1
                 else:
-                    cfg[cur_key] = {}
-                cur_val = cfg[cur_key]
-
-            # Mapeamento de 1 nivel
-            if isinstance(cur_val, dict):
-                if ":" not in stripped:
-                    continue
-                k, _, v = stripped.partition(":")
-                v_stripped = v.strip().strip("\"'")
-                if v_stripped:
-                    cur_val[k.strip().strip("\"'")] = _coerce(v_stripped)
-                continue
-
-            # Lista de nivel raiz
-            if not isinstance(cur_val, list):
-                continue
-
-            # Se list_item esta em construcao, processar linhas dentro dele
-            # ANTES de tratar como novo item de lista
-            if list_item is not None:
-                # Subitem de lista (indent > list_item_indent + 2)
-                # Ex: "        - crewflow:hotfix" quando list_subsubkey esta ativo
-                if stripped.startswith("- ") and indent > list_item_indent + 2:
-                    if list_subkey and list_subsubkey:
-                        sub = list_item.setdefault(list_subkey, {})
-                        if isinstance(sub, dict):
-                            lst = sub.setdefault(list_subsubkey, [])
-                            if isinstance(lst, list):
-                                lst.append(stripped[2:].strip().strip("\"'"))
-                    continue
-
-                # Novo item no mesmo nivel do list_item: fechar e comecar novo
-                if stripped.startswith("- ") and indent <= list_item_indent:
-                    flush_list_item()
-                    # Cai para o tratamento normal abaixo
-
-                elif ":" in stripped and not stripped.startswith("- "):
-                    k, _, v = stripped.partition(":")
-                    k = k.strip()
-                    v_stripped = v.strip().strip("\"'")
-                    item_key_level = list_item_indent + 2
-                    if indent <= item_key_level:
-                        if v_stripped:
-                            list_item[k] = _coerce(v_stripped)
-                        else:
-                            list_subkey = k
-                            list_subsubkey = None
-                    elif list_subkey is not None:
-                        if v_stripped:
-                            sub = list_item.setdefault(list_subkey, {})
-                            if isinstance(sub, dict):
-                                sub[k] = _coerce(v_stripped)
-                        else:
-                            sub = list_item.setdefault(list_subkey, {})
-                            if not isinstance(sub, dict):
-                                list_item[list_subkey] = {}
-                            list_subsubkey = k
-                    continue
-
-            # Novo item de lista "- ..."
-            if stripped.startswith("- "):
-                item_text = stripped[2:].strip()
-
-                # Inline dict: - {key: val, ...}
-                if item_text.startswith("{") and item_text.endswith("}"):
-                    flush_list_item()
-                    cur_val.append(_parse_inline_dict(item_text))
-                    continue
-
-                # "- key: value" ou "- key: {inline_dict}" ou "- key:" (multi-linha)
-                if ":" in item_text:
-                    k, _, v = item_text.partition(":")
-                    k = k.strip()
-                    v_stripped = v.strip().strip("\"'")
-                    flush_list_item()
-                    if v_stripped.startswith("{") and v_stripped.endswith("}"):
-                        # "- match: {labels: [...]}" -> dict item com sub-dict inline
-                        # Cria list_item para aceitar chaves adicionais (ex: workflow:)
-                        list_item = {k: _parse_inline_dict(v_stripped)}
-                        list_item_indent = indent
-                        list_subkey = None
-                        list_subsubkey = None
-                        continue
-                    if v_stripped:
-                        cur_val.append({k: _coerce(v_stripped)})
-                        continue
-                    # Sem valor -> dict multi-linha: "- match:"
-                    list_item = {}
-                    list_item_indent = indent
-                    list_subkey = k
-                    list_subsubkey = None
-                    continue
-
-                # Escalar puro
-                flush_list_item()
-                cur_val.append(item_text.strip("\"'"))
-                continue
-
-    flush_list_item()
-    return cfg
+                    entry[extra] = _parse_inline_value(xrest)
+                    i += 1
+            items.append(entry)
+        else:
+            items.append(_parse_inline_value(body.strip("\"'")))
+            i += 1
+    return items, i
