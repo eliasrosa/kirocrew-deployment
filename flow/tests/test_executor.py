@@ -177,12 +177,11 @@ class TestDecideHotfix:
         assert "justificativa" in d.block_reason.lower()
 
     def test_hml_bypass_com_justificativa_passa(self) -> None:
-        state_comment = (
-            "<!-- KIRO-FLOW-STATE -->\n"
-            "### Exceções\n"
-            "| Exceção | Justificativa | Quem | Quando |\n"
-            "| `crewflow:hml-bypass` | Sistema de pagamento fora do ar | @elias | 2026-09-15 |\n"
-        )
+        from flow.audit.state_comment import StateComment, render
+        sc = StateComment(workflow="hotfix (v1)", current_node="qa", status="running", repo="api-gateway2")
+        sc.add_exception("crewflow:hml-bypass", "Sistema de pagamento fora do ar", "@elias", "2026-09-15")
+        state_comment = render(sc)
+
         r = _result(
             state=State.QA,
             labels=["crewflow:qa", "crewflow:hotfix", "crewflow:p1", "crewflow:hml-bypass"],
@@ -222,12 +221,16 @@ class TestDecideDebt:
 
     def test_debt_dev_com_cov_skip(self) -> None:
         """Com sinal de equivalência, o dev pode continuar."""
+        from flow.audit.state_comment import StateComment, render
+        sc = StateComment(workflow="debt (v1)", current_node="dev", status="running", repo="api-gateway2")
+        sc.add_exception("equivalencia_test", "teste escrito antes da refatoração", "kiro-dev", "2026-09-15")
+        state_comment = render(sc)
+
         r = _result(
             state=State.DEV,
             labels=["crewflow:dev", "crewflow:debt", "crewflow:running"],
             modifiers={Modifier.RUNNING},
         )
-        state_comment = "<!-- KIRO-FLOW-STATE -->\nequivalencia_test: true\n"
         d = decide(r, state_comment=state_comment)
         # Dev + running = skip (está em andamento com COV ok)
         assert d.action is ActionKind.SKIP

@@ -255,19 +255,12 @@ def _decide_by_state(
 # ---------------------------------------------------------------------------
 
 def _has_equivalence_test_signal(state_comment: str | None) -> bool:
-    """Verifica se o comentário de estado sinaliza teste de equivalência.
-
-    Na Fase 1, detecta a presença de uma linha "equivalencia_test: true" no
-    comentário estruturado. Na Fase 2 isso virá do CI.
-    """
-    if not state_comment:
-        return False
-    return "equivalencia_test: true" in state_comment.lower()
+    """Verifica se o comentário de estado sinaliza teste de equivalência."""
+    from flow.audit.state_comment import has_equivalence_test_signal
+    return has_equivalence_test_signal(state_comment)
 
 
 def _extract_justification(state_comment: str | None) -> str | None:
     """Extrai a justificativa de bypass do comentário de estado."""
-    if not state_comment:
-        return None
-    from flow.adapters.github_normalization import extract_justification_from_state_comment
-    return extract_justification_from_state_comment(state_comment)
+    from flow.audit.state_comment import extract_bypass_justification
+    return extract_bypass_justification(state_comment)
