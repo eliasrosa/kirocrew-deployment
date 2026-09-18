@@ -7,18 +7,14 @@ o estado de cada task vive em **labels `crewflow:*`** na própria issue, e o pol
 
 > ⚠️ **Não é standalone.** Depende do Kiro Crew rodando na máquina: usa o loopback
 > interno do gateway (`POST /api/chat`) e o formato de *cron de script* do Kiro Crew.
-> Pense nisso como uma **receita/plugin para o Kiro Crew**, não um app universal.
 
 ## Princípios
 
-1. **A issue É o estado.** Não há banco de trabalho paralelo: label = estado atual,
-   comentário estruturado = histórico. Distribuído nativamente e visível pro humano.
-2. **Zero-token no polling.** O scan é Python puro — não acorda o agente. Token só
-   é gasto quando há trabalho real.
-3. **Merge é SEMPRE manual.** A automação abre o PR e **para**. Nenhum merge, nenhum
-   deploy é automatizado. Auto-merge opcional por squad está no radar (futuro).
-4. **Gates humanos são obrigatórios.** Aprovação de spec, de code review e de QA são
-   sempre de pessoas.
+1. **A issue É o estado.** Label = estado atual, comentário = histórico auditável.
+2. **Zero-token no polling.** O scan é Python puro — token só gasto quando há trabalho real.
+3. **Merge é SEMPRE manual.** A automação abre o PR e para. Nenhum merge, nenhum deploy automatizado.
+4. **Gates humanos são invioláveis.** Aprovação de spec, review e QA são sempre de pessoas.
+5. **Exceções são auditáveis.** O bypass do HML (hotfix direto pra PRD) exige justificativa e é rastreado.
 
 ## Modelo de labels
 
@@ -30,28 +26,18 @@ Duas dimensões independentes.
 crewflow:spec → crewflow:ready → crewflow:todo → crewflow:dev → crewflow:review → crewflow:qa → crewflow:done
 ```
 
-| Label | Significado | Quem age |
-|---|---|---|
-| `crewflow:spec` | PM especificando | 🧠 humano |
-| `crewflow:ready` | Spec pronta, aguardando priorização | 🧠 humano libera |
-| `crewflow:todo` | **Priorizado — gatilho da esteira** | 🤖 automação |
-| `crewflow:dev` | Em desenvolvimento | 🤖 automação |
-| `crewflow:review` | PR aberto: 🤖 review prévio + TL aprova (**ANTES do QA**) | 🤖 + 🧠 TL |
-| `crewflow:qa` | Deploy HML manual + QA testa (**DEPOIS do review**) | 🧠 Dev + QA |
-| `crewflow:done` | Concluído | — |
-
 ### Modificadores — 0..N, sobrepõem ao estado
 
 | Label | Significado |
 |---|---|
-| `crewflow:blocked` | Bloqueado — **para tudo** (tem prioridade sobre o estado) |
-| `crewflow:running` | Trabalho em andamento no estado atual |
+| `crewflow:blocked` | Para tudo (prioridade sobre o estado) |
+| `crewflow:running` | Trabalho em andamento |
 | `crewflow:reviewed` | Lock anti-loop: já analisado neste SHA |
-| `crewflow:hml-bypass` | **Exceção auditada:** hotfix foi direto pra PRD sem passar por HML. Exige justificativa no comentário da issue — o motor **bloqueia o merge** sem ela. |
+| `crewflow:hml-bypass` | Exceção auditada: hotfix pulou o HML (exige justificativa) |
 
 ### Tipo de fluxo (routing) e prioridade
 
-`crewflow:feature` · `crewflow:bug` · `crewflow:hotfix` · `crewflow:debt`
+`crewflow:feature` · `crewflow:bug` · `crewflow:hotfix` · `crewflow:debt`  
 `crewflow:p1` · `crewflow:p2` · `crewflow:p3`
 
 Aplique todas num repo:
@@ -62,73 +48,119 @@ Aplique todas num repo:
 ## Como funciona
 
 ```
-Cron de SCRIPT (zero token, a cada X min)
-  ├─ varre os repos configurados por issue aberta com `crewflow:todo`
-  │  (ignora quem tem `crewflow:dev`, `crewflow:running` ou `crewflow:blocked`)
-  ├─ auto_dispatch=false → só AVISA (você aciona manual)   ← comece aqui
-  └─ auto_dispatch=true  → dispara uma SESSÃO one-shot
-        └─ implementa → valida local → abre PR → `crewflow:review` → PARA
+squads/*.yaml → SquadConfig → scan_candidates() → executor.decide() → deployment.run()
 ```
 
-A sessão **nunca mergeia e nunca faz deploy**. Ela entrega o PR no estado
-`crewflow:review` e encerra. Tudo depois disso é humano.
+1. `scan_candidates()` varre as issues por labels `crewflow:*` sem gastar token — compara hash do estado atual com o cache SQLite, e só processa o que mudou.
+2. `executor.decide()` decide a ação (DISPATCH_DEV, DISPATCH_REVIEWER, NOTIFY_HUMAN, BLOCK, REBRAND ou SKIP) com base no template da squad e no estado da issue.
+3. `deployment.run()` executa a ação: dispara sessão one-shot, notifica humano ou aplica rebrand de template.
 
-**Por que sem loop:** a sessão é one-shot (`memory_mode: temporary`), roda uma vez
-e morre. Sem watchdog, sem auto-nudge, sem rearme.
+A sessão one-shot **nunca mergeia e nunca faz deploy**. Ela entrega o PR em `crewflow:review` e encerra.
 
-### Travas de segurança
-- `max_concurrent` — máx de sessões simultâneas no total (default 2).
-- `one_per_repo` — no máx 1 sessão ativa por repo.
-- `max_turns_per_task` — teto duro de turnos por sessão.
-- Worktree isolado (`git worktree`) a partir do clone local — não reclona, não
-  toca o working tree/branches existentes.
-- `auto_dispatch=false` por padrão — comece avisando, ligue o disparo quando confiar.
+## Fluxos disponíveis (Fase 1)
 
-## Fluxo de trabalho (Versão C — oficial)
+| Template | Quando usar |
+|---|---|
+| `feature` (Versão C) | Feature nova. Review ANTES do QA, sequencial. |
+| `bug` | Correção de bug. Mesma ordem da Versão C. |
+| `hotfix` | Incidente em PRD. GATE 0 filtra o que é realmente urgente. |
+| `debt` | Refatoração sem mudança de comportamento. TL aprova; QA valida equivalência. |
 
-O template fixo da Fase 1. Code review vem **antes** do QA, sequencial:
-
-1. PM especifica (`crewflow:spec`) → TL aprova a spec → `crewflow:ready`
-2. Priorizado → `crewflow:todo` (**gatilho**)
-3. Esteira implementa (`crewflow:dev`), valida local, abre PR → `crewflow:review`
-4. 🤖 Code review automatizado comenta no PR e marca `crewflow:reviewed`
-5. **TL aprova** o review (aprovação humana obrigatória)
-6. **Dev faz deploy HML manualmente** e libera pra teste → `crewflow:qa`
-7. QA testa em HML e aprova
-8. **Merge manual** → `crewflow:done`
+Diagramas em [`docs/diagramas/`](docs/diagramas/README.md).
 
 ## Setup
 
 Pré-requisito: Kiro Crew rodando + `gh` autenticado (`gh auth status`).
 
-1. Copie e edite a config:
-   ```bash
-   cp config.example.yaml deployment/deployment.config.yaml
-   # edite: repos, notify_chat_id, dev_root, limites
-   ```
-2. Coloque o script onde o Kiro Crew lê crons e registre:
-   ```bash
-   cp deployment/deployment.py ~/.kiro/crew/crons/deployment.py
-   cp deployment/deployment.config.yaml ~/.kiro/crew/crons/deployment.config.yaml
-   # via MCP cron_add (dashboard/CLI do Kiro Crew):
-   #   name="crewflow-scan", script="~/.kiro/crew/crons/deployment.py:run", every=600
-   ```
-3. Aplique as labels nos seus repos (`scripts/setup-labels.sh`).
-4. Comece com `auto_dispatch: false` (só avisa). Quando confiar, mude para `true`.
+### 1. Configure a squad
 
-## Roadmap (fases)
+Crie `squads/minha-squad.yaml` com base em `squads/example.yaml`:
 
-| Fase | O que entrega |
+```yaml
+id: minha-squad
+name: Squad Exemplo
+issue_provider: jira   # ou github
+project: VGAT          # chave do projeto Jira
+repos:
+  - org/api-gateway2
+  - org/api-subscription2
+workflow_template: versao-c
+routing:
+  - match: {labels: ["crewflow:hotfix"]}
+    workflow: hotfix-flow
+  - default: feature-flow
+```
+
+### 2. Configure o cron
+
+```bash
+cp config.example.yaml deployment/deployment.config.yaml
+# edite: repos, squad_config, notify_chat_id, dev_root
+cp deployment/deployment.py ~/.kiro/crew/crons/deployment.py
+cp deployment/deployment.config.yaml ~/.kiro/crew/crons/deployment.config.yaml
+# Registre o cron (dashboard ou CLI do Kiro Crew):
+#   cron_add(name="crewflow-scan", script="~/.kiro/crew/crons/deployment.py:run", every=600)
+```
+
+### 3. Aplique as labels
+
+```bash
+./scripts/setup-labels.sh owner/repo
+```
+
+### 4. Comece no modo de aviso
+
+Deixe `auto_dispatch: false` (só avisa). Quando confiar, mude para `true`.
+
+## Estrutura do código
+
+```
+flow/
+├── domain/      ← regras de negócio puras (sem I/O), testáveis sem mock
+│   ├── state.py — Estado, Modificador, is_dispatchable()
+│   └── gates.py — can_leave_spec(), triage_hotfix(), validate_hml_bypass()
+├── ports/       ← contrato do provider (IssueProvider Protocol)
+├── adapters/    ← GitHub e Jira (transport + normalization + client)
+├── scan/        ← zero-token polling + cache SQLite
+├── executor/    ← decide() por template (feature/bug/hotfix/debt)
+├── audit/       ← comentário estruturado <!-- KIRO-FLOW-STATE -->
+└── config/      ← SquadConfig + workflow templates
+
+deployment/      ← cron de script do Kiro Crew (driving adapter)
+squads/          ← configurações de squad (*.yaml)
+workflows/       ← templates de workflow (*.yaml)
+resources/mermaid/ ← fonte dos diagramas (.mmd)
+docs/            ← VISION.md, ARCHITECTURE.md, ROADMAP.md, diagramas/
+```
+
+Ver `.kiro/steering/arquitetura.md` para convenções de código e como adicionar um novo provedor.
+
+## Desenvolvimento
+
+```bash
+# Lint
+python3 -m ruff check flow/
+
+# Testes + cobertura
+python3 -m pytest flow/tests/ --cov=flow --cov-report=term-missing
+
+# Tudo junto
+python3 -m ruff check flow/ && python3 -m pytest flow/tests/ --cov=flow --cov-fail-under=75
+```
+
+260 testes, 82% cobertura, ruff limpo (Fase 1).
+
+## Roadmap
+
+| Fase | Estado |
 |---|---|
-| **Fase 1** | Fluxos **fixos** (feature = Versão C, + fluxo de bug), sem editor. Valida motor + rastreabilidade. |
-| **Fase 2** | Editor de fluxos **read-only** — visualiza o grafo no dashboard. |
-| **Fase 3** | Editor **editável** — canvas estilo n8n: arrastar nós, conectar, salvar por squad. |
+| **Fase 1** — fluxos fixos, sem editor | ✅ Concluída (set/2026) |
+| **Fase 2** — editor read-only no dashboard | 🔲 Planejada |
+| **Fase 3** — canvas editável estilo n8n | 🔲 Futura |
 
-O grafo do diagrama **É** a máquina de estados que o motor executa. Entre as fases
-o comportamento não muda — só muda de *hardcoded* para *editável no canvas*.
+Ver [`docs/ROADMAP.md`](docs/ROADMAP.md) para detalhes.
 
 ## Segurança / privacidade
 
-- Nada de dado pessoal no código: repos, chat_id e paths vivem no `config.yaml`
-  (gitignored). O `config.example.yaml` só tem placeholders.
+- Repos, chat_id e paths vivem no `config.yaml` (gitignored). O `config.example.yaml` só tem placeholders.
 - O disparo usa o segredo interno do gateway apenas em loopback (localhost).

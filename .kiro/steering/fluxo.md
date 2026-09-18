@@ -81,18 +81,29 @@ sobrepostos. **Modificador de parada tem prioridade sobre o estado.**
 **Gatilho único:** só `crewflow:todo` faz a esteira agir. Tudo antes dela é humano;
 tudo depois do PR também.
 
-## Como o motor dispara (sem loop, sem sandbox)
+## Como o motor dispara (arquitetura hexagonal)
 
-1. Cron de **script** (zero token) varre os repos por `crewflow:todo`, ignorando
-   quem tem `crewflow:dev`, `crewflow:running` ou `crewflow:blocked`.
-2. Se `auto_dispatch=true` e há vaga (respeitando `max_concurrent` e 1-por-repo),
-   faz um POST loopback interno pra `/api/chat` — cria uma sessão one-shot que roda
-   o turno **in-process no gateway** (sem sandbox, sem watchdog).
-3. A sessão usa um **worktree isolado** do clone local (não reclona, não bagunça),
-   implementa, valida local, **abre o PR**, troca o estado pra `crewflow:review`,
-   remove `crewflow:running` e **encerra**. Uma passada.
-4. **Para aí.** Review automatizado, aprovação do TL, deploy HML, QA e merge são
-   etapas seguintes — nenhuma delas é feita por esta sessão.
+O loop completo da Fase 1:
+
+```
+squads/*.yaml
+    → SquadConfig.resolve_workflow(labels)  → template (feature/bug/hotfix/debt)
+    → scan_candidates(config, provider, conn)  → zero token, SQLite cache
+    → executor.decide(result, state_comment, squad)  → puro Python, sem I/O
+    → deployment.run() executa a decisão:
+        DISPATCH_DEV       → sessão one-shot (implementa + abre PR)
+        DISPATCH_REVIEWER  → notifica que kiro-reviewer foi disparado
+        NOTIFY_HUMAN       → avisa TL / Dev / QA pelo papel correto
+        BLOCK              → notifica bypass sem justificativa
+        REBRAND            → atualiza labels (GATE 0 do hotfix)
+        SKIP               → silêncio
+```
+
+O scan usa cache SQLite por squad — compara o hash das labels atuais com o
+armazenado. Se não mudou, a issue é ignorada. Token só gasto quando há resultado.
+
+A sessão one-shot **nunca mergeia e nunca faz deploy**. Ela entrega o PR em
+`crewflow:review` e encerra. Uma passada.
 
 ## Lock anti-loop: `crewflow:reviewed`
 
