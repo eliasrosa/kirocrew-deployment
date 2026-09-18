@@ -163,3 +163,19 @@ class TestRunIntegration:
             run(ctx)
 
         ctx.notify.assert_not_called()
+
+    def test_squad_config_inexistente_levanta_erro_early(self) -> None:
+        """squad_config apontando para arquivo inexistente deve falhar imediatamente."""
+        import pytest
+
+        ctx = self._make_ctx()
+        cfg = _minimal_config()
+        cfg["squad_config"] = "/tmp/nao-existe-squad-xyz.yaml"
+
+        with (
+            mock.patch("deployment.deployment._load_config", return_value=cfg),
+            pytest.raises(RuntimeError, match="squad_config"),
+        ):
+            run(ctx)
+
+        ctx.notify.assert_not_called()

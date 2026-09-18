@@ -257,6 +257,10 @@ def run(ctx: object) -> None:
 
     squad: SquadConfig | None = None
     squad_file = cfg.get("squad_config")   # caminho opcional na config
+    if squad_file and not os.path.exists(squad_file):
+        raise RuntimeError(
+            f"deployment: squad_config aponta para um arquivo que não existe: {squad_file!r}"
+        )
     if squad_file and os.path.exists(squad_file):
         try:
             squad = load_squad(squad_file)
