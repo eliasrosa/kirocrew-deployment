@@ -1,0 +1,250 @@
+"""Scanner zero-token — lógica principal.
+
+Fluxo por ciclo:
+1. Para cada projeto configurado na squad, lista issues com labels crewflow:*
+2. Para cada issue, computa o hash atual das labels
+3. Compara com o hash armazenado no cache SQLite
+4. Se mudou (ou é novo): avalia se é candidato a dispatch
+5. Atualiza o cache
+6. Retorna apenas os candidatos reais
+
+Nenhum token de agente é gasto neste módulo.
+"""
+
+from __future__ import annotations
+
+import logging
+import sqlite3
+from dataclasses import dataclass
+
+from flow.domain import gates
+from flow.domain import state as state_mod
+from flow.domain.gates import Squad, WorkItem
+from flow.domain.state import Modifier, State, is_dispatchable, parse_modifiers, parse_state
+from flow.ports.issue_provider import IssueProvider, ProviderError
+from flow.scan.cache import compute_hash, get_hash, set_hash
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Configuração da squad (simplificada para o scan)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class SquadScanConfig:
+    """Configuração mínima que o scan precisa — sem worktrees, sem crons.
+
+    ``issue_provider`` = "github" | "jira"
+    ``projects``       = lista de projetos a varrer (chave Jira ou owner/repo)
+    ``repos``          = lista de repos conhecidos (para validação de título)
+    """
+
+    squad_id: str
+    issue_provider: str
+    projects: tuple[str, ...]
+    repos: frozenset[str]
+    data_dir: str | None = None  # None = usa o default ~/.kiro/crew/kirocrew-flow
+
+
+# ---------------------------------------------------------------------------
+# Resultado do scan
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ScanResult:
+    """Uma issue candidata a processamento neste ciclo.
+
+    ``dispatch_candidate`` = True se está em crewflow:todo sem modificadores de parada.
+    ``spec_valid``         = True se o título tem um repo reconhecido (GATE 1 zero-token).
+    ``changed``            = True se as labels mudaram desde o último ciclo.
+    ``reason``             = motivo de estar neste resultado (para log).
+    """
+
+    item: WorkItem
+    current_state: State | None
+    modifiers: frozenset[Modifier]
+    dispatch_candidate: bool
+    spec_valid: bool | None  # None = não verificado (estado não é spec)
+    changed: bool
+    reason: str
+
+
+# ---------------------------------------------------------------------------
+# Scanner principal
+# ---------------------------------------------------------------------------
+
+def scan_candidates(
+    config: SquadScanConfig,
+    provider: IssueProvider,
+    conn: sqlite3.Connection,
+) -> list[ScanResult]:
+    """Varre os projetos da squad e retorna as issues candidatas.
+
+    Zero token gasto: só código Python + chamadas de API.
+    O agente só é acordado com os resultados já filtrados.
+    """
+
+    squad = Squad(id=config.squad_id, repos=config.repos)
+    results: list[ScanResult] = []
+    active_keys: set[str] = set()
+
+    for project in config.projects:
+        try:
+            project_results = _scan_project(project, provider, conn, squad)
+            results.extend(project_results)
+            active_keys.update(r.item.key for r in project_results)
+        except ProviderError as exc:
+            logger.error("scan: erro ao varrer %s: %s", project, exc)
+            # Continua para o próximo projeto — falha parcial não para o scan
+
+    logger.info(
+        "scan: %d candidatos em %d projetos",
+        len([r for r in results if r.dispatch_candidate]),
+        len(config.projects),
+    )
+    return results
+
+
+def _scan_project(
+    project: str,
+    provider: IssueProvider,
+    conn: sqlite3.Connection,
+    squad: Squad,
+) -> list[ScanResult]:
+    """Varre um único projeto e retorna os resultados."""
+    results: list[ScanResult] = []
+
+    # Lista issues com qualquer label crewflow:* de estado
+    # Não filtra por estado aqui — o domínio decide o que fazer com cada uma
+    all_items = _fetch_all_labeled_items(project, provider)
+
+    logger.debug("scan: %d issues com labels crewflow:* em %s", len(all_items), project)
+
+    for raw_item in all_items:
+        result = _evaluate_item(raw_item, project, provider, conn, squad)
+        if result is not None:
+            results.append(result)
+
+    return results
+
+
+def _fetch_all_labeled_items(project: str, provider: IssueProvider) -> list[dict]:
+    """Lista todas as issues com labels crewflow:* (todos os estados)."""
+    all_items: list[dict] = []
+    seen: set[str] = set()
+
+    # Busca por cada estado — a API filtra por uma label por vez
+    for s in State:
+        try:
+            items = provider.list_by_state(project, s.value)
+            for item in items:
+                key = item.get("key", "")
+                if key and key not in seen:
+                    seen.add(key)
+                    all_items.append(item)
+        except ProviderError as exc:
+            logger.warning("scan: erro ao listar %s em %s: %s", s.value, project, exc)
+
+    return all_items
+
+
+def _evaluate_item(
+    raw: dict,
+    project: str,
+    provider: IssueProvider,
+    conn: sqlite3.Connection,
+    squad: Squad,
+) -> ScanResult | None:
+    """Avalia uma issue e retorna um ScanResult, ou None se sem interesse."""
+    key = raw.get("key", "")
+    if not key:
+        return None
+
+    labels: list[str] = raw.get("labels", [])
+    current_hash = compute_hash(labels)
+    stored_hash = get_hash(conn, key)
+    changed = current_hash != stored_hash
+
+    # Atualiza o cache independente de ser candidato
+    set_hash(conn, key, current_hash)
+
+    # Parseia o estado e os modificadores
+    label_set = frozenset(labels)
+    try:
+        current_state = parse_state(label_set)
+    except state_mod.EstadoAmbiguo as exc:
+        logger.warning("scan: %s tem estados ambíguos: %s", key, exc)
+        current_state = None
+
+    modifiers = parse_modifiers(label_set)
+
+    # Issue sem estado crewflow: está fora da esteira
+    if current_state is None:
+        return None
+
+    # Monta o WorkItem mínimo para as validações de domínio
+    item = WorkItem(
+        key=key,
+        title=raw.get("title", ""),
+        labels=label_set,
+        parent_key=raw.get("parent_key"),
+    )
+
+    # Verifica se é candidato a dispatch
+    dispatch_candidate = is_dispatchable(current_state, modifiers)
+
+    # Validação zero-token do GATE 1: só para itens em crewflow:spec
+    spec_valid: bool | None = None
+    if current_state is State.SPEC:
+        spec_result = gates.can_leave_spec(item, squad)
+        spec_valid = spec_result.ok
+        if not spec_valid:
+            logger.debug("scan: %s spec inválida: %s", key, spec_result.reason)
+
+    # Só inclui no resultado se há algo a fazer:
+    # - mudou de estado (hash diferente) e é candidato
+    # - ou está em spec com problema (para flagrar sem despachar)
+    # - ou é a primeira vez que vemos (changed=True porque stored_hash era None)
+    if not changed and not dispatch_candidate:
+        return None  # nada mudou e não é candidato — skip
+
+    reason = _build_reason(changed, dispatch_candidate, current_state, modifiers, spec_valid)
+
+    return ScanResult(
+        item=item,
+        current_state=current_state,
+        modifiers=modifiers,
+        dispatch_candidate=dispatch_candidate,
+        spec_valid=spec_valid,
+        changed=changed,
+        reason=reason,
+    )
+
+
+def _build_reason(
+    changed: bool,
+    dispatch_candidate: bool,
+    current_state: State | None,
+    modifiers: frozenset[Modifier],
+    spec_valid: bool | None,
+) -> str:
+    parts: list[str] = []
+
+    if dispatch_candidate:
+        parts.append("CANDIDATO A DISPATCH")
+    elif current_state == State.SPEC and spec_valid is False:
+        parts.append("SPEC SEM REPO — flagrada para correção humana")
+    elif Modifier.BLOCKED in modifiers:
+        parts.append(f"bloqueada em {current_state} (crewflow:blocked)")
+    elif Modifier.RUNNING in modifiers:
+        parts.append(f"em andamento em {current_state} (crewflow:running)")
+    else:
+        parts.append(f"estado: {current_state}")
+
+    if changed:
+        parts.append("labels mudaram")
+    else:
+        parts.append("novo no cache")
+
+    return "; ".join(parts)
