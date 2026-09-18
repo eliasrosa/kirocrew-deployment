@@ -1,49 +1,62 @@
-"""KiroCrew Flow — vigia de issues `crewflow:todo` + motor de execução one-shot.
+"""KiroCrew Flow — cron de scan e dispatch one-shot.
 
-Cron de SCRIPT do Kiro Crew (sem LLM, zero token no polling). Bate no GitHub via
-`gh` em cada repo configurado, e para cada issue nova com o estado `crewflow:todo`
-(sem `crewflow:dev`, `crewflow:running` ou `crewflow:blocked`):
+Cron de SCRIPT do Kiro Crew (sem LLM, zero token no polling).
 
-  - auto_dispatch=false (Fase 1): só AVISA (ctx.notify) — você aciona manual.
-  - auto_dispatch=true  (Fase 2): dispara uma SESSÃO ONE-SHOT (POST /api/chat via
-    loopback interno) que implementa a issue e encerra — sem loop, sem watchdog.
+  - Fase 1 (auto_dispatch=false): só AVISA — você aciona manual.
+  - Fase 2 (auto_dispatch=true ): dispara sessão ONE-SHOT que implementa e abre PR.
 
-Depende do Kiro Crew rodando (usa o loopback interno + o formato de cron de
-script). NÃO é standalone. Veja o README.
+Agora usa a arquitetura hexagonal de flow/:
+  scan_candidates() ← flow/scan/scanner.py  → filtra issues candidatas (zero token)
+  provider_for()    ← flow/ports/           → adapter GitHub ou Jira
+  can_leave_spec()  ← flow/domain/gates.py → validação GATE 1 (zero token)
+
+O dispatch (chamada de sessão one-shot) ainda vive aqui — é o driving adapter da Fase 1.
+
+Depende do Kiro Crew rodando (loopback interno). NÃO é standalone.
 
 Registro (uma vez):
-    cron_add(name="esteira", script="~/.kiro/crew/crons/deployment.py:run", every=600)
+    cron_add(name="crewflow-scan", script="~/.kiro/crew/crons/deployment.py:run", every=600)
 
 Config: ~/.kiro/crew/crons/deployment.config.yaml (copie de config.example.yaml).
 """
+
+from __future__ import annotations
+
 import glob
 import json
+import logging
 import os
-import subprocess
+import sqlite3
+import sys
 
-# ── Labels da esteira (padrão oficial `crewflow:*`) ───────────────────────
-# Estados (1 por vez, ordem canônica):
-#   crewflow:spec → ready → todo → dev → review → qa → done
-LABEL_TODO = "crewflow:todo"          # gatilho: liberado, a esteira pega
-LABEL_DEV = "crewflow:dev"            # em desenvolvimento
-LABEL_REVIEW = "crewflow:review"      # PR aberto: 🤖 review prévio + TL aprova
-LABEL_QA = "crewflow:qa"              # deploy HML manual + QA testa (DEPOIS do review)
-LABEL_DONE = "crewflow:done"          # concluído
+logger = logging.getLogger(__name__)
 
-# Modificadores (0..N, sobrepõem ao estado)
-LABEL_RUNNING = "crewflow:running"    # trabalho em andamento no estado atual
-LABEL_BLOCKED = "crewflow:blocked"    # travado: dependência técnica OU espera humana
-LABEL_REVIEWED = "crewflow:reviewed"  # lock anti-loop: já analisado neste SHA
-
-# ── carregamento de config ────────────────────────────────────────────────
+# ── Adiciona o diretório raiz do repo ao path para importar flow/ ─────────
+# Necessário porque o cron do Kiro Crew executa o arquivo diretamente e
+# flow/ não está instalado como pacote no Python do sistema.
 _HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_HERE)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from flow.ports.issue_provider import provider_for  # noqa: E402
+from flow.scan.cache import open_cache  # noqa: E402
+from flow.scan.scanner import SquadScanConfig, scan_candidates  # noqa: E402
+
+# ── Labels (mantidas para o prompt de dispatch) ───────────────────────────
+LABEL_DEV     = "crewflow:dev"
+LABEL_REVIEW  = "crewflow:review"
+LABEL_RUNNING = "crewflow:running"
+LABEL_BLOCKED = "crewflow:blocked"
+
+# ── Carregamento de config ────────────────────────────────────────────────
 _CONFIG_CANDIDATES = [
     os.path.join(_HERE, "deployment.config.yaml"),
     os.path.expanduser("~/.kiro/crew/crons/deployment.config.yaml"),
 ]
 
 
-def _load_config():
+def _load_config() -> dict:
     """Lê a config YAML (parser mínimo, sem dependência externa)."""
     path = next((p for p in _CONFIG_CANDIDATES if os.path.exists(p)), None)
     if not path:
@@ -52,24 +65,19 @@ def _load_config():
             "deployment.config.yaml ao lado do script."
         )
     try:
-        import yaml  # type: ignore
+        import yaml  # type: ignore[import-untyped]
         with open(path) as f:
             return yaml.safe_load(f) or {}
     except ImportError:
         return _mini_yaml(path)
 
 
-def _mini_yaml(path):
-    """Parser YAML minimalista: escalares, listas simples (- item) e
-    mapeamentos aninhados de UM nível (chave: + linhas indentadas `k: v`).
+def _mini_yaml(path: str) -> dict:
+    """Parser YAML minimalista para quando PyYAML não está disponível."""
+    cfg: dict = {}
+    cur_key: str | None = None
 
-    Usado só quando PyYAML não está disponível. Um bloco indentado começa como
-    lista e é promovido a dict no primeiro `k: v` que aparecer — assim
-    `repos:` (lista) e `workflow_params:` (dict) convivem sem declaração prévia.
-    """
-    cfg, cur_key = {}, None
-
-    def _coerce(val):
+    def _coerce(val: str) -> object:
         if val.lower() in ("true", "false"):
             return val.lower() == "true"
         if val.isdigit():
@@ -85,16 +93,13 @@ def _mini_yaml(path):
             indented = line.startswith((" ", "\t"))
             stripped = line.strip()
 
-            # item de lista
-            if stripped.startswith("- ") and cur_key:
-                if isinstance(cfg.get(cur_key), list):
-                    cfg[cur_key].append(stripped[2:].strip().strip('"\''))
+            if stripped.startswith("- ") and cur_key and isinstance(cfg.get(cur_key), list):
+                cfg[cur_key].append(stripped[2:].strip().strip('"\''))
                 continue
 
-            # `k: v` indentado → entrada de mapeamento aninhado
             if indented and ":" in stripped and cur_key:
                 if not isinstance(cfg.get(cur_key), dict):
-                    if cfg.get(cur_key):  # já tem itens de lista: não converte
+                    if cfg.get(cur_key):
                         continue
                     cfg[cur_key] = {}
                 k, _, v = stripped.partition(":")
@@ -103,83 +108,37 @@ def _mini_yaml(path):
                     cfg[cur_key][k.strip().strip('"\'')] = _coerce(v)
                 continue
 
-            # chave de topo
             if ":" in line and not indented:
                 key, _, val = line.partition(":")
                 key, raw_val = key.strip(), val.strip()
                 val = raw_val.strip('"\'')
-                # `k: ""` é string vazia; `k:` nua abre bloco (lista ou dict)
                 quoted_empty = val == "" and raw_val in ('""', "''")
                 if val == "" and not quoted_empty:
-                    cfg[key], cur_key = [], key   # lista até prova em contrário
+                    cfg[key], cur_key = [], key
                 else:
                     cur_key = None
                     cfg[key] = "" if quoted_empty else _coerce(val)
     return cfg
 
 
-def _state_dir():
-    d = os.path.join(_HERE, "state")
-    os.makedirs(d, exist_ok=True)
-    return d
+# ── Sessões ativas ────────────────────────────────────────────────────────
 
-
-def _state_file(repo):
-    return os.path.join(_state_dir(), "ready-" + repo.replace("/", "__") + ".json")
-
-
-def _ready_issues(repo):
-    out = subprocess.run(
-        ["gh", "issue", "list", "--repo", repo, "--state", "open",
-         "--label", LABEL_TODO, "--json", "number,title,url,labels", "--limit", "30"],
-        capture_output=True, text=True, timeout=60,
-    )
-    if out.returncode != 0:
-        return None
-    try:
-        issues = json.loads(out.stdout)
-    except Exception:
-        return None
-    filtered = []
-    for i in issues:
-        names = {lb.get("name", "") for lb in i.get("labels", [])}
-        # já em andamento: outro executor pegou
-        if LABEL_DEV in names or LABEL_RUNNING in names:
-            continue
-        # modificador de parada tem prioridade sobre o estado
-        if LABEL_BLOCKED in names:
-            continue
-        filtered.append(i)
-    return filtered
-
-
-def _load_seen(repo):
-    try:
-        with open(_state_file(repo)) as f:
-            return set(json.load(f).get("seen", []))
-    except Exception:
-        return set()
-
-
-def _save_seen(repo, seen):
-    with open(_state_file(repo), "w") as f:
-        json.dump({"seen": sorted(seen)}, f)
-
-
-def _sessdir():
+def _sessdir() -> str:
     return os.path.expanduser("~/.kiro/crew/sessions")
 
 
-def _active_sessions():
+def _active_sessions() -> int:
     return len(glob.glob(os.path.join(_sessdir(), "dashboard_esteira-*.jsonl.lock")))
 
 
-def _repo_has_active(repo):
+def _repo_has_active(repo: str) -> bool:
     short = repo.split("/")[-1]
     return bool(glob.glob(os.path.join(_sessdir(), f"dashboard_esteira-{short}-*.jsonl.lock")))
 
 
-def _dispatch_prompt(repo, issue, cfg):
+# ── Prompt de dispatch ────────────────────────────────────────────────────
+
+def _dispatch_prompt(repo: str, issue: dict, cfg: dict) -> str:
     short = repo.split("/")[-1]
     vault = cfg.get("vault_root") or ""
     dev_root = cfg.get("dev_root") or os.path.expanduser("~/dev")
@@ -204,41 +163,36 @@ def _dispatch_prompt(repo, issue, cfg):
         "------------ CONTEXT TASK ----------------\n"
         "Você é um agente de implementação ONE-SHOT. Tarefa ÚNICA, sem loop, sem watchdog.\n\n"
         "FLUXO (execute UMA vez, do início ao fim, e PARE):\n"
-        "0. TÍTULO: como PRIMEIRA ação, defina o título da sessão = `SESSION TITLE` (se a tool "
-        "de título/mover-sessão existir; senão siga sem travar — é só acabamento).\n"
+        "0. TÍTULO: como PRIMEIRA ação, defina o título da sessão = `SESSION TITLE`.\n"
         "1. Leia a issue (gh issue view) e a doc do repo (.kiro/steering/, README).\n"
         "2. ESCOPO: se a issue exige decisão de design não-tomada ou é vaga, NÃO implemente — "
         f"comente, marque `{LABEL_BLOCKED}`, avise e ENCERRE.\n"
-        f"3. Marque `{LABEL_DEV}` + `{LABEL_RUNNING}`. NÃO faça `git clone`. Use o clone em `{dev_root}/{short}` "
-        f"como base e crie um WORKTREE ISOLADO.\n"
-        f"   A branch base é a DEFAULT DO REPO — descubra, não presuma (pode ser "
-        f"`main`, `master` ou `develop`):\n"
+        f"3. Marque `{LABEL_DEV}` + `{LABEL_RUNNING}`. NÃO faça `git clone`. Use o clone em "
+        f"`{dev_root}/{short}` como base e crie um WORKTREE ISOLADO.\n"
+        f"   A branch base é a DEFAULT DO REPO — descubra, não presuma:\n"
         f"   `BASE=$(gh repo view {repo} --json defaultBranchRef --jq .defaultBranchRef.name)`\n"
         f"   `cd {dev_root}/{short} && git fetch origin && git worktree add -b "
         f"feat/issue-{issue['number']} {dev_root}/.esteira-worktrees/{short}-{issue['number']} "
         f"\"origin/$BASE\"`\n"
-        "   Trabalhe DENTRO do worktree; remova-o ao fim (`git worktree remove --force ...`). "
-        "NUNCA toque em outros worktrees/branches.\n"
+        "   Trabalhe DENTRO do worktree; remova-o ao fim. NUNCA toque em outros worktrees.\n"
         "4. Implemente EXATAMENTE o escopo — nada além.\n"
-        "5. Valide localmente (build/testes) AINDA dentro do estado `dev`. Se falhar e não "
-        f"conseguir corrigir no escopo, pare em `{LABEL_BLOCKED}`.\n"
-        f"6. Abra PR com 'Closes #{issue['number']}' e troque a label da issue para "
-        f"`{LABEL_REVIEW}`. **NUNCA mergeie.** O merge é SEMPRE manual — o gate de code "
-        "review (🤖 análise prévia + aprovação humana do TL) e o deploy HML acontecem "
-        "DEPOIS, fora desta sessão.\n"
-        f"7. Ao terminar: {notify_step}remova o modificador `{LABEL_RUNNING}` da issue "
-        f"(mantenha o estado `{LABEL_REVIEW}`), e ENCERRE.\n"
+        "5. Valide localmente (build/testes). Se falhar e não conseguir corrigir, "
+        f"pare em `{LABEL_BLOCKED}`.\n"
+        f"6. Abra PR com 'Closes #{issue['number']}' e troque a label para `{LABEL_REVIEW}`. "
+        "**NUNCA mergeie. NUNCA faça deploy.** Ambos são ações humanas manuais.\n"
+        f"7. Ao terminar: {notify_step}remova `{LABEL_RUNNING}` (mantenha `{LABEL_REVIEW}`), "
+        "e ENCERRE.\n"
         f"{vault_step}\n"
         "REGRAS CRÍTICAS:\n"
-        "- UMA passada. Terminou, acabou. NÃO fique verificando, NÃO entre em loop.\n"
-        "- NUNCA mergeie um PR. NUNCA faça deploy. Ambos são ações humanas manuais.\n"
-        f"- Se algo bloquear, marque `{LABEL_BLOCKED}`, avise, e pare.\n"
+        "- UMA passada. Terminou, acabou. NÃO entre em loop.\n"
+        "- NUNCA mergeie. NUNCA faça deploy.\n"
+        f"- Se bloquear, marque `{LABEL_BLOCKED}`, avise, e pare.\n"
         "------------------------------------------"
     )
 
 
-def _dispatch(ctx, repo, issue, cfg):
-    """Fire-and-forget POST /api/chat (loopback interno, roda in-process, sem sandbox)."""
+def _dispatch(ctx: object, repo: str, issue: dict, cfg: dict) -> None:
+    """Fire-and-forget POST /api/chat (loopback interno)."""
     import urllib.request as _u
     slot = f"esteira-{repo.split('/')[-1]}-{issue['number']}"
     body = json.dumps({
@@ -248,101 +202,156 @@ def _dispatch(ctx, repo, issue, cfg):
         "memory_mode": "temporary",
     }).encode()
     req = _u.Request(
-        f"http://localhost:{ctx._port}/api/chat",
+        f"http://localhost:{ctx._port}/api/chat",  # type: ignore[attr-defined]
         data=body,
         headers={
             "Content-Type": "application/json",
-            "X-Internal-Secret": ctx._secret,
-            "X-Session-Key": f"cron:{ctx.job.id}",
+            "X-Internal-Secret": ctx._secret,  # type: ignore[attr-defined]
+            "X-Session-Key": f"cron:{ctx.job.id}",  # type: ignore[attr-defined]
         },
         method="POST",
     )
     try:
-        from kiro_crew.loopback_http import loopback_urlopen
+        from kiro_crew.loopback_http import loopback_urlopen  # type: ignore[import]
         with loopback_urlopen(req, timeout=3) as resp:
-            resp.read(1)  # confirma enfileiramento; timeout do SSE é esperado
+            resp.read(1)
     except Exception:
         pass
 
 
-def run(ctx):
+# ── Conversão ScanResult → formato legado do dispatch ────────────────────
+
+def _scan_result_to_issue(result: object) -> dict:
+    """Converte um ScanResult para o formato mínimo que o prompt de dispatch precisa."""
+    from flow.scan.scanner import ScanResult
+    r: ScanResult = result  # type: ignore[assignment]
+    item = r.item
+    # Extrai o número da issue key ("VGAT-123" → 123, "owner/repo#42" → 42)
+    import re as _re
+    m = _re.search(r"[#\-/](\d+)$", item.key)
+    number = int(m.group(1)) if m else 0
+    return {
+        "number": number,
+        "title": item.title,
+        "url": item.key,  # key é a URL canônica no adapter GitHub
+    }
+
+
+# ── Ponto de entrada do cron ──────────────────────────────────────────────
+
+def run(ctx: object) -> None:
     cfg = _load_config()
-    repos = cfg.get("repos") or []
+    repos: list[str] = cfg.get("repos") or []
     auto = bool(cfg.get("auto_dispatch", False))
     max_conc = int(cfg.get("max_concurrent", 2))
     one_per_repo = bool(cfg.get("one_per_repo", True))
     chat_id = cfg.get("notify_chat_id") or ""
+    issue_provider_name: str = cfg.get("issue_provider", "github")
 
-    disparadas, adiadas, achados = [], [], []
-    houve_erro = False
+    if not repos:
+        logger.warning("deployment: nenhum repo/projeto configurado")
+        return
+
+    # ── Inicializa o provider e o cache via arquitetura hexagonal ─────────
+    provider = provider_for(issue_provider_name)
+    squad_config = SquadScanConfig(
+        squad_id=cfg.get("squad_id", "default"),
+        issue_provider=issue_provider_name,
+        projects=tuple(repos),
+        repos=frozenset(repos),  # até squad config ser implementada (#3)
+    )
+
+    conn: sqlite3.Connection = open_cache(squad_config.squad_id)
+
+    # ── Executa o scan zero-token ─────────────────────────────────────────
+    try:
+        scan_results = scan_candidates(squad_config, provider, conn)
+    except Exception as exc:
+        logger.error("deployment: erro no scan: %s", exc)
+        from kiro_crew.cron import Skip  # type: ignore[import]
+        raise Skip() from exc
+    finally:
+        conn.close()
+
+    # ── Separa candidatos de dispatch dos informativos ────────────────────
+    dispatch_candidates = [r for r in scan_results if r.dispatch_candidate]
+    spec_invalid = [r for r in scan_results if r.spec_valid is False]
+
+    if not dispatch_candidates and not spec_invalid:
+        return  # nada a fazer neste ciclo
+
+    # ── Notifica specs inválidas (zero token: flagra sem despachar) ───────
+    if spec_invalid:
+        vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
+        linhas = "\n".join(
+            f"  - {r.item.key}: {r.item.title} — {r.reason}"
+            for r in spec_invalid
+        )
+        ctx.notify(  # type: ignore[attr-defined]
+            f"KiroCrew Flow: {len(spec_invalid)} spec(s) sem repo declarado — "
+            f"corrija o título antes de priorizar.{vm}\n{linhas}"
+        )
+
+    if not dispatch_candidates:
+        return
+
+    # ── Dispatch (Fase 2) ou aviso (Fase 1) ──────────────────────────────
     vagas = (max_conc - _active_sessions()) if auto else 0
+    disparadas: list[tuple[str, dict]] = []
+    adiadas: list[tuple[str, dict]] = []
 
-    for repo in repos:
-        issues = _ready_issues(repo)
-        if issues is None:
-            houve_erro = True
-            continue
-        seen = _load_seen(repo)
-        current = {i["number"] for i in issues}
-        novas = sorted((i for i in issues if i["number"] not in seen),
-                       key=lambda i: i["number"])
-        base_seen = set(seen) & current
+    for result in dispatch_candidates:
+        # Mapeia o projeto de volta ao repo para o dispatch (GitHub-first)
+        # TODO: quando #3 implementar squad config, usar o mapeamento project→repo
+        repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+        if not repo:
+            repo = repos[0] if repos else ""
+
+        issue = _scan_result_to_issue(result)
 
         if not auto:
-            _save_seen(repo, current)
-            if novas:
-                achados.append((repo, novas))
+            adiadas.append((repo, issue))
             continue
 
-        if not novas:
-            _save_seen(repo, base_seen)
+        if vagas <= 0:
+            adiadas.append((repo, issue))
             continue
 
         if one_per_repo and _repo_has_active(repo):
-            adiadas.extend((repo, i) for i in novas)
-            _save_seen(repo, base_seen)
+            adiadas.append((repo, issue))
             continue
 
-        repo_done = False
-        for issue in novas:
-            if repo_done or vagas <= 0:
-                adiadas.append((repo, issue))
-                continue
-            try:
-                _dispatch(ctx, repo, issue, cfg)
-                disparadas.append((repo, issue))
-                base_seen.add(issue["number"])
-                vagas -= 1
-                if one_per_repo:
-                    repo_done = True
-            except Exception as e:
-                achados.append((repo, [dict(issue, _err=str(e))]))
-        _save_seen(repo, base_seen)
+        try:
+            _dispatch(ctx, repo, issue, cfg)
+            disparadas.append((repo, issue))
+            vagas -= 1
+        except Exception as exc:
+            logger.error("deployment: erro ao despachar %s: %s", issue.get("number"), exc)
+            adiadas.append((repo, issue))
 
-    if not achados and not disparadas and not adiadas:
-        if houve_erro:
-            from kiro_crew.cron import Skip
-            raise Skip()
-        return
-
+    # ── Notificação de resultado ──────────────────────────────────────────
     vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
+
     if auto and disparadas:
         linhas = "\n".join(f"  - {r}#{i['number']}: {i['title']}" for r, i in disparadas)
         extra = ""
         if adiadas:
             fila = "\n".join(f"  - {r}#{i['number']}: {i['title']}" for r, i in adiadas)
-            extra = f"\n\nNA FILA (limite/1-por-repo, disparam depois):\n{fila}"
-        ctx.notify(
-            f"KiroCrew Flow: disparei sessão(ões) one-shot pra issue(s) `ready`. Avise o dono{vm} "
-            f"que o disparo aconteceu.\n{linhas}{extra}"
+            extra = f"\n\nNA FILA:\n{fila}"
+        ctx.notify(  # type: ignore[attr-defined]
+            f"KiroCrew Flow: disparei sessão(ões) one-shot pra issue(s) `ready`.{vm}\n{linhas}{extra}"
         )
     elif auto and adiadas:
         fila = "\n".join(f"  - {r}#{i['number']}: {i['title']}" for r, i in adiadas)
-        ctx.notify(f"KiroCrew Flow: {len(adiadas)} issue(s) `ready` na fila (limite cheio).{vm}\n{fila}")
-    elif achados:
-        blocos = [f"{r}:\n" + "\n".join(f"  - #{i['number']}: {i['title']} ({i['url']})"
-                  for i in ns) for r, ns in achados]
-        ctx.notify(
-            f"KiroCrew Flow (Fase 1): há issue(s) `ready` esperando. Avise o dono{vm} com o TL;DR.\n"
-            + "\n".join(blocos)
+        ctx.notify(  # type: ignore[attr-defined]
+            f"KiroCrew Flow: {len(adiadas)} issue(s) `ready` na fila (limite cheio).{vm}\n{fila}"
+        )
+    elif not auto and dispatch_candidates:
+        blocos = "\n".join(
+            f"  - {r.item.key}: {r.item.title} ({r.reason})"
+            for r in dispatch_candidates
+        )
+        ctx.notify(  # type: ignore[attr-defined]
+            f"KiroCrew Flow (Fase 1): {len(dispatch_candidates)} issue(s) `ready` esperando.{vm}\n"
+            f"{blocos}"
         )
