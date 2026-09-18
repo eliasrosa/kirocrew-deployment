@@ -56,6 +56,14 @@ class ExceptionEntry:
     when: str           # ISO 8601
 
 
+@dataclass(frozen=True, slots=True)
+class ApprovalEntry:
+    """Uma linha da seção de aprovações de gate."""
+    gate: str      # ex: "gate-tl", "gate-qa"
+    actor: str     # ex: "@elias"
+    when: str      # ISO 8601
+
+
 @dataclass(slots=True)
 class StateComment:
     """Representação completa do comentário de estado.
@@ -70,6 +78,7 @@ class StateComment:
     repo: str               # ex: "api-gateway2"
     history: list[TransitionEntry] = field(default_factory=list)
     exceptions: list[ExceptionEntry] = field(default_factory=list)
+    approvals: list[ApprovalEntry] = field(default_factory=list)
 
     def add_transition(
         self, from_state: str, to_state: str, actor: str, when: str | None = None
@@ -97,6 +106,16 @@ class StateComment:
             if exc.label == label:
                 return exc.justification
         return None
+
+    def add_approval(self, gate: str, actor: str, when: str | None = None) -> None:
+        """Registra aprovação de um gate (ex: 'gate-tl')."""
+        from datetime import datetime
+        ts = when or datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M")
+        self.approvals.append(ApprovalEntry(gate=gate, actor=actor, when=ts))
+
+    def has_approval(self, gate: str) -> bool:
+        """Retorna True se o gate especificado foi aprovado."""
+        return any(a.gate == gate for a in self.approvals)
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +155,16 @@ def render(sc: StateComment) -> str:
             lines.append(
                 f"| `{exc.label}` | {exc.justification} | {exc.actor} | {exc.when} |"
             )
+        lines.append("")
+
+    if sc.approvals:
+        lines += [
+            "### Aprovações",
+            "| Gate | Aprovado por | Quando |",
+            "|------|-------------|--------|",
+        ]
+        for apv in sc.approvals:
+            lines.append(f"| `{apv.gate}` | {apv.actor} | {apv.when} |")
         lines.append("")
 
     lines.append(MARKER_CLOSE)
@@ -211,6 +240,20 @@ def _parse_block(block: str) -> StateComment:
             if e_entry:
                 sc.exceptions.append(e_entry)
 
+    # Parseia aprovações
+    in_approvals = False
+    for line in lines:
+        if "### Aprovações" in line:
+            in_approvals = True
+            continue
+        if in_approvals:
+            if line.startswith("###"):
+                in_approvals = False
+                continue
+            a_entry = _parse_approval_row(line)
+            if a_entry:
+                sc.approvals.append(a_entry)
+
     return sc
 
 
@@ -256,6 +299,21 @@ def _parse_exception_row(line: str) -> ExceptionEntry | None:
     label = parts[0].strip("`")
     justification, actor, when = parts[1], parts[2], parts[3]
     return ExceptionEntry(label=label, justification=justification, actor=actor, when=when)
+
+
+def _parse_approval_row(line: str) -> ApprovalEntry | None:
+    """Parseia uma linha da tabela de aprovações.
+
+    Formato: | `gate` | quem | quando |
+    """
+    if not line.startswith("|") or "---" in line or "Gate" in line:
+        return None
+    parts = [p.strip() for p in line.split("|") if p.strip()]
+    if len(parts) < 3:
+        return None
+    gate = parts[0].strip("`")
+    actor, when = parts[1], parts[2]
+    return ApprovalEntry(gate=gate, actor=actor, when=when)
 
 
 # ---------------------------------------------------------------------------

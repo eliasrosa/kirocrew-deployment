@@ -352,6 +352,7 @@ def run(ctx: object) -> None:
         needs_comment = (
             Modifier.HML_BYPASS in result.modifiers
             or (hasattr(result.current_state, "__eq__") and result.current_state is State.DEV)
+            or (result.current_state is State.TODO and "crewflow:debt" in result.item.labels)
         )
         state_comment: str | None = None
         if needs_comment:

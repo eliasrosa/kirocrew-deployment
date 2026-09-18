@@ -165,14 +165,22 @@ def decide(
 
     # ── GATE de entrada do débito técnico ──────────────────────────────
     if template == "debt" and current_state is State.TODO:
-        # Sem TL approval injetado → notifica TL para aprovar
-        # Em Fase 2: o executor vai ler o comentário de estado para saber
-        # se a aprovação já foi registrada.
-        return ExecutorDecision(
-            action=ActionKind.NOTIFY_HUMAN,
-            reason="GATE DT: aguardando aprovação do TL (autoridade técnica, não PM)",
-            notify_role=HumanRole.TL,
-        )
+        # Verifica se o TL já aprovou via comentário de estado
+        from flow.audit.state_comment import parse as _parse_comment
+        sc = _parse_comment(state_comment) if state_comment else None
+        tl_approved = sc is not None and sc.has_approval("gate-tl")
+
+        if not tl_approved:
+            return ExecutorDecision(
+                action=ActionKind.NOTIFY_HUMAN,
+                reason=(
+                    "GATE DT: aguardando aprovação do TL (autoridade técnica, não PM). "
+                    "Para aprovar: adicione um comentário na issue com o marcador "
+                    "<!-- KIRO-FLOW-STATE --> contendo uma linha "
+                    "| `gate-tl` | @seu-usuario | data | na seção '### Aprovações'."
+                ),
+                notify_role=HumanRole.TL,
+            )
 
     # ── Lock anti-loop: crewflow:reviewed ─────────────────────────────
     if current_state is State.REVIEW and Modifier.REVIEWED in modifiers:
