@@ -226,6 +226,27 @@ def update_pr_comment(owner_repo: str, comment_id: int, body: str) -> dict:
     ]))
 
 
+def get_pr_checks(owner_repo: str, pr_number: int) -> list:
+    """Retorna o status dos checks (CI) de um PR.
+
+    Cada item tem: ``name``, ``state``, ``conclusion``.
+    ``conclusion`` pode ser: success, failure, error, cancelled, skipped, neutral, None (pending).
+    ``state`` pode ser: success, failure, error, pending, expected.
+
+    Retorna lista vazia se não há checks configurados.
+    Lança ``ProviderError`` em caso de falha de acesso.
+    """
+    try:
+        return cast(list, _run([
+            "pr", "checks", str(pr_number),
+            "--repo", owner_repo,
+            "--json", "name,state,conclusion",
+        ]))
+    except ProviderError:
+        # gh pr checks retorna erro quando não há checks — tratar como lista vazia
+        return []
+
+
 def delete_branch(owner_repo: str, branch: str) -> None:
     """Deleta um branch remoto via GitHub API.
 

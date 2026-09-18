@@ -189,6 +189,16 @@ def delete_branch(project: str, branch: str) -> None:
     _t.delete_branch(project, branch)
 
 
+def get_pr_checks(project: str, pr_number: int) -> list:
+    """Retorna os checks (CI) de um PR.
+
+    Cada item tem: ``name``, ``state``, ``conclusion``.
+    Retorna lista vazia se não há checks configurados ou erro de acesso.
+    """
+    from flow.adapters import github_transport as _t
+    return _t.get_pr_checks(project, pr_number)
+
+
 def add_issue_comment(project: str, issue_number: int, body: str) -> dict:
     """Adiciona um comentário a uma issue."""
     from flow.adapters import github_transport as _t

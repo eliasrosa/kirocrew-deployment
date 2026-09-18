@@ -393,3 +393,43 @@ class TestMergePullRequest:
             import pytest
             with pytest.raises(ProviderError, match="checks failing"):
                 github_client.merge_pull_request("owner/repo", 10)
+
+
+class TestGetPrChecks:
+    """Testa get_pr_checks via github_transport — zero I/O real."""
+
+    def test_retorna_lista_de_checks(self) -> None:
+        checks = [
+            {"name": "CI / tests", "state": "success", "conclusion": "success"},
+            {"name": "CI / lint", "state": "success", "conclusion": "success"},
+        ]
+        with mock.patch.object(github_transport, "_run", return_value=checks):
+            result = github_client.get_pr_checks("owner/repo", 5)
+        assert len(result) == 2
+        assert result[0]["name"] == "CI / tests"
+
+    def test_retorna_lista_vazia_quando_sem_checks(self) -> None:
+        """Sem checks configurados → lista vazia (não lança erro)."""
+        from flow.ports.issue_provider import ProviderError
+        with mock.patch.object(
+            github_transport, "_run",
+            side_effect=ProviderError("no checks"),
+        ):
+            result = github_client.get_pr_checks("owner/repo", 5)
+        assert result == []
+
+    def test_checks_com_failure_retornados(self) -> None:
+        checks = [
+            {"name": "CI / tests", "state": "failure", "conclusion": "failure"},
+        ]
+        with mock.patch.object(github_transport, "_run", return_value=checks):
+            result = github_client.get_pr_checks("owner/repo", 5)
+        assert result[0]["conclusion"] == "failure"
+
+    def test_checks_pendentes_retornados(self) -> None:
+        checks = [
+            {"name": "CI / tests", "state": "pending", "conclusion": None},
+        ]
+        with mock.patch.object(github_transport, "_run", return_value=checks):
+            result = github_client.get_pr_checks("owner/repo", 5)
+        assert result[0]["state"] == "pending"

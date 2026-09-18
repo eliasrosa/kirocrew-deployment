@@ -183,6 +183,17 @@ uma variável que o motor não fornece, o dispatch **falha explicitamente** (fai
 em vez de mandar o prompt quebrado. Em caso de arquivo ausente, o motor usa o fallback
 embutido em `deployment.py`.
 
+### Comportamento do reviewer (`reviewer.md`)
+
+O agente reviewer valida o PR como **gate único** antes do approve:
+
+1. **Lê o contexto completo** — issue, comentários da issue, diff do PR, comentários do PR.
+2. **Verifica a pipeline de CI** — `gh pr checks` — o PR só pode ser aprovado com CI verde.
+3. **Analisa o código** — corretude, testes, estilo e convenções do steering do repo.
+4. **Decide com as três condições**: CI verde + zero comentários não resolvidos no PR + sem blockers técnicos.
+5. **Posta o resultado completo nos DOIS lugares** — PR e issue — com: o que foi feito, o resultado, o link e todas as informações.
+6. **Aplica `crewflow:reviewed`** somente quando as três condições são satisfeitas (habilitando o merge automático).
+
 ## Desenvolvimento
 
 ```bash

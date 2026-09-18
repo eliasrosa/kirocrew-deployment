@@ -641,12 +641,18 @@ class TestReviewerPrompt:
         assert "SESSION TITLE: review: kirocrew-flow PR #5 (issue #70)" in prompt
 
     def test_instrui_postar_no_pr_via_gh_pr_comment(self) -> None:
-        """O prompt manda postar o resultado NO PR via gh pr comment <N>."""
+        """O prompt manda postar o resultado NO PR (passo 7) e NA ISSUE (passo 8).
+
+        Com a issue #88 o resultado completo vai nos dois lugares.
+        """
         from deployment.deployment import _reviewer_prompt
 
         prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
 
-        assert "gh pr comment 99 --repo owner/myrepo" in prompt
+        # Passo 7: postar no PR (instrução de postar o review completo)
+        assert "POSTE O RESULTADO COMPLETO DO REVIEW NO PR" in prompt
+        # Passo 8: postar na issue também via gh issue comment
+        assert "gh issue comment 42 --repo owner/myrepo" in prompt
 
     def test_contem_formato_kirocrew_review(self) -> None:
         """O prompt referencia o formato KiroCrew Review do comentário do PR."""
@@ -660,13 +666,21 @@ class TestReviewerPrompt:
         assert "⚠️ Pedidos de mudança" in prompt
         assert "*Reviewer automático — issue #42*" in prompt
 
-    def test_contem_referencia_curta_na_issue(self) -> None:
-        """O prompt instrui deixar referência curta na issue apontando pro PR."""
+    def test_resultado_completo_na_issue_em_vez_de_referencia_curta(self) -> None:
+        """Com a issue #88: resultado completo na issue, não só referência curta.
+
+        O reviewer posta o mesmo comentário nos dois lugares (PR e issue),
+        em vez de postar só "Review postado em PR #X — status".
+        """
         from deployment.deployment import _reviewer_prompt
 
         prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
 
-        assert "Review postado em PR #99" in prompt
+        # Resultado completo na issue (passo 8)
+        assert "POSTE O RESULTADO COMPLETO DO REVIEW NA ISSUE" in prompt
+        assert "gh issue comment" in prompt
+        # A referência curta já não é o comportamento esperado
+        assert "Review postado em PR #99" not in prompt
 
     def test_preserva_state_comment_na_issue(self) -> None:
         """O prompt continua instruindo o upsert do ReviewerResult NA ISSUE."""
@@ -718,16 +732,22 @@ class TestReviewerPrompt:
         for line in exemplo_aprovado.splitlines():
             assert (f"     {line}" if line else line) in prompt
 
-    def test_referencia_da_issue_derivada_do_helper(self) -> None:
-        """Fonte única de verdade: a referência curta na issue vem de
-        render_issue_pr_reference, evitando drift entre helper e prompt.
+    def test_resultado_completo_postado_nos_dois_lugares(self) -> None:
+        """O prompt instrui a postar resultado completo TANTO no PR quanto na issue.
+
+        Com a issue #88, o reviewer posta o resultado completo em dois lugares —
+        PR e issue — em vez de só uma referência curta.
         """
         from deployment.deployment import _reviewer_prompt
-        from flow.audit.state_comment import render_issue_pr_reference
 
         prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
 
-        assert render_issue_pr_reference(99, approved=True) in prompt
+        # Passo 7: postar no PR
+        assert "POSTE O RESULTADO COMPLETO DO REVIEW NO PR" in prompt
+        # Passo 8: postar na issue também (completo)
+        assert "POSTE O RESULTADO COMPLETO DO REVIEW NA ISSUE" in prompt
+        assert "gh issue comment" in prompt
+        assert "mesmo corpo completo" in prompt.lower() or "mesmo corpo" in prompt
 
 
 class TestDispatchReviewerFunction:

@@ -242,7 +242,6 @@ class TestRealTemplates:
                 "     ## 🤖 KiroCrew Review\n"
                 "     **Resultado:** ⚠️ Pedidos de mudança"
             ),
-            ref_issue="Review postado em PR #5 — aprovado",
         )
         assert "owner/myrepo" in result
         assert "#5" in result
@@ -259,7 +258,6 @@ class TestRealTemplates:
             issue_number="20",
             example_approved="",
             example_changes="",
-            ref_issue="",
         )
         assert "review: myrepo PR #10 (issue #20)" in result
 
@@ -273,7 +271,65 @@ class TestRealTemplates:
             issue_number="42",
             example_approved="",
             example_changes="",
-            ref_issue="",
         )
         assert "gh issue view 42 --repo owner/myrepo --comments" in result
         assert "gh pr view 5 --repo owner/myrepo --comments" in result
+
+    def test_reviewer_template_verifica_ci(self) -> None:
+        """Passo 4: reviewer deve verificar o status da pipeline de CI."""
+        result = render_prompt(
+            "reviewer",
+            repo="owner/myrepo",
+            repo_short="myrepo",
+            pr_number="5",
+            issue_number="42",
+            example_approved="",
+            example_changes="",
+        )
+        assert "gh pr checks 5 --repo owner/myrepo" in result
+        assert "CI" in result
+
+    def test_reviewer_template_ci_vermelho_bloqueia(self) -> None:
+        """CI vermelho deve bloquear aprovação mesmo que o código esteja correto."""
+        result = render_prompt(
+            "reviewer",
+            repo="owner/myrepo",
+            repo_short="myrepo",
+            pr_number="5",
+            issue_number="42",
+            example_approved="",
+            example_changes="",
+        )
+        assert "CI vermelho" in result or "failure" in result or "bloqueio" in result
+
+    def test_reviewer_template_posta_nos_dois_lugares(self) -> None:
+        """Resultado completo deve ser postado tanto no PR quanto na issue."""
+        result = render_prompt(
+            "reviewer",
+            repo="owner/myrepo",
+            repo_short="myrepo",
+            pr_number="5",
+            issue_number="42",
+            example_approved="",
+            example_changes="",
+        )
+        # Posta no PR
+        assert "POSTE O RESULTADO COMPLETO DO REVIEW NO PR" in result
+        # Posta na issue também (completo, não só referência curta)
+        assert "POSTE O RESULTADO COMPLETO DO REVIEW NA ISSUE" in result
+        assert "gh issue comment" in result
+
+    def test_reviewer_template_aprovado_somente_com_ci_verde_e_sem_comentarios(self) -> None:
+        """A decisão de aprovação deve exigir CI verde + zero comentários."""
+        result = render_prompt(
+            "reviewer",
+            repo="owner/myrepo",
+            repo_short="myrepo",
+            pr_number="5",
+            issue_number="42",
+            example_approved="",
+            example_changes="",
+        )
+        # A decisão exige as três condições
+        assert "CI verde" in result
+        assert "crewflow:reviewed" in result

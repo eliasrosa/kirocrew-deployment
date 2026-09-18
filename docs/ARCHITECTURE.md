@@ -57,6 +57,13 @@ Cada adapter tem três camadas:
 | `*_normalization.py` | payload do provedor → contrato canônico |
 | `*_client.py` | orquestração; satisfaz `IssueProvider` |
 
+O `github_client` expõe funções extras não presentes na porta:
+- `get_pr_checks(project, pr_number)` — retorna os checks (CI) de um PR
+- `upsert_pr_review_comment(...)` — cria ou atualiza comentário de review no PR
+- `merge_pull_request(...)` — merge squash via API
+
+Essas funções são GitHub-only e não fazem parte da porta `IssueProvider`.
+
 ## Identidade: projeto + issue key
 
 A chave primária de um item de trabalho é **projeto + issue key** (`VGAT-123`).

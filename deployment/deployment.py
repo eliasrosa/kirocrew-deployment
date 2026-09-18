@@ -64,7 +64,6 @@ if _REPO_ROOT not in sys.path:
 from datetime import UTC  # noqa: E402
 
 from flow.audit.state_comment import (  # noqa: E402
-    render_issue_pr_reference,
     render_pr_review_comment,
 )
 from flow.ports.issue_provider import provider_for  # noqa: E402
@@ -1150,7 +1149,6 @@ def _reviewer_prompt(repo: str, pr_number: int, issue_number: int) -> str:
 
     exemplo_aprovado = _indent(render_pr_review_comment(_rr_ok, issue_number=issue_number))
     exemplo_mudancas = _indent(render_pr_review_comment(_rr_ko, issue_number=issue_number))
-    ref_issue = render_issue_pr_reference(pr_number, approved=True)
     short = repo.split("/")[-1]
 
     _reviewer_fallback = (
@@ -1169,31 +1167,50 @@ def _reviewer_prompt(repo: str, pr_number: int, issue_number: int) -> str:
         "2. Leia o diff do PR e os comentários do PR:\n"
         "   gh pr diff {{pr_number}} --repo {{repo}}\n"
         "   gh pr view {{pr_number}} --repo {{repo}} --comments\n"
+        "   Fixe o SHA atual do HEAD do PR (use este valor no ReviewerResult do passo 9):\n"
+        "   gh pr view {{pr_number}} --repo {{repo}} --json headRefOid\n"
         "3. Leia os steerings do repo (.kiro/steering/*.md) para entender convenções.\n"
-        "4. Analise: corretude, cobertura de testes, estilo, convenções do projeto.\n"
-        "5. POSTE O RESULTADO DO REVIEW COMO COMENTÁRIO NO PR:\n"
-        "   gh pr comment {{pr_number}} --repo {{repo}} --body \"<corpo do review>\"\n"
-        "   Use EXATAMENTE este formato no corpo (KiroCrew Review).\n"
+        "4. Verifique o status da pipeline de CI do PR:\n"
+        "   gh pr checks {{pr_number}} --repo {{repo}} --json name,state,conclusion\n"
+        "   O CI deve estar VERDE (todos os checks com conclusion=success ou state=success).\n"
+        "   Se algum check estiver em pending/in_progress: aguarde e verifique novamente antes de concluir.\n"
+        "   CI com failure/error = bloqueio para aprovação (mesmo que o código esteja correto).\n"
+        "5. Analise: corretude, cobertura de testes, estilo, convenções do projeto.\n"
+        "   Considere também comentários não resolvidos do PR (passo 2) — comentários abertos\n"
+        "   de revisores humanos devem ser tratados como pedidos de mudança pendentes.\n"
+        "6. DECIDA: o PR está aprovado SE E SOMENTE SE:\n"
+        "   - CI verde (todos os checks passaram, passo 4)\n"
+        "   - Nenhum comentário de mudança no PR (revisores humanos ou automated) não resolvido (passo 2)\n"
+        "   - Análise técnica sem blockers (passo 5)\n"
+        "   Se qualquer uma das três condições falhar → pedidos de mudança (não aprova).\n"
+        "7. POSTE O RESULTADO COMPLETO DO REVIEW NO PR:\n"
+        "   Use exatamente este formato no comentário do PR:\n"
         "   Se APROVADO sem comentários (omita a seção `### Pedidos de mudança`):\n"
         "{{example_approved}}\n"
         "   Se houver pedidos de mudança:\n"
         "{{example_changes}}\n"
-        "6. Registre o resultado no state_comment DA ISSUE com ReviewerResult:\n"
-        "   - Se APROVADO sem comentários: campo `approved: true`, `comments: []`\n"
+        "8. POSTE O RESULTADO COMPLETO DO REVIEW NA ISSUE #{{issue_number}} também:\n"
+        "   - Cole o mesmo comentário completo (mesmo corpo do passo 7) na issue:\n"
+        "     gh issue comment {{issue_number}} --repo {{repo}} --body \"<mesmo corpo completo>\"\n"
+        "   O resultado COMPLETO deve aparecer nos DOIS lugares — PR e issue.\n"
+        "   NÃO poste só uma referência curta: o resultado completo vai nos dois.\n"
+        "9. Registre o resultado no state_comment DA ISSUE com ReviewerResult:\n"
+        "   - Se APROVADO (CI verde + zero comentários + sem blockers): `approved: true`, `comments: []`\n"
         "   - Se tem pedidos de mudança: `approved: false`, `comments: [\"<mudança 1>\", ...]`\n"
+        "   - Inclua o motivo de CI vermelho como primeiro item em `comments` se aplicável\n"
         "   Use `upsert_state_comment` para atualizar o bloco <!-- KIRO-FLOW-STATE --> NA ISSUE.\n"
-        "   O ReviewerResult deve incluir o SHA atual do HEAD do PR.\n"
+        "   O ReviewerResult deve incluir o SHA atual do HEAD do PR — use o `headRefOid`\n"
+        "   obtido no passo 2, NUNCA um SHA do contexto do dispatch, que pode estar desatualizado.\n"
         "   IMPORTANTE: o ReviewerResult PERMANECE na issue — é o que o scan lê pra decidir MERGE_PR.\n"
-        "7. Deixe uma referência CURTA na issue #{{issue_number}} apontando pro PR e o status:\n"
-        "   ex.: `{{ref_issue}}` (troque para `pedidos de mudança` se houver comentários).\n"
-        "   NÃO duplique o detalhe dos pedidos de mudança na issue — só o link + status.\n"
-        "8. Se zero comentários: adicione a label `crewflow:reviewed` à issue #{{issue_number}}.\n"
-        "9. Se tem comentários: NÃO adicione `crewflow:reviewed` — o TL decide.\n"
-        "10. ENCERRE.\n\n"
+        "10. Se aprovado (zero comentários + CI verde): adicione a label `crewflow:reviewed` à issue #{{issue_number}}.\n"
+        "11. Se tem comentários ou CI vermelho: NÃO adicione `crewflow:reviewed` — o TL decide.\n"
+        "12. ENCERRE.\n\n"
         "REGRAS CRÍTICAS:\n"
         "- UMA passada. Terminou, acabou. NÃO entre em loop.\n"
         "- NUNCA mergeie. NUNCA faça deploy.\n"
         "- Seja objetivo — aponte problemas concretos, não estilo pessoal.\n"
+        "- CI vermelho sempre bloqueia — mesmo que o código pareça correto.\n"
+        "- Resultado completo vai em DOIS lugares: PR (passo 7) e issue (passo 8).\n"
         "------------------------------------------"
     )
 
@@ -1207,7 +1224,6 @@ def _reviewer_prompt(repo: str, pr_number: int, issue_number: int) -> str:
             issue_number=str(issue_number),
             example_approved=exemplo_aprovado,
             example_changes=exemplo_mudancas,
-            ref_issue=ref_issue,
         )
     except PromptRenderError:
         logger.exception(
