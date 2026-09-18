@@ -156,6 +156,23 @@ with mock.patch.object(transport, "fn"), pytest.raises(Error):
 4. **Obrigatório:** adicionar à tabela `CLIENTS` em `test_provider_parity.py`
 5. O `test_a_tabela_cobre_todos_os_providers_registrados` quebra até o passo 4
 
+## Instalação do cron
+
+**Use sempre `scripts/install-cron.sh`** em vez de copiar manualmente.
+
+```bash
+./scripts/install-cron.sh
+```
+
+O script:
+1. Copia `deployment/deployment.py` para `~/.kiro/crew/crons/`
+2. Aplica o patch de `sys.path` para que `flow/` seja importável do diretório do cron
+3. Copia `deployment/deployment.config.yaml` se não existir
+
+**Por que o patch é necessário:** o Kiro Crew executa o script de `~/.kiro/crew/crons/`, não do repo. O `_REPO_ROOT` calculado por `os.path.dirname(__file__)` aponta para `~/.kiro/crew/` onde `flow/` não existe. O script injeta `_FLOW_ROOT = /path/to/kirocrew-flow` antes.
+
+Se você copiar o script manualmente sem usar `install-cron.sh`, o patch será perdido e o cron vai falhar com `ModuleNotFoundError: No module named 'flow'`.
+
 ## Rodar o CI localmente
 
 ```bash

@@ -108,12 +108,12 @@ routing:
 ### 2. Configure o cron
 
 ```bash
-cp config.example.yaml deployment/deployment.config.yaml
-# edite: repos, squad_config, notify_chat_id, dev_root
-cp deployment/deployment.py ~/.kiro/crew/crons/deployment.py
-cp deployment/deployment.config.yaml ~/.kiro/crew/crons/deployment.config.yaml
-# Registre o cron (dashboard ou CLI do Kiro Crew):
-#   cron_add(name="crewflow-scan", script="~/.kiro/crew/crons/deployment.py:run", every=600)
+# SEMPRE usar o script de instalação — não copie manualmente
+./scripts/install-cron.sh
+
+# O script copia deployment.py, aplica o patch de sys.path e
+# copia deployment.config.yaml (se não existir).
+# Edite ~/.kiro/crew/crons/deployment.config.yaml com seus paths.
 ```
 
 ### 3. Aplique as labels
