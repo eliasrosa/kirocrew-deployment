@@ -519,3 +519,297 @@ class TestDispatchGuardPrDuplicado:
             run(ctx)
 
         mock_disp.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Issue #70 — dispatch automático da sessão one-shot do reviewer
+# ---------------------------------------------------------------------------
+
+class TestReviewerHasActive:
+    """_reviewer_has_active detecta sessão ativa do kiro-reviewer."""
+
+    def test_lock_recente_bloqueia(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deployment.deployment import _reviewer_has_active
+
+        lock = tmp_path / "dashboard_reviewer-myrepo-42.jsonl.lock"
+        lock.touch()
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+
+        assert _reviewer_has_active("owner/myrepo", 42) is True
+
+    def test_lock_obsoleto_nao_bloqueia(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import os
+        import time
+
+        from deployment.deployment import _reviewer_has_active
+
+        lock = tmp_path / "dashboard_reviewer-myrepo-42.jsonl.lock"
+        lock.touch()
+        old_ts = time.time() - 3 * 3600
+        os.utime(str(lock), (old_ts, old_ts))
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+
+        assert _reviewer_has_active("owner/myrepo", 42) is False
+
+    def test_sem_lock_retorna_false(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deployment.deployment import _reviewer_has_active
+
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+        assert _reviewer_has_active("owner/myrepo", 42) is False
+
+    def test_nao_confunde_com_lock_de_outro_repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deployment.deployment import _reviewer_has_active
+
+        # Lock do repo A não afeta repo B
+        lock = tmp_path / "dashboard_reviewer-repo-a-42.jsonl.lock"
+        lock.touch()
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+
+        assert _reviewer_has_active("owner/repo-b", 42) is False
+
+    def test_nao_confunde_com_lock_de_outro_issue(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deployment.deployment import _reviewer_has_active
+
+        lock = tmp_path / "dashboard_reviewer-myrepo-100.jsonl.lock"
+        lock.touch()
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+
+        assert _reviewer_has_active("owner/myrepo", 99) is False
+
+
+class TestReviewerPrompt:
+    """_reviewer_prompt gera o prompt correto para a sessão one-shot do reviewer."""
+
+    def test_contem_header_com_repo_pr_issue(self) -> None:
+        from deployment.deployment import _reviewer_prompt
+
+        prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
+
+        assert "REPO: owner/myrepo" in prompt
+        assert "PR: #99" in prompt
+        assert "ISSUE: #42" in prompt
+
+    def test_titulo_da_sessao(self) -> None:
+        from deployment.deployment import _reviewer_prompt
+
+        prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
+
+        assert "SESSION TITLE: review: myrepo PR #99 (issue #42)" in prompt
+
+    def test_contem_instrucao_de_gh_issue_view(self) -> None:
+        from deployment.deployment import _reviewer_prompt
+
+        prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
+
+        assert "gh issue view 42 --repo owner/myrepo" in prompt
+
+    def test_contem_instrucao_de_gh_pr_diff(self) -> None:
+        from deployment.deployment import _reviewer_prompt
+
+        prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
+
+        assert "gh pr diff 99 --repo owner/myrepo" in prompt
+
+    def test_contem_instrucao_de_crewflow_reviewed(self) -> None:
+        from deployment.deployment import _reviewer_prompt
+
+        prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
+
+        assert "crewflow:reviewed" in prompt
+
+    def test_contem_regra_nunca_merge(self) -> None:
+        from deployment.deployment import _reviewer_prompt
+
+        prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
+
+        assert "NUNCA mergeie" in prompt
+
+    def test_short_name_no_titulo(self) -> None:
+        """O título usa só o nome curto do repo, não o owner/repo completo."""
+        from deployment.deployment import _reviewer_prompt
+
+        prompt = _reviewer_prompt("eliasrosa/kirocrew-flow", pr_number=5, issue_number=70)
+
+        assert "SESSION TITLE: review: kirocrew-flow PR #5 (issue #70)" in prompt
+
+
+class TestDispatchReviewerFunction:
+    """_dispatch_reviewer faz POST /api/chat com o slot e prompt corretos."""
+
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "secret"
+        ctx.job.id = "test-job"
+        return ctx
+
+    def _minimal_cfg(self) -> dict:
+        return {
+            "agent": "kirocrew",
+            "notify_chat_id": "",
+        }
+
+    def test_busca_pr_pela_branch_correta(self) -> None:
+        """_dispatch_reviewer consulta a branch feat/issue-<N> para localizar o PR."""
+        from deployment.deployment import _dispatch_reviewer
+
+        ctx = self._make_ctx()
+        issue = {"number": 42, "title": "feat: algo"}
+
+        with (
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = mock.MagicMock(
+                returncode=0,
+                stdout="[]",  # sem PR — só testamos que consultou a branch certa
+                stderr="",
+            )
+            _dispatch_reviewer(ctx, "owner/repo", issue, self._minimal_cfg())
+
+        # Verifica que consultou gh pr list com --head feat/issue-42
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        assert "--head" in args
+        assert "feat/issue-42" in args
+        assert "--repo" in args
+        assert "owner/repo" in args
+
+    def test_fallback_notifica_quando_pr_nao_encontrado(self) -> None:
+        from deployment.deployment import _dispatch_reviewer
+
+        ctx = self._make_ctx()
+        issue = {"number": 42, "title": "feat: algo"}
+
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(
+                returncode=0,
+                stdout="[]",  # sem PR
+                stderr="",
+            )
+            _dispatch_reviewer(ctx, "owner/repo", issue, self._minimal_cfg())
+
+        # Deve notificar que PR não foi encontrado
+        ctx.notify.assert_called_once()
+        msg = ctx.notify.call_args[0][0]
+        assert "não localizado" in msg or "pendente" in msg or "PR" in msg
+
+    def test_fallback_notifica_quando_cli_falha(self) -> None:
+        from deployment.deployment import _dispatch_reviewer
+
+        ctx = self._make_ctx()
+        issue = {"number": 42, "title": "feat: algo"}
+
+        with mock.patch("subprocess.run", side_effect=OSError("gh not found")):
+            _dispatch_reviewer(ctx, "owner/repo", issue, self._minimal_cfg())
+
+        ctx.notify.assert_called_once()
+        msg = ctx.notify.call_args[0][0]
+        assert "não localizado" in msg or "pendente" in msg or "PR" in msg
+
+
+class TestRunDispatchReviewer:
+    """Integração: run() despacha sessão one-shot do reviewer quando crewflow:review."""
+
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "secret"
+        ctx.job.id = "test-job"
+        return ctx
+
+    def _make_review_scan_result(self) -> object:
+        """ScanResult em crewflow:review sem crewflow:reviewed (antes do dispatch)."""
+        from flow.domain.gates import WorkItem
+        from flow.domain.state import State
+        from flow.scan.scanner import ScanResult
+
+        return ScanResult(
+            item=WorkItem(
+                key="https://github.com/owner/repo/issues/42",
+                title="[owner/repo] Feature X",
+                labels=frozenset(["crewflow:review", "crewflow:feature"]),
+            ),
+            current_state=State.REVIEW,
+            modifiers=frozenset(),
+            dispatch_candidate=False,
+            spec_valid=None,
+            changed=True,
+            reason="review pendente",
+        )
+
+    def test_despacha_reviewer_quando_review_sem_reviewed(self) -> None:
+        """Quando issue está em crewflow:review, run() chama _dispatch_reviewer."""
+        ctx = self._make_ctx()
+        result = self._make_review_scan_result()
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value={
+                           "repos": ["owner/repo"],
+                           "auto_dispatch": True,
+                           "max_concurrent": 2,
+                           "one_per_repo": True,
+                           "notify_chat_id": "",
+                           "squad_id": "test",
+                           "issue_provider": "github",
+                           "dev_root": "/tmp/dev",
+                           "agent": "kirocrew",
+                       }),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+            mock.patch("deployment.deployment._reviewer_has_active", return_value=False),
+            mock.patch("deployment.deployment._dispatch_reviewer") as mock_disp_rev,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider = mock.MagicMock()
+            mock_provider.get_state_comment.return_value = None
+            mock_provider_for.return_value = mock_provider
+
+            run(ctx)
+
+        mock_disp_rev.assert_called_once()
+        call_args = mock_disp_rev.call_args
+        assert call_args[0][1] == "owner/repo"   # repo
+        assert call_args[0][2]["number"] == 42   # issue["number"]
+
+    def test_nao_despacha_reviewer_quando_ja_ativo(self) -> None:
+        """Quando sessão do reviewer já está ativa, run() ignora o dispatch."""
+        ctx = self._make_ctx()
+        result = self._make_review_scan_result()
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value={
+                           "repos": ["owner/repo"],
+                           "auto_dispatch": True,
+                           "max_concurrent": 2,
+                           "one_per_repo": True,
+                           "notify_chat_id": "",
+                           "squad_id": "test",
+                           "issue_provider": "github",
+                           "dev_root": "/tmp/dev",
+                           "agent": "kirocrew",
+                       }),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+            mock.patch("deployment.deployment._reviewer_has_active", return_value=True),
+            mock.patch("deployment.deployment._dispatch_reviewer") as mock_disp_rev,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider = mock.MagicMock()
+            mock_provider.get_state_comment.return_value = None
+            mock_provider_for.return_value = mock_provider
+
+            run(ctx)
+
+        mock_disp_rev.assert_not_called()

@@ -545,7 +545,21 @@ def run(ctx: object) -> None:
         _notify_human_actions(ctx, needs_human, chat_id)
 
     if dispatch_reviewers:
-        _notify_reviewers(ctx, dispatch_reviewers, chat_id)
+        for repo, issue in dispatch_reviewers:
+            issue_number = issue["number"]
+            if _reviewer_has_active(repo, issue_number):
+                logger.info(
+                    "deployment: reviewer já ativo para %s#%s — dispatch ignorado",
+                    repo, issue_number,
+                )
+                continue
+            try:
+                _dispatch_reviewer(ctx, repo, issue, cfg)
+            except Exception as exc:
+                logger.error(
+                    "deployment: erro ao despachar reviewer para %s#%s: %s",
+                    repo, issue_number, exc,
+                )
 
     if merge_prs:
         _execute_auto_merges(ctx, merge_prs, chat_id, provider)
@@ -649,8 +663,154 @@ def _notify_human_actions(ctx: object, items: list, chat_id: str) -> None:
         ctx.notify(f"KiroCrew Flow: aguarda ação do QA.{vm}\n{linhas}")  # type: ignore[attr-defined]
 
 
+def _reviewer_has_active(repo: str, issue_number: int) -> bool:
+    """Retorna True se já existe sessão one-shot do reviewer ativa para esta issue.
+
+    Análogo ao ``_repo_has_active``, mas escopado ao slot do reviewer:
+    ``reviewer-<short_repo>-<issue_number>``.
+    """
+    short = repo.split("/")[-1]
+    locks = glob.glob(
+        os.path.join(_sessdir(), f"dashboard_reviewer-{short}-{issue_number}.jsonl.lock")
+    )
+    return any(not _lock_is_stale(p) for p in locks)
+
+
+def _reviewer_prompt(repo: str, pr_number: int, issue_number: int) -> str:
+    """Monta o prompt one-shot para a sessão do kiro-reviewer.
+
+    A sessão deve:
+    1. Ler a issue para contexto
+    2. Ler o diff do PR
+    3. Ler os steerings do repo
+    4. Analisar e postar o resultado via ReviewerResult no state_comment
+    5. Adicionar crewflow:reviewed se zero comentários
+    6. ENCERRAR
+    """
+    short = repo.split("/")[-1]
+    return (
+        "------------ AGENT HEADER ----------------\n"
+        f"REPO: {repo}\n"
+        f"PR: #{pr_number}\n"
+        f"ISSUE: #{issue_number}\n"
+        f"SESSION TITLE: review: {short} PR #{pr_number} (issue #{issue_number})\n"
+        "------------ CONTEXT TASK ----------------\n"
+        "Você é um agente de code review ONE-SHOT. Tarefa ÚNICA, sem loop, sem watchdog.\n\n"
+        "FLUXO (execute UMA vez, do início ao fim, e PARE):\n"
+        "0. TÍTULO: como PRIMEIRA ação, defina o título da sessão = `SESSION TITLE`.\n"
+        f"1. Leia a issue para ter contexto:\n"
+        f"   gh issue view {issue_number} --repo {repo}\n"
+        f"2. Leia o diff do PR:\n"
+        f"   gh pr diff {pr_number} --repo {repo}\n"
+        f"3. Leia os steerings do repo (.kiro/steering/*.md) para entender convenções.\n"
+        "4. Analise: corretude, cobertura de testes, estilo, convenções do projeto.\n"
+        "5. Poste o resultado no state_comment da issue com ReviewerResult:\n"
+        "   - Se APROVADO sem comentários: campo `approved: true`, `comments: []`\n"
+        "   - Se tem pedidos de mudança: `approved: false`, `comments: [\"<mudança 1>\", ...]`\n"
+        "   Use `upsert_state_comment` para atualizar o bloco <!-- KIRO-FLOW-STATE -->.\n"
+        "   O ReviewerResult deve incluir o SHA atual do HEAD do PR.\n"
+        f"6. Se zero comentários: adicione a label `crewflow:reviewed` à issue #{issue_number}.\n"
+        "7. Se tem comentários: NÃO adicione `crewflow:reviewed` — o TL decide.\n"
+        "8. ENCERRE.\n\n"
+        "REGRAS CRÍTICAS:\n"
+        "- UMA passada. Terminou, acabou. NÃO entre em loop.\n"
+        "- NUNCA mergeie. NUNCA faça deploy.\n"
+        "- Seja objetivo — aponte problemas concretos, não estilo pessoal.\n"
+        "------------------------------------------"
+    )
+
+
+def _dispatch_reviewer(
+    ctx: object,
+    repo: str,
+    issue: dict,
+    cfg: dict,
+) -> None:
+    """Fire-and-forget POST /api/chat para a sessão one-shot do kiro-reviewer.
+
+    Localiza o PR aberto da issue e despacha o reviewer com o prompt correto.
+    Fallback para notificação se o PR não for encontrado.
+    """
+    import subprocess
+
+    issue_number = issue["number"]
+    chat_id = cfg.get("notify_chat_id") or ""
+    vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
+
+    # Localiza o PR aberto para a issue
+    branch = f"feat/issue-{issue_number}"
+    pr_number: int | None = None
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "list", "--repo", repo, "--head", branch,
+             "--state", "open", "--json", "number"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        if result.returncode == 0:
+            prs = json.loads(result.stdout or "[]")
+            if prs:
+                pr_number = int(prs[0]["number"])
+    except Exception as exc:
+        logger.warning(
+            "deployment: erro ao localizar PR para %s#%s no dispatch do reviewer: %s",
+            repo, issue_number, exc,
+        )
+
+    if pr_number is None:
+        # Fallback: não encontrou PR — apenas notifica
+        logger.warning(
+            "deployment: PR aberto não encontrado para %s#%s — notificando sem dispatch",
+            repo, issue_number,
+        )
+        ctx.notify(  # type: ignore[attr-defined]
+            f"KiroCrew Flow: reviewer pendente — PR de {repo}#{issue_number} não localizado.{vm}"
+        )
+        return
+
+    short = repo.split("/")[-1]
+    slot = f"reviewer-{short}-{issue_number}"
+
+    import urllib.request as _u
+    body = json.dumps({
+        "message": _reviewer_prompt(repo, pr_number, issue_number),
+        "agent": cfg.get("agent") or "kirocrew",
+        "slot": slot,
+        "memory_mode": "temporary",
+    }).encode()
+    req = _u.Request(
+        f"http://localhost:{ctx._port}/api/chat",  # type: ignore[attr-defined]
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Internal-Secret": ctx._secret,  # type: ignore[attr-defined]
+            "X-Session-Key": f"cron:{ctx.job.id}",  # type: ignore[attr-defined]
+        },
+        method="POST",
+    )
+    try:
+        from kiro_crew.loopback_http import loopback_urlopen  # type: ignore[import]
+        with loopback_urlopen(req, timeout=3) as resp:
+            resp.read(1)
+        logger.info(
+            "deployment: reviewer one-shot despachado para %s PR #%s (issue #%s)",
+            repo, pr_number, issue_number,
+        )
+        ctx.notify(  # type: ignore[attr-defined]
+            f"KiroCrew Flow: sessão one-shot do reviewer despachada — "
+            f"{repo} PR #{pr_number} (issue #{issue_number}).{vm}"
+        )
+    except Exception as exc:
+        logger.error(
+            "deployment: falha ao despachar reviewer para %s#%s: %s",
+            repo, issue_number, exc,
+        )
+        ctx.notify(  # type: ignore[attr-defined]
+            f"KiroCrew Flow: falha ao despachar reviewer para {repo}#{issue_number}.{vm}"
+        )
+
+
 def _notify_reviewers(ctx: object, items: list, chat_id: str) -> None:
-    """Notifica que o kiro-reviewer foi disparado."""
+    """Notifica que o kiro-reviewer foi disparado (legado — mantido como referência)."""
     vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
     linhas = "\n".join(f"  - {repo}#{issue['number']}: {issue['title']}" for repo, issue in items)
     ctx.notify(  # type: ignore[attr-defined]
