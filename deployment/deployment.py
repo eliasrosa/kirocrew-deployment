@@ -39,6 +39,8 @@ _REPO_ROOT = os.path.dirname(_HERE)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from datetime import UTC  # noqa: E402
+
 from flow.ports.issue_provider import provider_for  # noqa: E402
 from flow.scan.cache import open_cache  # noqa: E402
 from flow.scan.scanner import scan_candidates  # noqa: E402
@@ -81,8 +83,9 @@ def _mini_yaml(path: str) -> dict:
     aninhado). Para squads com routing complexo, PyYAML continua recomendado
     (`pip install -e '.[yaml]'`).
     """
-    from flow.config.squad import _mini_yaml as _shared_mini_yaml
     from pathlib import Path
+
+    from flow.config.squad import _mini_yaml as _shared_mini_yaml
     return dict(_shared_mini_yaml(Path(path)))
 
 
@@ -103,7 +106,12 @@ def _repo_has_active(repo: str) -> bool:
 
 # ── Prompt de dispatch ────────────────────────────────────────────────────
 
-def _dispatch_prompt(repo: str, issue: dict, cfg: dict) -> str:
+def _dispatch_prompt(
+    repo: str,
+    issue: dict,
+    cfg: dict,
+    prompt_extra: str = "",
+) -> str:
     short = repo.split("/")[-1]
     vault = cfg.get("vault_root") or ""
     dev_root = cfg.get("dev_root") or os.path.expanduser("~/dev")
@@ -153,15 +161,22 @@ def _dispatch_prompt(repo: str, issue: dict, cfg: dict) -> str:
         "- NUNCA mergeie. NUNCA faça deploy.\n"
         f"- Se bloquear, marque `{LABEL_BLOCKED}`, avise, e pare.\n"
         "------------------------------------------"
+        + (f"\n\n{prompt_extra.strip()}" if prompt_extra.strip() else "")
     )
 
 
-def _dispatch(ctx: object, repo: str, issue: dict, cfg: dict) -> None:
+def _dispatch(
+    ctx: object,
+    repo: str,
+    issue: dict,
+    cfg: dict,
+    prompt_extra: str = "",
+) -> None:
     """Fire-and-forget POST /api/chat (loopback interno)."""
     import urllib.request as _u
     slot = f"esteira-{repo.split('/')[-1]}-{issue['number']}"
     body = json.dumps({
-        "message": _dispatch_prompt(repo, issue, cfg),
+        "message": _dispatch_prompt(repo, issue, cfg, prompt_extra=prompt_extra),
         "agent": cfg.get("agent") or "kirocrew",
         "slot": slot,
         "memory_mode": "temporary",
@@ -300,7 +315,7 @@ def run(ctx: object) -> None:
     spec_invalid: list[ScanResult] = []
     dispatch_devs: list[tuple[str, dict, object]] = []   # (repo, issue, decision)
     dispatch_reviewers: list[tuple[str, dict]] = []      # (repo, issue)
-    needs_human: list[tuple[ScanResult, object]] = []    # (result, decision)
+    needs_human: list[tuple[ScanResult, object, str | None]] = []  # (result, decision, sc)
     blocked_bypass: list[ScanResult] = []                # result com bypass sem justif
     rebranded: list[tuple[ScanResult, object]] = []      # (result, decision)
 
@@ -349,7 +364,7 @@ def run(ctx: object) -> None:
         elif decision.action is ActionKind.REBRAND:
             rebranded.append((result, decision))
         elif decision.action is ActionKind.NOTIFY_HUMAN:
-            needs_human.append((result, decision))
+            needs_human.append((result, decision, state_comment))
         elif decision.action is ActionKind.DISPATCH_REVIEWER:
             repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
             issue = _scan_result_to_issue(result)
@@ -417,7 +432,8 @@ def run(ctx: object) -> None:
             adiadas.append((repo, issue))
             continue
         try:
-            _dispatch(ctx, repo, issue, cfg)
+            prompt_extra = squad.dispatch_prompt_extra if squad else ""
+            _dispatch(ctx, repo, issue, cfg, prompt_extra=prompt_extra)
             disparadas.append((repo, issue))
             vagas -= 1
         except Exception as exc:
@@ -459,23 +475,100 @@ def run(ctx: object) -> None:
 
 
 def _notify_human_actions(ctx: object, items: list, chat_id: str) -> None:
-    """Notifica o humano certo sobre ações pendentes."""
+    """Notifica o humano certo sobre ações pendentes.
+
+    Anti-spam para gate-tl: só notifica se o state_comment não tiver
+    status 'awaiting-tl-approval' — evita re-notificar a cada ciclo.
+    Quando notifica, atualiza o comentário com esse status via GitHub API.
+    """
+    from flow.audit.state_comment import parse as _parse_sc
+    from flow.audit.state_comment import render as _render_sc
     from flow.executor.executor import HumanRole
     vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
 
-    # Agrupa por papel
-    tl_items = [(r, d) for r, d in items if getattr(d, "notify_role", None) is HumanRole.TL]
-    dev_items = [(r, d) for r, d in items if getattr(d, "notify_role", None) is HumanRole.DEV]
-    qa_items = [(r, d) for r, d in items if getattr(d, "notify_role", None) is HumanRole.QA]
+    # Separa por papel; cada item é (ScanResult, ExecutorDecision, state_comment|None)
+    tl_items = [
+        (r, d, sc) for r, d, sc in items
+        if getattr(d, "notify_role", None) is HumanRole.TL
+    ]
+    dev_items = [
+        (r, d, sc) for r, d, sc in items
+        if getattr(d, "notify_role", None) is HumanRole.DEV
+    ]
+    qa_items = [
+        (r, d, sc) for r, d, sc in items
+        if getattr(d, "notify_role", None) is HumanRole.QA
+    ]
 
-    if tl_items:
-        linhas = "\n".join(f"  - {r.item.key}: {r.item.title} — {d.reason}" for r, d in tl_items)
-        ctx.notify(f"KiroCrew Flow: aguarda ação do TL.{vm}\n{linhas}")  # type: ignore[attr-defined]
+    # TL — notificação especial com instrução de aprovação + anti-spam
+    tl_to_notify = []
+    for r, d, sc in tl_items:
+        # Anti-spam: se já estava aguardando aprovação, não re-notifica
+        sc_obj = _parse_sc(sc) if sc else None
+        already_waiting = sc_obj is not None and sc_obj.status == "awaiting-tl-approval"
+        if already_waiting:
+            logger.info(
+                "deployment: NOTIFY_HUMAN TL já notificado anteriormente, pulando: %s",
+                r.item.key,
+            )
+            continue
+        tl_to_notify.append((r, d))
+
+        # Atualiza o status no comentário de estado para evitar re-notificação
+        if sc_obj is not None:
+            from datetime import datetime
+            sc_obj.status = "awaiting-tl-approval"
+            import contextlib
+            with contextlib.suppress(Exception):
+                from flow.adapters.github_client import upsert_state_comment
+                # Extrai repo e número da issue da key
+                key = r.item.key  # https://github.com/owner/repo/issues/N
+                parts = key.rstrip("/").split("/")
+                if len(parts) >= 5:
+                    repo_path = f"{parts[-4]}/{parts[-3]}"
+                    issue_num_str = parts[-1]
+                    updated_body = _render_sc(sc_obj)
+                    upsert_state_comment(repo_path, issue_num_str, updated_body)
+
+    if tl_to_notify:
+        from datetime import datetime
+        now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M")
+        linhas_detail = []
+        for r, d in tl_to_notify:
+            issue_url = r.item.key
+            issue_num = issue_url.rstrip("/").split("/")[-1]
+            approval_block = (
+                f"<!-- KIRO-FLOW-STATE -->\n"
+                f"### Aprovações\n"
+                f"| Gate | Aprovado por | Quando |\n"
+                f"|------|-------------|--------|\n"
+                f"| `gate-tl` | @seu-usuario | {now} |\n"
+                f"<!-- /KIRO-FLOW-STATE -->"
+            )
+            linhas_detail.append(
+                f"  📋 #{issue_num}: {r.item.title}\n"
+                f"     Issue: {issue_url}\n"
+                f"     Motivo: {d.reason}\n\n"
+                f"     Para aprovar, comente na issue:\n"
+                f"     {approval_block}"
+            )
+        msg = (
+            f"🧾 KiroCrew Flow — GATE DT aguarda aprovação do TL{vm}\n\n"
+            + "\n\n".join(linhas_detail)
+        )
+        ctx.notify(msg)  # type: ignore[attr-defined]
+
     if dev_items:
-        linhas = "\n".join(f"  - {r.item.key}: {r.item.title} — {d.reason}" for r, d in dev_items)
+        linhas = "\n".join(
+            f"  - {r.item.key}: {r.item.title} — {d.reason}"
+            for r, d, _sc in dev_items
+        )
         ctx.notify(f"KiroCrew Flow: aguarda ação do Dev.{vm}\n{linhas}")  # type: ignore[attr-defined]
     if qa_items:
-        linhas = "\n".join(f"  - {r.item.key}: {r.item.title} — {d.reason}" for r, d in qa_items)
+        linhas = "\n".join(
+            f"  - {r.item.key}: {r.item.title} — {d.reason}"
+            for r, d, _sc in qa_items
+        )
         ctx.notify(f"KiroCrew Flow: aguarda ação do QA.{vm}\n{linhas}")  # type: ignore[attr-defined]
 
 

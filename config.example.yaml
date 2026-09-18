@@ -38,6 +38,16 @@ max_concurrent: 2        # máx de sessões da esteira rodando ao mesmo tempo (g
 max_turns_per_task: 60   # teto duro de turnos por sessão disparada
 one_per_repo: true       # no máx 1 sessão ativa por repo
 
+# Customização do prompt de dispatch (opcional)
+# Texto adicional appendado ao final do prompt base enviado à sessão one-shot.
+# Útil para instruções específicas da squad (stack, convenções, steerings extras).
+# Exemplo:
+# dispatch_prompt_extra: |
+#   Convenções desta squad:
+#   - Use sempre `make test` em vez de `pytest` direto.
+#   - Commits em pt-BR com prefixo convencional.
+#   - Steering em /home/elias/dev/cogna/.kiro/steering/ tem regras adicionais.
+
 # Onde ficam os clones locais usados como base dos worktrees (sem reclonar).
 # A esteira cria worktrees isolados em <dev_root>/.esteira-worktrees/<repo>-<n>.
 dev_root: "/home/<USER>/dev"

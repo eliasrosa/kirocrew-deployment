@@ -60,6 +60,7 @@ class SquadConfig:
     workflow_params: WorkflowParams = field(default_factory=WorkflowParams)
     routing: list[RoutingRule] = field(default_factory=list)
     default_workflow: str = "feature-flow"
+    dispatch_prompt_extra: str = ""  # texto adicional appendado ao prompt de dispatch
 
     def resolve_workflow(self, labels: frozenset[str]) -> str:
         """Retorna o nome do workflow para um conjunto de labels.
@@ -165,6 +166,7 @@ def _parse_squad(raw: dict[str, Any], source: str = "<dict>") -> SquadConfig:
         workflow_params=params,
         routing=routing,
         default_workflow=default_workflow,
+        dispatch_prompt_extra=str(raw.get("dispatch_prompt_extra") or "").strip(),
     )
 
 
