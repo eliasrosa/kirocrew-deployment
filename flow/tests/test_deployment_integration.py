@@ -1324,3 +1324,203 @@ class TestDryRun:
             run(ctx)
 
         mock_dispatch.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Issue #84 — resumo do ciclo no log
+# ---------------------------------------------------------------------------
+
+class TestLogCycleSummary:
+    """_log_cycle_summary emite 1 linha de resumo e notifica quando chat_id configurado."""
+
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        return ctx
+
+    def test_log_contém_todos_os_contadores(self) -> None:
+        from deployment.deployment import _log_cycle_summary
+
+        ctx = self._make_ctx()
+        with mock.patch("deployment.deployment.logger") as mock_log:
+            _log_cycle_summary(
+                ctx=ctx,
+                chat_id="",
+                scan_total=7,
+                dispatch_dev=2,
+                dispatch_reviewer=1,
+                merge_pr=0,
+                notify_human=1,
+                block=0,
+                rebrand=0,
+                spec_invalid=1,
+            )
+        mock_log.info.assert_called_once()
+        msg = mock_log.info.call_args[0][0]
+        assert "scan:7" in msg
+        assert "dispatch_dev:2" in msg
+        assert "dispatch_reviewer:1" in msg
+        assert "merge_pr:0" in msg
+        assert "notify_human:1" in msg
+        assert "block:0" in msg
+        assert "rebrand:0" in msg
+        assert "skip:2" in msg  # 7 total - 5 ações = 2 skips
+
+    def test_skip_calculado_corretamente(self) -> None:
+        from deployment.deployment import _log_cycle_summary
+
+        ctx = self._make_ctx()
+        with mock.patch("deployment.deployment.logger") as mock_log:
+            _log_cycle_summary(
+                ctx=ctx,
+                chat_id="",
+                scan_total=5,
+                dispatch_dev=0,
+                dispatch_reviewer=0,
+                merge_pr=0,
+                notify_human=0,
+                block=0,
+                rebrand=0,
+                spec_invalid=0,
+            )
+        msg = mock_log.info.call_args[0][0]
+        assert "skip:5" in msg
+
+    def test_tudo_zerado_ciclo_vazio(self) -> None:
+        from deployment.deployment import _log_cycle_summary
+
+        ctx = self._make_ctx()
+        with mock.patch("deployment.deployment.logger") as mock_log:
+            _log_cycle_summary(
+                ctx=ctx,
+                chat_id="",
+                scan_total=0,
+                dispatch_dev=0,
+                dispatch_reviewer=0,
+                merge_pr=0,
+                notify_human=0,
+                block=0,
+                rebrand=0,
+                spec_invalid=0,
+            )
+        msg = mock_log.info.call_args[0][0]
+        assert "scan:0" in msg
+        assert "skip:0" in msg
+        ctx.notify.assert_not_called()
+
+    def test_notifica_quando_chat_id_configurado(self) -> None:
+        from deployment.deployment import _log_cycle_summary
+
+        ctx = self._make_ctx()
+        with mock.patch("deployment.deployment.logger"):
+            _log_cycle_summary(
+                ctx=ctx,
+                chat_id="8620515309",
+                scan_total=3,
+                dispatch_dev=1,
+                dispatch_reviewer=0,
+                merge_pr=0,
+                notify_human=0,
+                block=0,
+                rebrand=0,
+                spec_invalid=0,
+            )
+        ctx.notify.assert_called_once()
+        msg = ctx.notify.call_args[0][0]
+        assert "scan:3" in msg
+        assert "dispatch_dev:1" in msg
+
+    def test_nao_notifica_sem_chat_id(self) -> None:
+        from deployment.deployment import _log_cycle_summary
+
+        ctx = self._make_ctx()
+        with mock.patch("deployment.deployment.logger"):
+            _log_cycle_summary(
+                ctx=ctx,
+                chat_id="",
+                scan_total=3,
+                dispatch_dev=1,
+                dispatch_reviewer=0,
+                merge_pr=0,
+                notify_human=0,
+                block=0,
+                rebrand=0,
+                spec_invalid=0,
+            )
+        ctx.notify.assert_not_called()
+
+    def test_prefixo_deployment_ciclo_concluido(self) -> None:
+        from deployment.deployment import _log_cycle_summary
+
+        ctx = self._make_ctx()
+        with mock.patch("deployment.deployment.logger") as mock_log:
+            _log_cycle_summary(
+                ctx=ctx,
+                chat_id="",
+                scan_total=1,
+                dispatch_dev=1,
+                dispatch_reviewer=0,
+                merge_pr=0,
+                notify_human=0,
+                block=0,
+                rebrand=0,
+                spec_invalid=0,
+            )
+        msg = mock_log.info.call_args[0][0]
+        assert msg.startswith("deployment: ciclo concluído")
+
+
+class TestRunEmiteCicleSummary:
+    """run() deve emitir o resumo do ciclo em todos os casos, incluindo tudo SKIP."""
+
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "secret"
+        ctx.job.id = "test-job"
+        return ctx
+
+    def test_resumo_emitido_quando_tudo_skip(self) -> None:
+        """Quando scan retorna vazio, o resumo ainda deve ser logado."""
+        ctx = self._make_ctx()
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value=_minimal_config()),
+            mock.patch("deployment.deployment.scan_candidates",
+                       return_value=[]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment._log_cycle_summary") as mock_summary,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            run(ctx)
+
+        mock_summary.assert_called_once()
+        kw = mock_summary.call_args.kwargs
+        assert kw["scan_total"] == 0
+        assert kw["dispatch_dev"] == 0
+
+    def test_resumo_emitido_com_dispatch_dev(self) -> None:
+        """Ciclo com dispatch_dev deve refletir o contador correto no resumo."""
+        ctx = self._make_ctx()
+        results = [_make_scan_result()]
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value=_minimal_config(auto=False)),
+            mock.patch("deployment.deployment.scan_candidates",
+                       return_value=results),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment._log_cycle_summary") as mock_summary,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            run(ctx)
+
+        mock_summary.assert_called_once()
+        kw = mock_summary.call_args.kwargs
+        assert kw["scan_total"] == 1
+        assert kw["dispatch_dev"] == 1
+        assert kw["dispatch_reviewer"] == 0

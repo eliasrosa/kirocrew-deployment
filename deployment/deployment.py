@@ -337,6 +337,47 @@ def _dry_run_report(
     print("[DRY-RUN] ── Nenhuma sessão despachada, label alterada ou notificação enviada. ──")
 
 
+def _log_cycle_summary(
+    ctx: object,
+    chat_id: str,
+    scan_total: int,
+    dispatch_dev: int,
+    dispatch_reviewer: int,
+    merge_pr: int,
+    notify_human: int,
+    block: int,
+    rebrand: int,
+    spec_invalid: int,
+) -> None:
+    """Emite 1 linha de resumo do ciclo no log e no ctx.notify() quando configurado.
+
+    Formato:
+        deployment: ciclo concluído — scan:5 dispatch_dev:1 dispatch_reviewer:1
+                    merge_pr:0 notify_human:0 block:0 rebrand:0 skip:3
+
+    Sempre emitida, mesmo quando tudo é SKIP (counters zerados).
+    """
+    total_actions = (
+        dispatch_dev + dispatch_reviewer + merge_pr
+        + notify_human + block + rebrand + spec_invalid
+    )
+    skipped = max(0, scan_total - total_actions)
+    summary = (
+        f"deployment: ciclo concluído — "
+        f"scan:{scan_total} "
+        f"dispatch_dev:{dispatch_dev} "
+        f"dispatch_reviewer:{dispatch_reviewer} "
+        f"merge_pr:{merge_pr} "
+        f"notify_human:{notify_human} "
+        f"block:{block} "
+        f"rebrand:{rebrand} "
+        f"skip:{skipped}"
+    )
+    logger.info(summary)
+    if chat_id:
+        ctx.notify(summary)  # type: ignore[attr-defined]
+
+
 def run(ctx: object) -> None:
     cfg = _load_config()
     repos: list[str] = cfg.get("repos") or []
@@ -521,6 +562,20 @@ def run(ctx: object) -> None:
                 repo = repos[0] if repos else ""
             issue = _scan_result_to_issue(result)
             dispatch_devs.append((repo, issue, decision))
+
+    # ── Resumo do ciclo — sempre emitido, mesmo que tudo seja SKIP ──────────
+    _log_cycle_summary(
+        ctx=ctx,
+        chat_id=chat_id,
+        scan_total=len(scan_results),
+        dispatch_dev=len(dispatch_devs),
+        dispatch_reviewer=len(dispatch_reviewers),
+        merge_pr=len(merge_prs),
+        notify_human=len(needs_human),
+        block=len(blocked_bypass),
+        rebrand=len(rebranded),
+        spec_invalid=len(spec_invalid),
+    )
 
     # Sem nada a fazer?
     if not any([spec_invalid, dispatch_devs, dispatch_reviewers,
