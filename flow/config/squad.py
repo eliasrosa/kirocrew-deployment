@@ -199,10 +199,21 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 def _mini_yaml(path: Path) -> dict[str, Any]:
     """Parser YAML minimalista (fallback sem PyYAML).
 
-    Suporta: escalares, listas (`- item`), mapeamentos aninhados de 1 nível.
+    Suporta:
+    - escalares, booleans, inteiros
+    - listas simples (``- item``)
+    - mapeamentos aninhados de 1 nivel (``workflow_params:``)
+    - listas de dicts inline: ``- {key: val, key2: [a, b]}``
+    - listas de dicts multi-linha::
+
+        routing:
+          - match:
+              labels:
+                - crewflow:hotfix
+            workflow: hotfix-flow
+          - default: feature-flow
     """
     cfg: dict[str, Any] = {}
-    cur_key: str | None = None
 
     def _coerce(val: str) -> Any:
         if val.lower() in ("true", "false"):
@@ -211,55 +222,172 @@ def _mini_yaml(path: Path) -> dict[str, Any]:
             return int(val)
         return val
 
+    def _parse_inline_dict(text: str) -> dict[str, Any]:
+        inner = text[1:-1].strip()
+        entry: dict[str, Any] = {}
+        for raw_part in inner.split(","):
+            part = raw_part.strip()
+            if ": " in part:
+                k, _, v = part.partition(": ")
+                k = k.strip().strip("\"'")
+                v = v.strip().strip("\"'")
+                if v.startswith("[") and v.endswith("]"):
+                    entry[k] = [
+                        x.strip().strip("\"'") for x in v[1:-1].split(",") if x.strip()
+                    ]
+                else:
+                    entry[k] = _coerce(v)
+        return entry
+
+    cur_key: str | None = None
+    list_item: dict[str, Any] | None = None
+    list_item_indent: int = 0
+    list_subkey: str | None = None
+    list_subsubkey: str | None = None
+
+    def flush_list_item() -> None:
+        nonlocal list_item, list_subkey, list_subsubkey
+        if list_item is not None and cur_key and isinstance(cfg.get(cur_key), list):
+            cfg[cur_key].append(list_item)
+        list_item = None
+        list_subkey = None
+        list_subsubkey = None
+
     with path.open() as f:
         for raw in f:
             line = raw.split("#", 1)[0].rstrip()
             if not line.strip():
                 continue
-            indented = line.startswith((" ", "\t"))
+
+            indent = len(line) - len(line.lstrip())
             stripped = line.strip()
 
-            if stripped.startswith("- ") and cur_key:
-                item = stripped[2:].strip().strip("\"'")
-                # Tenta parsear como dict inline: {key: val}
-                if item.startswith("{") and item.endswith("}"):
-                    inner = item[1:-1].strip()
-                    entry: dict[str, Any] = {}
-                    for raw_part in inner.split(","):
-                        part = raw_part.strip()
-                        if ": " in part:
-                            k, _, v = part.partition(": ")
-                            k = k.strip().strip("\"'")
-                            v = v.strip().strip("\"'")
-                            if v.startswith("[") and v.endswith("]"):
-                                entry[k] = [x.strip().strip("\"'") for x in v[1:-1].split(",") if x.strip()]
-                            else:
-                                entry[k] = _coerce(v)
-                    if isinstance(cfg.get(cur_key), list):
-                        cfg[cur_key].append(entry)
-                elif isinstance(cfg.get(cur_key), list):
-                    cfg[cur_key].append(item)
-                continue
-
-            if indented and ":" in stripped and cur_key:
-                if not isinstance(cfg.get(cur_key), dict):
-                    if cfg.get(cur_key):
-                        continue
-                    cfg[cur_key] = {}
-                k, _, v = stripped.partition(":")
-                v_stripped = v.strip().strip("\"'")
-                if v_stripped:
-                    cfg[cur_key][k.strip().strip("\"'")] = _coerce(v_stripped)
-                continue
-
-            if ":" in line and not indented:
+            # Nivel raiz
+            if indent == 0:
+                flush_list_item()
+                cur_key = None
+                if ":" not in line:
+                    continue
                 key, _, val = line.partition(":")
-                key, raw_val = key.strip(), val.strip()
+                key = key.strip()
+                raw_val = val.strip()
                 val_stripped = raw_val.strip("\"'")
                 quoted_empty = val_stripped == "" and raw_val in ('""', "''")
                 if val_stripped == "" and not quoted_empty:
-                    cfg[key], cur_key = [], key
+                    cfg[key] = None  # lazy
+                    cur_key = key
                 else:
                     cur_key = None
                     cfg[key] = "" if quoted_empty else _coerce(val_stripped)
+                continue
+
+            if cur_key is None:
+                continue
+
+            cur_val = cfg.get(cur_key)
+
+            # Inicializacao lazy: decidir pelo primeiro item que chegar
+            if cur_val is None:
+                if stripped.startswith("- "):
+                    cfg[cur_key] = []
+                else:
+                    cfg[cur_key] = {}
+                cur_val = cfg[cur_key]
+
+            # Mapeamento de 1 nivel
+            if isinstance(cur_val, dict):
+                if ":" not in stripped:
+                    continue
+                k, _, v = stripped.partition(":")
+                v_stripped = v.strip().strip("\"'")
+                if v_stripped:
+                    cur_val[k.strip().strip("\"'")] = _coerce(v_stripped)
+                continue
+
+            # Lista de nivel raiz
+            if not isinstance(cur_val, list):
+                continue
+
+            # Se list_item esta em construcao, processar linhas dentro dele
+            # ANTES de tratar como novo item de lista
+            if list_item is not None:
+                # Subitem de lista (indent > list_item_indent + 2)
+                # Ex: "        - crewflow:hotfix" quando list_subsubkey esta ativo
+                if stripped.startswith("- ") and indent > list_item_indent + 2:
+                    if list_subkey and list_subsubkey:
+                        sub = list_item.setdefault(list_subkey, {})
+                        if isinstance(sub, dict):
+                            lst = sub.setdefault(list_subsubkey, [])
+                            if isinstance(lst, list):
+                                lst.append(stripped[2:].strip().strip("\"'"))
+                    continue
+
+                # Novo item no mesmo nivel do list_item: fechar e comecar novo
+                if stripped.startswith("- ") and indent <= list_item_indent:
+                    flush_list_item()
+                    # Cai para o tratamento normal abaixo
+
+                elif ":" in stripped and not stripped.startswith("- "):
+                    k, _, v = stripped.partition(":")
+                    k = k.strip()
+                    v_stripped = v.strip().strip("\"'")
+                    item_key_level = list_item_indent + 2
+                    if indent <= item_key_level:
+                        if v_stripped:
+                            list_item[k] = _coerce(v_stripped)
+                        else:
+                            list_subkey = k
+                            list_subsubkey = None
+                    elif list_subkey is not None:
+                        if v_stripped:
+                            sub = list_item.setdefault(list_subkey, {})
+                            if isinstance(sub, dict):
+                                sub[k] = _coerce(v_stripped)
+                        else:
+                            sub = list_item.setdefault(list_subkey, {})
+                            if not isinstance(sub, dict):
+                                list_item[list_subkey] = {}
+                            list_subsubkey = k
+                    continue
+
+            # Novo item de lista "- ..."
+            if stripped.startswith("- "):
+                item_text = stripped[2:].strip()
+
+                # Inline dict: - {key: val, ...}
+                if item_text.startswith("{") and item_text.endswith("}"):
+                    flush_list_item()
+                    cur_val.append(_parse_inline_dict(item_text))
+                    continue
+
+                # "- key: value" ou "- key: {inline_dict}" ou "- key:" (multi-linha)
+                if ":" in item_text:
+                    k, _, v = item_text.partition(":")
+                    k = k.strip()
+                    v_stripped = v.strip().strip("\"'")
+                    flush_list_item()
+                    if v_stripped.startswith("{") and v_stripped.endswith("}"):
+                        # "- match: {labels: [...]}" -> dict item com sub-dict inline
+                        # Cria list_item para aceitar chaves adicionais (ex: workflow:)
+                        list_item = {k: _parse_inline_dict(v_stripped)}
+                        list_item_indent = indent
+                        list_subkey = None
+                        list_subsubkey = None
+                        continue
+                    if v_stripped:
+                        cur_val.append({k: _coerce(v_stripped)})
+                        continue
+                    # Sem valor -> dict multi-linha: "- match:"
+                    list_item = {}
+                    list_item_indent = indent
+                    list_subkey = k
+                    list_subsubkey = None
+                    continue
+
+                # Escalar puro
+                flush_list_item()
+                cur_val.append(item_text.strip("\"'"))
+                continue
+
+    flush_list_item()
     return cfg

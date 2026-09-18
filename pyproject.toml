@@ -12,13 +12,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+yaml = [
+    "pyyaml>=6.0",  # parser YAML completo; recomendado para squads com routing complexo
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
     "mypy>=2.0",
     "ruff>=0.5",
-    "pyyaml>=6.0",  # parser YAML completo; sem ele, _mini_yaml não suporta routing inline
+    "pyyaml>=6.0",  # parser YAML completo; sem ele, _mini_yaml é o fallback
 ]
 
 [tool.pytest.ini_options]

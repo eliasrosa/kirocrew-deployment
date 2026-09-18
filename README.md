@@ -86,10 +86,24 @@ repos:
   - org/api-subscription2
 workflow_template: versao-c
 routing:
-  - match: {labels: ["crewflow:hotfix"]}
+  - match:
+      labels:
+        - crewflow:hotfix
     workflow: hotfix-flow
   - default: feature-flow
 ```
+
+> **PyYAML (recomendado para routing complexo):** o parser embutido (`_mini_yaml`) suporta
+> escalares, listas simples, mapeamentos de 1 nível, e listas de dicts — tanto no formato
+> inline (`{labels: [...]}`) quanto multi-linha. Para garantir compatibilidade total com YAML
+> arbitrário, instale PyYAML:
+>
+> ```bash
+> pip install "kirocrew-flow[yaml]"
+> # ou: pip install pyyaml
+> ```
+>
+> Sem PyYAML o fallback cobre os casos de uso do squad config padrão.
 
 ### 2. Configure o cron
 
