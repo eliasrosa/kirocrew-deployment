@@ -231,3 +231,183 @@ class TestRunIntegration:
             run(ctx)
 
         ctx.notify.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 — _repo_has_active / _active_sessions com detecção de locks obsoletos
+# ---------------------------------------------------------------------------
+
+class TestRepoHasActiveStaleDetection:
+    """_repo_has_active deve ignorar locks mais velhos que 2h."""
+
+    def test_lock_recente_bloqueia(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deployment.deployment import _repo_has_active
+
+        lock = tmp_path / "dashboard_esteira-myrepo-42.jsonl.lock"
+        lock.touch()
+        # mtime agora = lock recente
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+
+        assert _repo_has_active("owner/myrepo") is True
+
+    def test_lock_obsoleto_nao_bloqueia(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import os
+        import time
+
+        from deployment.deployment import _repo_has_active
+
+        lock = tmp_path / "dashboard_esteira-myrepo-10.jsonl.lock"
+        lock.touch()
+        # Define mtime como 3h atrás
+        old_ts = time.time() - 3 * 3600
+        os.utime(str(lock), (old_ts, old_ts))
+
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+
+        assert _repo_has_active("owner/myrepo") is False
+
+    def test_sem_locks_retorna_false(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deployment.deployment import _repo_has_active
+
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+        assert _repo_has_active("owner/myrepo") is False
+
+    def test_active_sessions_ignora_locks_obsoletos(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+        import time
+
+        from deployment.deployment import _active_sessions
+
+        # 1 lock recente + 1 obsoleto
+        recente = tmp_path / "dashboard_esteira-repo1-1.jsonl.lock"
+        recente.touch()
+        obsoleto = tmp_path / "dashboard_esteira-repo2-2.jsonl.lock"
+        obsoleto.touch()
+        old_ts = time.time() - 3 * 3600
+        os.utime(str(obsoleto), (old_ts, old_ts))
+
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+
+        assert _active_sessions() == 1
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 — _pr_exists / guard contra PR duplicado no dispatch
+# ---------------------------------------------------------------------------
+
+class TestPrExists:
+    """_pr_exists deve chamar gh pr list e retornar True somente quando há PR aberto."""
+
+    def test_retorna_true_quando_pr_existe(self) -> None:
+        from deployment.deployment import _pr_exists
+
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(
+                returncode=0,
+                stdout='[{"number": 99}]',
+                stderr="",
+            )
+            assert _pr_exists("owner/repo", 42) is True
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        assert "--head" in args
+        assert "feat/issue-42" in args
+
+    def test_retorna_false_quando_sem_pr(self) -> None:
+        from deployment.deployment import _pr_exists
+
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(
+                returncode=0, stdout="[]", stderr="",
+            )
+            assert _pr_exists("owner/repo", 42) is False
+
+    def test_retorna_false_em_erro_de_cli(self) -> None:
+        from deployment.deployment import _pr_exists
+
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(
+                returncode=1, stdout="", stderr="gh: not authenticated",
+            )
+            assert _pr_exists("owner/repo", 42) is False
+
+    def test_retorna_false_em_excecao(self) -> None:
+        from deployment.deployment import _pr_exists
+
+        with mock.patch("subprocess.run", side_effect=OSError("gh not found")):
+            assert _pr_exists("owner/repo", 42) is False
+
+
+class TestDispatchGuardPrDuplicado:
+    """O dispatch deve ser ignorado silenciosamente quando PR já existe."""
+
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "secret"
+        ctx.job.id = "test-job"
+        return ctx
+
+    def test_dispatch_pulado_quando_pr_ja_existe(self) -> None:
+        ctx = self._make_ctx()
+        results = [_make_scan_result()]
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value={
+                           **{
+                               "repos": ["owner/repo"],
+                               "auto_dispatch": True,
+                               "max_concurrent": 2,
+                               "one_per_repo": False,  # desativa o guard de lock
+                               "notify_chat_id": "",
+                               "squad_id": "test",
+                               "issue_provider": "github",
+                               "dev_root": "/tmp/dev",
+                               "agent": "kirocrew",
+                           }
+                       }),
+            mock.patch("deployment.deployment.scan_candidates", return_value=results),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment._active_sessions", return_value=0),
+            mock.patch("deployment.deployment._pr_exists", return_value=True),
+            mock.patch("deployment.deployment._dispatch") as mock_disp,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            run(ctx)
+
+        mock_disp.assert_not_called()
+
+    def test_dispatch_executado_quando_sem_pr(self) -> None:
+        ctx = self._make_ctx()
+        results = [_make_scan_result()]
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value={
+                           "repos": ["owner/repo"],
+                           "auto_dispatch": True,
+                           "max_concurrent": 2,
+                           "one_per_repo": False,
+                           "notify_chat_id": "",
+                           "squad_id": "test",
+                           "issue_provider": "github",
+                           "dev_root": "/tmp/dev",
+                           "agent": "kirocrew",
+                       }),
+            mock.patch("deployment.deployment.scan_candidates", return_value=results),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment._active_sessions", return_value=0),
+            mock.patch("deployment.deployment._pr_exists", return_value=False),
+            mock.patch("deployment.deployment._dispatch") as mock_disp,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            run(ctx)
+
+        mock_disp.assert_called_once()

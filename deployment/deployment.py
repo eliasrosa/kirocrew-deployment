@@ -95,13 +95,28 @@ def _sessdir() -> str:
     return os.path.expanduser("~/.kiro/crew/sessions")
 
 
+_LOCK_STALE_SECS = 2 * 3600  # locks mais velhos que 2h são considerados obsoletos
+
+
+def _lock_is_stale(path: str) -> bool:
+    """Retorna True se o arquivo de lock existe mas é antigo (sessão provavelmente encerrada)."""
+    try:
+        age = __import__("time").time() - os.path.getmtime(path)
+        return age > _LOCK_STALE_SECS
+    except OSError:
+        # Arquivo desapareceu entre o glob e a stat — trata como ausente (não ativo).
+        return True
+
+
 def _active_sessions() -> int:
-    return len(glob.glob(os.path.join(_sessdir(), "dashboard_esteira-*.jsonl.lock")))
+    locks = glob.glob(os.path.join(_sessdir(), "dashboard_esteira-*.jsonl.lock"))
+    return sum(1 for p in locks if not _lock_is_stale(p))
 
 
 def _repo_has_active(repo: str) -> bool:
     short = repo.split("/")[-1]
-    return bool(glob.glob(os.path.join(_sessdir(), f"dashboard_esteira-{short}-*.jsonl.lock")))
+    locks = glob.glob(os.path.join(_sessdir(), f"dashboard_esteira-{short}-*.jsonl.lock"))
+    return any(not _lock_is_stale(p) for p in locks)
 
 
 # ── Prompt de dispatch ────────────────────────────────────────────────────
@@ -163,6 +178,43 @@ def _dispatch_prompt(
         "------------------------------------------"
         + (f"\n\n{prompt_extra.strip()}" if prompt_extra.strip() else "")
     )
+
+
+def _pr_exists(repo: str, issue_number: int) -> bool:
+    """Retorna True se já existe um PR aberto para a branch feat/issue-<N> neste repo.
+
+    Previne que a sessão one-shot abra um segundo PR quando a primeira branch
+    já está em review (ex.: conflito de merge na primeira tentativa).
+    """
+    import subprocess
+    branch = f"feat/issue-{issue_number}"
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "list", "--repo", repo, "--head", branch,
+             "--state", "open", "--json", "number"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "deployment: gh pr list falhou para %s head=%s: %s",
+                repo, branch, result.stderr.strip(),
+            )
+            return False
+        import json as _json
+        prs = _json.loads(result.stdout or "[]")
+        if prs:
+            logger.info(
+                "deployment: PR já existe para %s#%s (branch %s) — dispatch ignorado",
+                repo, issue_number, branch,
+            )
+            return True
+        return False
+    except Exception as exc:
+        logger.warning(
+            "deployment: erro ao verificar PR existente para %s#%s: %s",
+            repo, issue_number, exc,
+        )
+        return False
 
 
 def _dispatch(
@@ -430,6 +482,12 @@ def run(ctx: object) -> None:
             continue
         if one_per_repo and _repo_has_active(repo):
             adiadas.append((repo, issue))
+            continue
+        if _pr_exists(repo, issue["number"]):
+            logger.info(
+                "deployment: PR duplicado detectado para %s#%s — pulando dispatch",
+                repo, issue["number"],
+            )
             continue
         try:
             prompt_extra = squad.dispatch_prompt_extra if squad else ""
