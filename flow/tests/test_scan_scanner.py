@@ -176,3 +176,52 @@ class TestScanCandidates:
         assert r.dispatch_candidate is True
         assert r.changed is True  # primeiro ciclo
         assert r.reason != ""
+
+    def test_dedup_por_key_entre_projetos(self, conn: sqlite3.Connection) -> None:
+        """Mesma issue listada por dois projetos → um único ScanResult (issue #43)."""
+        config_dois = SquadScanConfig(
+            squad_id="test",
+            issue_provider="github",
+            projects=("owner/repo-a", "owner/repo-b"),
+            repos=frozenset({"api-gateway2"}),
+        )
+        item = _item("VGAT-1", labels=["crewflow:todo", "crewflow:feature"])
+        provider = mock.MagicMock()
+        # AMBOS os projetos retornam a MESMA issue em crewflow:todo
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:todo" else []
+
+        results = scan_candidates(config_dois, provider, conn)
+
+        assert len([r for r in results if r.item.key == "VGAT-1"]) == 1
+
+    def test_dedup_emite_log_debug(self, conn: sqlite3.Connection) -> None:
+        """A issue deduplicada gera um log DEBUG identificando a key e o projeto."""
+        config_dois = SquadScanConfig(
+            squad_id="test",
+            issue_provider="github",
+            projects=("owner/repo-a", "owner/repo-b"),
+            repos=frozenset({"api-gateway2"}),
+        )
+        item = _item("VGAT-1", labels=["crewflow:todo"])
+        provider = mock.MagicMock()
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:todo" else []
+
+        with mock.patch("flow.scan.scanner.logger") as mock_logger:
+            scan_candidates(config_dois, provider, conn)
+
+        debug_calls = [c for c in mock_logger.debug.call_args_list if "deduplicada" in str(c)]
+        assert len(debug_calls) == 1
+        # A mensagem carrega a key e o projeto onde foi deduplicada
+        assert "VGAT-1" in debug_calls[0].args
+        assert "owner/repo-b" in debug_calls[0].args
+
+    def test_issues_distintas_nao_sao_deduplicadas(self, config: SquadScanConfig, conn: sqlite3.Connection) -> None:
+        """Dedup é por key: issues diferentes não colidem."""
+        item_a = _item("VGAT-1", labels=["crewflow:todo"])
+        item_b = _item("VGAT-2", labels=["crewflow:todo"])
+        provider = mock.MagicMock()
+        provider.list_by_state.side_effect = lambda p, s: [item_a, item_b] if s == "crewflow:todo" else []
+
+        results = scan_candidates(config, provider, conn)
+        keys = {r.item.key for r in results if r.dispatch_candidate}
+        assert keys == {"VGAT-1", "VGAT-2"}

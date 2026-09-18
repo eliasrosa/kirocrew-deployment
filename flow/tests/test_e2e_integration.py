@@ -98,16 +98,17 @@ class TestFeatureFlowE2E:
             "[api-gateway2] Implementar validação de split",
             ["crewflow:todo", "crewflow:feature"],
         )
-        # O scanner itera pelos dois repos da squad — o mock retorna o item em ambos,
-        # mas o deduplication por key garante que só aparece uma vez por estado.
+        # O scanner itera pelos dois repos da squad — o mock retorna o item em
+        # AMBOS os projetos. A deduplication por key garante que a issue produz
+        # EXATAMENTE um ScanResult por ciclo, não "ao menos um" (issue #43).
         provider = _mock_provider({"crewflow:todo": [item]})
         cfg = _scan_cfg(squad)
 
         results = scan_candidates(cfg, provider, conn)
         candidates = [r for r in results if r.dispatch_candidate]
 
-        # Deve haver ao menos 1 candidato com a key correta
-        assert len(candidates) >= 1
+        # Exatamente 1 candidato com a key correta — não uma duplicata por projeto
+        assert len(candidates) == 1
         r = candidates[0]
         assert r.item.key == item["key"]
         assert r.current_state is State.TODO
@@ -195,6 +196,79 @@ class TestFeatureFlowE2E:
 
 
 # ---------------------------------------------------------------------------
+# E2E: Deduplication por key em squad com múltiplos projetos (issue #43)
+# ---------------------------------------------------------------------------
+
+class TestMultiProjectDedupE2E:
+    """Comportamento esperado quando a mesma issue aparece em mais de um projeto.
+
+    Uma squad GitHub-first tem múltiplos repos (``projects``). O scanner varre
+    todos. Se a mesma issue (mesma ``key`` canônica) for listada por mais de um
+    projeto no mesmo ciclo, ela deve produzir EXATAMENTE UM ``ScanResult`` — não
+    uma duplicata por projeto. A deduplication é por key e determinística, não
+    depende do hash já gravado no cache pelo primeiro projeto (issue #43).
+    """
+
+    def test_mesma_issue_em_dois_projetos_produz_um_resultado(
+        self, squad: SquadConfig, conn: sqlite3.Connection
+    ) -> None:
+        item = _item(
+            "https://github.com/owner/api-gateway2/issues/43",
+            "[api-gateway2] Bug de duplicata",
+            ["crewflow:todo", "crewflow:bug"],
+        )
+        # squad tem 2 projetos; o mock retorna o MESMO item para ambos.
+        provider = _mock_provider({"crewflow:todo": [item]})
+        assert len(squad.projects) == 2  # pré-condição do cenário
+        cfg = _scan_cfg(squad)
+
+        results = scan_candidates(cfg, provider, conn)
+
+        # Exatamente 1 resultado para a issue — sem duplicata por projeto.
+        matching = [r for r in results if r.item.key == item["key"]]
+        assert len(matching) == 1
+        assert matching[0].changed is True  # primeiro ciclo
+        assert matching[0].dispatch_candidate is True
+
+    def test_dedup_e_por_key_nao_por_hash(
+        self, squad: SquadConfig, conn: sqlite3.Connection
+    ) -> None:
+        """Mesmo com o cache VAZIO (nenhum hash gravado), o segundo projeto não
+        reintroduz a issue — a dedup é por key, não efeito colateral do hash."""
+        item = _item(
+            "https://github.com/owner/api-gateway2/issues/43",
+            "[api-gateway2] Bug de duplicata",
+            ["crewflow:todo", "crewflow:bug"],
+        )
+        provider = _mock_provider({"crewflow:todo": [item]})
+        cfg = _scan_cfg(squad)
+
+        results = scan_candidates(cfg, provider, conn)
+        assert len([r for r in results if r.item.key == item["key"]]) == 1
+
+    def test_issues_distintas_em_projetos_distintos_nao_sao_deduplicadas(
+        self, squad: SquadConfig, conn: sqlite3.Connection
+    ) -> None:
+        """Dedup é por key: issues diferentes coexistem normalmente."""
+        item_a = _item(
+            "https://github.com/owner/api-gateway2/issues/1",
+            "[api-gateway2] Fix A",
+            ["crewflow:todo", "crewflow:bug"],
+        )
+        item_b = _item(
+            "https://github.com/owner/api-subscription2/issues/2",
+            "[api-subscription2] Fix B",
+            ["crewflow:todo", "crewflow:bug"],
+        )
+        provider = _mock_provider({"crewflow:todo": [item_a, item_b]})
+        cfg = _scan_cfg(squad)
+
+        results = scan_candidates(cfg, provider, conn)
+        keys = {r.item.key for r in results if r.dispatch_candidate}
+        assert keys == {item_a["key"], item_b["key"]}
+
+
+# ---------------------------------------------------------------------------
 # E2E: Hotfix flow
 # ---------------------------------------------------------------------------
 
@@ -213,7 +287,7 @@ class TestHotfixFlowE2E:
 
         results = scan_candidates(cfg, provider, conn)
         candidates = [r for r in results if r.dispatch_candidate]
-        assert len(candidates) >= 1
+        assert len(candidates) == 1  # dedup por key: 1 resultado mesmo em 2 projetos (issue #43)
 
         decision = decide(candidates[0], squad=squad)
         assert decision.action is ActionKind.DISPATCH_DEV
@@ -358,7 +432,7 @@ class TestCacheE2E:
         results = scan_candidates(cfg, provider, conn)
         candidates = [r for r in results if r.dispatch_candidate]
 
-        assert len(candidates) >= 1
+        assert len(candidates) == 1  # dedup por key: 1 resultado mesmo em 2 projetos (issue #43)
         assert candidates[0].changed is True
 
 

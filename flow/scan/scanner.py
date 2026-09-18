@@ -88,10 +88,18 @@ def scan_candidates(
     squad = Squad(id=config.squad_id, repos=config.repos)
     results: list[ScanResult] = []
     active_keys: set[str] = set()
+    # Deduplication por KEY dentro do ciclo: a mesma issue pode aparecer em
+    # mais de um projeto da squad (squad GitHub-first com múltiplos repos que
+    # compartilham a esteira). Uma issue é uma unidade de trabalho única — sua
+    # key a identifica de forma canônica — então ela deve produzir NO MÁXIMO um
+    # ScanResult por ciclo, independente de quantos projetos a listem. Sem isso,
+    # a segunda ocorrência dependia do hash já gravado no cache pelo primeiro
+    # projeto (changed=False), um efeito colateral frágil (issue #43).
+    seen_keys: set[str] = set()
 
     for project in config.projects:
         try:
-            project_results = _scan_project(project, provider, conn, squad)
+            project_results = _scan_project(project, provider, conn, squad, seen_keys)
             results.extend(project_results)
             active_keys.update(r.item.key for r in project_results)
         except ProviderError as exc:
@@ -111,8 +119,13 @@ def _scan_project(
     provider: IssueProvider,
     conn: sqlite3.Connection,
     squad: Squad,
+    seen_keys: set[str],
 ) -> list[ScanResult]:
-    """Varre um único projeto e retorna os resultados."""
+    """Varre um único projeto e retorna os resultados.
+
+    ``seen_keys`` é compartilhado entre todos os projetos do ciclo: uma key já
+    emitida por um projeto anterior é ignorada aqui (deduplication por key).
+    """
     results: list[ScanResult] = []
 
     # Lista issues com qualquer label crewflow:* de estado
@@ -122,8 +135,20 @@ def _scan_project(
     logger.debug("scan: %d issues com labels crewflow:* em %s", len(all_items), project)
 
     for raw_item in all_items:
+        key = raw_item.get("key", "")
+        if key and key in seen_keys:
+            # Mesma issue já avaliada em outro projeto neste ciclo — deduplica
+            # por key em vez de depender do hash gravado no cache (issue #43).
+            logger.debug(
+                "scan: issue %s deduplicada em %s (já vista em outro projeto do ciclo)",
+                key,
+                project,
+            )
+            continue
+
         result = _evaluate_item(raw_item, project, provider, conn, squad)
         if result is not None:
+            seen_keys.add(result.item.key)
             results.append(result)
 
     return results
