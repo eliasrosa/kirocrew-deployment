@@ -46,6 +46,7 @@ from flow.audit.state_comment import (  # noqa: E402
     render_pr_review_comment,
 )
 from flow.ports.issue_provider import provider_for  # noqa: E402
+from flow.prompts.loader import PromptRenderError, render_prompt  # noqa: E402
 from flow.scan.cache import open_cache  # noqa: E402
 from flow.scan.scanner import ScanResult, scan_candidates  # noqa: E402
 
@@ -246,72 +247,110 @@ def _resource_headroom_ok(ctx: object, max_concurrent: int) -> bool:
 
 # ── Prompt de dispatch ────────────────────────────────────────────────────
 
+# Fallback embutido para o prompt do dev — usado quando flow/prompts/dev.md
+# não existe no disco (apagado, corrompido, ou deploy sem o diretório).
+# É exatamente o conteúdo canônico que o template MD versiona.
+_DEV_PROMPT_FALLBACK = (
+    "------------ AGENT HEADER ----------------\n"
+    "REPO: {{repo}}\n"
+    "ISSUE: #{{issue_number}} — {{issue_title}}\n"
+    "URL: {{issue_url}}\n"
+    "SESSION TITLE: {{session_title}}\n"
+    "------------ CONTEXT TASK ----------------\n"
+    "Você é um agente de implementação ONE-SHOT. Tarefa ÚNICA, sem loop, sem watchdog.\n\n"
+    "FLUXO (execute UMA vez, do início ao fim, e PARE):\n"
+    "0. TÍTULO: como PRIMEIRA ação, defina o título da sessão = `SESSION TITLE`.\n"
+    "1. CONTEXTO: leia TODA a documentação do repo antes de qualquer ação:\n"
+    "   - `.kiro/steering/*.md` (steerings do projeto)\n"
+    "   - `README.md`\n"
+    "   - `docs/` se existir\n"
+    "   - A própria issue: `gh issue view {{issue_number}} --repo {{repo}}`\n"
+    "   - Os comentários da issue: `gh issue view {{issue_number}} --repo {{repo}} --comments`\n"
+    "   Não pule esta etapa — as steerings têm convenções e gotchas críticos, e os\n"
+    "   comentários podem conter adendos e decisões que refinam o escopo.\n"
+    "2. ESCOPO: se a issue exige decisão de design não-tomada ou é vaga, NÃO implemente — "
+    "comente, marque `crewflow:blocked`, avise e ENCERRE.\n"
+    "3. Marque `crewflow:dev` + `crewflow:running`. NÃO faça `git clone`. Use o clone em "
+    "`{{dev_root}}/{{repo_short}}` como base e crie um WORKTREE ISOLADO.\n"
+    "   A branch base é a DEFAULT DO REPO — descubra, não presuma:\n"
+    "   `BASE=$(gh repo view {{repo}} --json defaultBranchRef --jq .defaultBranchRef.name)`\n"
+    "   `cd {{dev_root}}/{{repo_short}} && git fetch origin && git worktree add -b "
+    "feat/issue-{{issue_number}} {{worktree_path}} \"origin/$BASE\"`\n"
+    "   Trabalhe DENTRO do worktree; remova-o ao fim. NUNCA toque em outros worktrees.\n"
+    "4. Implemente EXATAMENTE o escopo — nada além.\n"
+    "5. DOCS: atualize README, steerings e docs/ se a mudança afeta comportamento, "
+    "arquitetura ou convenções. Não atualize se a mudança for puramente interna (bugfix, refactor).\n"
+    "6. Valide localmente (build/testes). Se falhar e não conseguir corrigir, "
+    "pare em `crewflow:blocked`.\n"
+    "7. Abra PR com 'Closes #{{issue_number}}' e troque a label para `crewflow:review`. "
+    "Após abrir o PR, ATUALIZE o título da sessão adicionando o número do PR: "
+    "`{{repo_short}} #{{issue_number}} #<N-PR>: {{issue_title}}`. "
+    "**NUNCA mergeie. NUNCA faça deploy.** Ambos são ações humanas manuais.\n"
+    "8. Ao terminar: {{notify_step}}remova `crewflow:running` (mantenha `crewflow:review`), "
+    "e ENCERRE.\n"
+    "{{vault_step}}\n"
+    "REGRAS CRÍTICAS:\n"
+    "- UMA passada. Terminou, acabou. NÃO entre em loop.\n"
+    "- NUNCA mergeie. NUNCA faça deploy.\n"
+    "- Se bloquear, marque `crewflow:blocked`, avise, e pare.\n"
+    "------------------------------------------\n"
+    "{{prompt_extra}}"
+)
+
+
 def _dispatch_prompt(
     repo: str,
     issue: dict,
     cfg: dict,
     prompt_extra: str = "",
 ) -> str:
+    """Carrega e renderiza o template MD do estágio 'dev'.
+
+    Usa ``flow/prompts/dev.md`` como fonte primária. Em caso de arquivo ausente
+    ou corrompido, cai no fallback embutido ``_DEV_PROMPT_FALLBACK``.
+    Variável faltando → ``PromptRenderError`` (fail-closed).
+    """
     short = repo.split("/")[-1]
     vault = cfg.get("vault_root") or ""
     dev_root = cfg.get("dev_root") or os.path.expanduser("~/dev")
     chat_id = cfg.get("notify_chat_id") or ""
+
     vault_step = ""
     if vault:
         vault_step = (
             f"   - VAULT: edite `{vault}/Projetos/{short}/backlog.md` refletindo a issue "
             f"resolvida e sincronize com `sh {vault}/.sync.sh \"<msg>\"` (NUNCA `git push` "
-            "literal). Se a pasta não existir, pule sem erro.\n"
+            "literal). Se a pasta não existir, pule sem erro."
         )
     notify_step = (
         f"avise via voice_maybe (chat_id {chat_id}, intent auto) com TL;DR, "
         if chat_id else "reporte o resultado, "
     )
-    return (
-        "------------ AGENT HEADER ----------------\n"
-        f"REPO: {repo}\n"
-        f"ISSUE: #{issue['number']} — {issue['title']}\n"
-        f"URL: {issue['url']}\n"
-        f"SESSION TITLE: {short} #{issue['number']}: {issue['title']}\n"
-        "------------ CONTEXT TASK ----------------\n"
-        "Você é um agente de implementação ONE-SHOT. Tarefa ÚNICA, sem loop, sem watchdog.\n\n"
-        "FLUXO (execute UMA vez, do início ao fim, e PARE):\n"
-        "0. TÍTULO: como PRIMEIRA ação, defina o título da sessão = `SESSION TITLE`.\n"
-        "1. CONTEXTO: leia TODA a documentação do repo antes de qualquer ação:\n"
-        f"   - `.kiro/steering/*.md` (steerings do projeto)\n"
-        f"   - `README.md`\n"
-        f"   - `docs/` se existir\n"
-        f"   - A própria issue: `gh issue view {issue['number']} --repo {repo}`\n"
-        "   Não pule esta etapa — as steerings têm convenções e gotchas críticos.\n"
-        "2. ESCOPO: se a issue exige decisão de design não-tomada ou é vaga, NÃO implemente — "
-        f"comente, marque `{LABEL_BLOCKED}`, avise e ENCERRE.\n"
-        f"3. Marque `{LABEL_DEV}` + `{LABEL_RUNNING}`. NÃO faça `git clone`. Use o clone em "
-        f"`{dev_root}/{short}` como base e crie um WORKTREE ISOLADO.\n"
-        f"   A branch base é a DEFAULT DO REPO — descubra, não presuma:\n"
-        f"   `BASE=$(gh repo view {repo} --json defaultBranchRef --jq .defaultBranchRef.name)`\n"
-        f"   `cd {dev_root}/{short} && git fetch origin && git worktree add -b "
-        f"feat/issue-{issue['number']} {_worktree_path(dev_root, repo, issue['number'])} "
-        f"\"origin/$BASE\"`\n"
-        "   Trabalhe DENTRO do worktree; remova-o ao fim. NUNCA toque em outros worktrees.\n"
-        "4. Implemente EXATAMENTE o escopo — nada além.\n"
-        "5. DOCS: atualize README, steerings e docs/ se a mudança afeta comportamento, "
-        "arquitetura ou convenções. Não atualize se a mudança for puramente interna (bugfix, refactor).\n"
-        "6. Valide localmente (build/testes). Se falhar e não conseguir corrigir, "
-        f"pare em `{LABEL_BLOCKED}`.\n"
-        f"7. Abra PR com 'Closes #{issue['number']}' e troque a label para `{LABEL_REVIEW}`. "
-        "Após abrir o PR, ATUALIZE o título da sessão adicionando o número do PR: "
-        f"`{short} #{issue['number']} #<N-PR>: {issue['title']}`. "
-        "**NUNCA mergeie. NUNCA faça deploy.** Ambos são ações humanas manuais.\n"
-        f"8. Ao terminar: {notify_step}remova `{LABEL_RUNNING}` (mantenha `{LABEL_REVIEW}`), "
-        "e ENCERRE.\n"
-        f"{vault_step}\n"
-        "REGRAS CRÍTICAS:\n"
-        "- UMA passada. Terminou, acabou. NÃO entre em loop.\n"
-        "- NUNCA mergeie. NUNCA faça deploy.\n"
-        f"- Se bloquear, marque `{LABEL_BLOCKED}`, avise, e pare.\n"
-        "------------------------------------------"
-        + (f"\n\n{prompt_extra.strip()}" if prompt_extra.strip() else "")
-    )
+    worktree = _worktree_path(dev_root, repo, issue["number"])
+    session_title = f"{short} #{issue['number']}: {issue['title']}"
+
+    try:
+        return render_prompt(
+            "dev",
+            fallback=_DEV_PROMPT_FALLBACK,
+            repo=repo,
+            repo_short=short,
+            issue_number=str(issue["number"]),
+            issue_title=issue["title"],
+            issue_url=issue["url"],
+            session_title=session_title,
+            dev_root=dev_root,
+            worktree_path=worktree,
+            notify_step=notify_step,
+            vault_step=vault_step,
+            prompt_extra=prompt_extra.strip(),
+        )
+    except PromptRenderError:
+        logger.exception(
+            "deployment: erro ao renderizar template 'dev' para %s#%s — dispatch abortado",
+            repo, issue["number"],
+        )
+        raise
 
 
 def _pr_exists(repo: str, issue_number: int) -> bool:
@@ -361,8 +400,16 @@ def _dispatch(
     """Fire-and-forget POST /api/chat (loopback interno)."""
     import urllib.request as _u
     slot = f"esteira-{repo.split('/')[-1]}-{issue['number']}"
+    try:
+        message = _dispatch_prompt(repo, issue, cfg, prompt_extra=prompt_extra)
+    except PromptRenderError as exc:
+        logger.error(
+            "deployment: _dispatch abortado — template 'dev' inválido para %s#%s: %s",
+            repo, issue["number"], exc,
+        )
+        return
     body = json.dumps({
-        "message": _dispatch_prompt(repo, issue, cfg, prompt_extra=prompt_extra),
+        "message": message,
         "agent": cfg.get("agent") or "kirocrew",
         "slot": slot,
         "memory_mode": "temporary",
@@ -969,31 +1016,17 @@ def _reviewer_has_active(repo: str, issue_number: int) -> bool:
 
 
 def _reviewer_prompt(repo: str, pr_number: int, issue_number: int) -> str:
-    """Monta o prompt one-shot para a sessão do kiro-reviewer.
+    """Carrega e renderiza o template MD do estágio 'reviewer'.
 
-    A sessão deve:
-    1. Ler a issue para contexto
-    2. Ler o diff do PR
-    3. Ler os steerings do repo
-    4. Analisar e postar o resultado do review COMO COMENTÁRIO NO PR
-    5. Registrar o ReviewerResult no state_comment DA ISSUE (o scan lê isso)
-    6. Deixar uma referência curta na issue apontando pro PR + status
-    7. Adicionar crewflow:reviewed se zero comentários
-    8. ENCERRAR
+    Usa ``flow/prompts/reviewer.md`` como fonte primária. Em caso de arquivo
+    ausente, cai no fallback embutido. Variável faltando → ``PromptRenderError``.
 
-    O formato do comentário do PR e da referência na issue tem UMA definição:
-    os exemplares embutidos no prompt são produzidos pelos helpers puros
-    ``render_pr_review_comment`` e ``render_issue_pr_reference`` de
-    ``flow.audit.state_comment``. Assim o helper (exercitado por testes) e o
-    prompt não divergem silenciosamente.
+    A fonte única de verdade para o formato dos comentários de review continua
+    sendo ``flow/audit/state_comment.py`` — o template referencia os exemplares
+    produzidos por esses helpers, não strings hardcoded.
     """
-    short = repo.split("/")[-1]
-
-    # ── Fonte única de verdade para o formato do comentário ───────────────
-    # Os exemplares abaixo são PRODUZIDOS pelos mesmos helpers puros de
-    # flow/audit/state_comment.py que os testes exercitam. Assim o formato
-    # tem UMA definição: se o helper mudar, o prompt muda junto (sem drift).
     from flow.audit.state_comment import ReviewerResult
+
     _rr_ok = ReviewerResult(approved=True, comments=(), sha="<sha>", reviewer="kiro-reviewer")
     _rr_ko = ReviewerResult(
         approved=False,
@@ -1001,46 +1034,50 @@ def _reviewer_prompt(repo: str, pr_number: int, issue_number: int) -> str:
         sha="<sha>",
         reviewer="kiro-reviewer",
     )
-    exemplo_aprovado = render_pr_review_comment(_rr_ok, issue_number=issue_number)
-    exemplo_mudancas = render_pr_review_comment(_rr_ko, issue_number=issue_number)
-    ref_issue = render_issue_pr_reference(pr_number, approved=True)
 
     def _indent(text: str, prefix: str = "     ") -> str:
         return "\n".join(prefix + line if line else line for line in text.splitlines())
 
-    return (
+    exemplo_aprovado = _indent(render_pr_review_comment(_rr_ok, issue_number=issue_number))
+    exemplo_mudancas = _indent(render_pr_review_comment(_rr_ko, issue_number=issue_number))
+    ref_issue = render_issue_pr_reference(pr_number, approved=True)
+    short = repo.split("/")[-1]
+
+    _reviewer_fallback = (
         "------------ AGENT HEADER ----------------\n"
-        f"REPO: {repo}\n"
-        f"PR: #{pr_number}\n"
-        f"ISSUE: #{issue_number}\n"
-        f"SESSION TITLE: review: {short} PR #{pr_number} (issue #{issue_number})\n"
+        "REPO: {{repo}}\n"
+        "PR: #{{pr_number}}\n"
+        "ISSUE: #{{issue_number}}\n"
+        "SESSION TITLE: review: {{repo_short}} PR #{{pr_number}} (issue #{{issue_number}})\n"
         "------------ CONTEXT TASK ----------------\n"
         "Você é um agente de code review ONE-SHOT. Tarefa ÚNICA, sem loop, sem watchdog.\n\n"
         "FLUXO (execute UMA vez, do início ao fim, e PARE):\n"
         "0. TÍTULO: como PRIMEIRA ação, defina o título da sessão = `SESSION TITLE`.\n"
-        f"1. Leia a issue para ter contexto:\n"
-        f"   gh issue view {issue_number} --repo {repo}\n"
-        f"2. Leia o diff do PR:\n"
-        f"   gh pr diff {pr_number} --repo {repo}\n"
-        f"3. Leia os steerings do repo (.kiro/steering/*.md) para entender convenções.\n"
+        "1. Leia a issue para ter contexto, incluindo os comentários:\n"
+        "   gh issue view {{issue_number}} --repo {{repo}}\n"
+        "   gh issue view {{issue_number}} --repo {{repo}} --comments\n"
+        "2. Leia o diff do PR e os comentários do PR:\n"
+        "   gh pr diff {{pr_number}} --repo {{repo}}\n"
+        "   gh pr view {{pr_number}} --repo {{repo}} --comments\n"
+        "3. Leia os steerings do repo (.kiro/steering/*.md) para entender convenções.\n"
         "4. Analise: corretude, cobertura de testes, estilo, convenções do projeto.\n"
         "5. POSTE O RESULTADO DO REVIEW COMO COMENTÁRIO NO PR:\n"
-        f"   gh pr comment {pr_number} --repo {repo} --body \"<corpo do review>\"\n"
+        "   gh pr comment {{pr_number}} --repo {{repo}} --body \"<corpo do review>\"\n"
         "   Use EXATAMENTE este formato no corpo (KiroCrew Review).\n"
         "   Se APROVADO sem comentários (omita a seção `### Pedidos de mudança`):\n"
-        f"{_indent(exemplo_aprovado)}\n"
+        "{{example_approved}}\n"
         "   Se houver pedidos de mudança:\n"
-        f"{_indent(exemplo_mudancas)}\n"
+        "{{example_changes}}\n"
         "6. Registre o resultado no state_comment DA ISSUE com ReviewerResult:\n"
         "   - Se APROVADO sem comentários: campo `approved: true`, `comments: []`\n"
         "   - Se tem pedidos de mudança: `approved: false`, `comments: [\"<mudança 1>\", ...]`\n"
         "   Use `upsert_state_comment` para atualizar o bloco <!-- KIRO-FLOW-STATE --> NA ISSUE.\n"
         "   O ReviewerResult deve incluir o SHA atual do HEAD do PR.\n"
         "   IMPORTANTE: o ReviewerResult PERMANECE na issue — é o que o scan lê pra decidir MERGE_PR.\n"
-        f"7. Deixe uma referência CURTA na issue #{issue_number} apontando pro PR e o status:\n"
-        f"   ex.: `{ref_issue}` (troque para `pedidos de mudança` se houver comentários).\n"
+        "7. Deixe uma referência CURTA na issue #{{issue_number}} apontando pro PR e o status:\n"
+        "   ex.: `{{ref_issue}}` (troque para `pedidos de mudança` se houver comentários).\n"
         "   NÃO duplique o detalhe dos pedidos de mudança na issue — só o link + status.\n"
-        f"8. Se zero comentários: adicione a label `crewflow:reviewed` à issue #{issue_number}.\n"
+        "8. Se zero comentários: adicione a label `crewflow:reviewed` à issue #{{issue_number}}.\n"
         "9. Se tem comentários: NÃO adicione `crewflow:reviewed` — o TL decide.\n"
         "10. ENCERRE.\n\n"
         "REGRAS CRÍTICAS:\n"
@@ -1049,6 +1086,25 @@ def _reviewer_prompt(repo: str, pr_number: int, issue_number: int) -> str:
         "- Seja objetivo — aponte problemas concretos, não estilo pessoal.\n"
         "------------------------------------------"
     )
+
+    try:
+        return render_prompt(
+            "reviewer",
+            fallback=_reviewer_fallback,
+            repo=repo,
+            repo_short=short,
+            pr_number=str(pr_number),
+            issue_number=str(issue_number),
+            example_approved=exemplo_aprovado,
+            example_changes=exemplo_mudancas,
+            ref_issue=ref_issue,
+        )
+    except PromptRenderError:
+        logger.exception(
+            "deployment: erro ao renderizar template 'reviewer' para %s PR#%s — dispatch abortado",
+            repo, pr_number,
+        )
+        raise
 
 
 def _dispatch_reviewer(

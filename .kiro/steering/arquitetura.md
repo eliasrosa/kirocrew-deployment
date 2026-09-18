@@ -39,6 +39,10 @@ flow/
 │   └── executor.py             — decide(): decide a ação por template sem I/O
 ├── audit/
 │   └── state_comment.py        — render/parse do <!-- KIRO-FLOW-STATE -->
+├── prompts/                    ← templates MD editáveis por estágio (Fase 2)
+│   ├── dev.md                  — prompt do dev (implementa + abre PR)
+│   ├── reviewer.md             — prompt do reviewer (code review)
+│   └── loader.py               — render_prompt(): carrega, interpola e valida
 └── config/
     ├── squad.py                — SquadConfig, RoutingRule, load_squad()
     └── workflow.py             — WorkflowTemplate, get_template(), 4 templates fixos
@@ -234,3 +238,27 @@ python3 -m ruff check flow/ && python3 -m mypy flow/ --ignore-missing-imports &&
   fonte única de verdade, usada tanto pelo deployment quanto pelo prompt da sessão.
   O `deployment.py` limpa worktrees órfãos via `_clean_stale_worktree()` antes de
   cada dispatch. Use `max_concurrent_tasks` na config (alias de `max_concurrent`).
+
+## Prompts externalizados — `flow/prompts/`
+
+Os prompts das sessões one-shot (dev e reviewer) vivem em arquivos MD editáveis em
+`flow/prompts/`. O motor carrega e interpola esses templates via `flow/prompts/loader.py`.
+
+### Convenção de placeholders
+
+Os templates usam `{{nome_da_variavel}}` (duplas chaves). O loader substitui
+cada placeholder pelo valor correspondente passado como keyword argument.
+
+### Contrato de fail-closed
+
+- **Variável faltando** → `PromptRenderError` — o dispatch é abortado, nunca envia
+  prompt incompleto.
+- **Template ausente/ilegível** → usa o **fallback embutido** (`_DEV_PROMPT_FALLBACK`
+  / `_reviewer_fallback`) definido em `deployment.py` — mesmo conteúdo que o MD
+  versiona, nunca silencioso.
+
+### Adicionar um novo estágio
+
+1. Crie `flow/prompts/<estágio>.md` com os placeholders `{{variavel}}`.
+2. Chame `render_prompt("<estágio>", fallback=..., **vars)` no `deployment.py`.
+3. Adicione testes smoke em `flow/tests/test_prompts_loader.py` (classe `TestRealTemplates`).

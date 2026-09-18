@@ -138,6 +138,7 @@ flow/
 ├── scan/        ← zero-token polling + cache SQLite
 ├── executor/    ← decide() por template (feature/bug/hotfix/debt)
 ├── audit/       ← comentário estruturado <!-- KIRO-FLOW-STATE -->
+├── prompts/     ← templates MD editáveis por estágio (dev, reviewer, …)
 └── config/      ← SquadConfig + workflow templates
 
 deployment/      ← cron de script do Kiro Crew (driving adapter)
@@ -148,6 +149,17 @@ docs/            ← VISION.md, ARCHITECTURE.md, ROADMAP.md, diagramas/
 ```
 
 Ver `.kiro/steering/arquitetura.md` para convenções de código e como adicionar um novo provedor.
+
+### Editar o prompt de uma sessão one-shot
+
+Os prompts ficam em `flow/prompts/`:
+- `dev.md` — sessão de implementação (o agente que abre o PR)
+- `reviewer.md` — sessão de code review
+
+Edite o MD livremente. Placeholders usam `{{nome}}`. Se um placeholder referenciar
+uma variável que o motor não fornece, o dispatch **falha explicitamente** (fail-closed)
+em vez de mandar o prompt quebrado. Em caso de arquivo ausente, o motor usa o fallback
+embutido em `deployment.py`.
 
 ## Desenvolvimento
 
