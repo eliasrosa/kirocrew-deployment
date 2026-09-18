@@ -235,6 +235,23 @@ def render(sc: StateComment) -> str:
     return "\n".join(lines)
 
 
+def render_issue_pr_reference(pr_number: int, approved: bool) -> str:
+    """Renderiza a referência curta a ser mantida NA ISSUE (link + status).
+
+    Formato (conforme issue #75):
+
+        Review postado em PR #<pr_number> — status: aprovado
+                                            (ou pedidos de mudança)
+
+    Não duplica o detalhe dos pedidos de mudança (sem bullets),
+    apenas aponta para o PR e resume o status.
+
+    Puro — sem I/O.
+    """
+    status = "aprovado" if approved else "pedidos de mudança"
+    return f"Review postado em PR #{pr_number} — status: {status}"
+
+
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------

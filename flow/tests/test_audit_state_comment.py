@@ -287,3 +287,66 @@ class TestReviewerResult:
         from flow.audit.state_comment import get_reviewer_result_from_comment
         assert get_reviewer_result_from_comment(None) is None
         assert get_reviewer_result_from_comment("sem marcador") is None
+
+
+# ---------------------------------------------------------------------------
+# render_pr_review_comment
+# ---------------------------------------------------------------------------
+
+class TestRenderPrReviewComment:
+    def test_aprovado_sem_comentarios(self) -> None:
+        from flow.audit.state_comment import ReviewerResult, render_pr_review_comment
+        rr = ReviewerResult(approved=True, comments=(), sha="", reviewer="kiro-reviewer")
+        body = render_pr_review_comment(rr, issue_number=73)
+        assert "## 🤖 KiroCrew Review" in body
+        assert "**Resultado:** ✅ Aprovado" in body
+        assert "issue #73" in body
+        # sem pedidos de mudança quando aprovado sem comentários
+        assert "Pedidos de mudança" not in body
+
+    def test_pedidos_de_mudanca_com_comentarios(self) -> None:
+        from flow.audit.state_comment import ReviewerResult, render_pr_review_comment
+        comments = [
+            "deployment.py: import local sem justificativa",
+            "_dry_run_report(): skipped pode ser negativo",
+        ]
+        rr = ReviewerResult(approved=False, comments=tuple(comments), sha="", reviewer="kiro-reviewer")
+        body = render_pr_review_comment(rr, issue_number=73)
+        assert "**Resultado:** ⚠️ Pedidos de mudança" in body
+        assert "Pedidos de mudança" in body
+        assert "- deployment.py: import local sem justificativa" in body
+        assert "- _dry_run_report(): skipped pode ser negativo" in body
+
+    def test_um_bullet_por_comentario(self) -> None:
+        from flow.audit.state_comment import ReviewerResult, render_pr_review_comment
+        comments = ["a", "b", "c"]
+        rr = ReviewerResult(approved=False, comments=tuple(comments), sha="", reviewer="kiro-reviewer")
+        body = render_pr_review_comment(rr, issue_number=1
+        )
+        assert body.count("\n- ") == 3
+
+
+# ---------------------------------------------------------------------------
+# render_issue_pr_reference
+# ---------------------------------------------------------------------------
+
+class TestRenderIssuePrReference:
+    def test_aprovado(self) -> None:
+        from flow.audit.state_comment import render_issue_pr_reference
+        ref = render_issue_pr_reference(pr_number=74, approved=True)
+        assert "PR #74" in ref
+        assert "aprovado" in ref
+        assert "pedidos de mudança" not in ref
+
+    def test_pedidos_de_mudanca(self) -> None:
+        from flow.audit.state_comment import render_issue_pr_reference
+        ref = render_issue_pr_reference(pr_number=74, approved=False)
+        assert "PR #74" in ref
+        assert "pedidos de mudança" in ref
+
+    def test_nao_duplica_detalhe(self) -> None:
+        """A referência curta não deve conter bullets de detalhe."""
+        from flow.audit.state_comment import render_issue_pr_reference
+        ref = render_issue_pr_reference(pr_number=74, approved=False)
+        assert "### Pedidos de mudança" not in ref
+        assert "\n- " not in ref
