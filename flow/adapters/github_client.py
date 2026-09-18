@@ -1,39 +1,133 @@
-"""Adapter GitHub para KiroCrew Flow.
+"""Adapter GitHub — orquestração; satisfaz IssueProvider.
 
-Satisfaz o Protocol ``IssueProvider`` de ``flow.ports.issue_provider``.
-Este módulo é composto por três camadas:
+Composição das três camadas:
+  github_transport.py    — I/O via gh CLI (patchável nos testes)
+  github_normalization.py — payload cru → contrato canônico
+  este módulo            — lógica de orquestração
 
-  github_transport.py    — I/O bruto via ``gh`` CLI (fachada patchável nos testes)
-  github_normalization.py — payload do GitHub → contrato canônico
-  github_client.py       — orquestração; implementa a superfície da porta
+IDENTIDADE GITHUB: no GitHub a "issue" pertence a um repositório,
+não a um projeto. A porta usa ``project`` para ser agnóstica de provedor,
+então aqui ``project`` é sempre "owner/repo" (ex: "eliasrosa/kirocrew-flow").
 
-TODO: implementação em andamento (#18).
+O comentário de estado usa o marcador <!-- KIRO-FLOW-STATE --> / <!-- /KIRO-FLOW-STATE -->.
+O método upsert_state_comment localiza e atualiza um comentário existente
+para não poluir a thread de comentários com duplicatas.
 """
 
 from __future__ import annotations
 
-from flow.ports.issue_provider import ProviderNotFoundError, ProviderSetupError  # noqa: F401
+from flow.adapters import github_normalization as norm
+from flow.adapters import github_transport as transport
+from flow.ports.issue_provider import ProviderNotFoundError
 
 
 def get_work_item(project: str, key: str) -> dict:
-    raise NotImplementedError("GitHub adapter — get_work_item (#18)")
+    """Retorna a issue normalizada.
+
+    ``project`` = "owner/repo"
+    ``key``     = número da issue como string (ex: "42") ou URL completa
+    """
+    # Extrai o número da issue de diferentes formatos
+    number = _parse_issue_number(key)
+    raw = transport.get_issue(project, number)
+    if not raw:
+        raise ProviderNotFoundError(f"issue #{number} não encontrada em {project!r}")
+    return norm.normalize_item(raw)
 
 
 def list_by_state(project: str, state: str) -> list[dict]:
-    raise NotImplementedError("GitHub adapter — list_by_state (#18)")
+    """Lista issues abertas com a label de estado dada.
+
+    ``state`` = valor de um State, ex: "crewflow:todo"
+    """
+    raw_list = transport.list_issues_by_label(project, label=state)
+    return norm.normalize_items(raw_list)
 
 
 def list_changed_since(project: str, since_hash: str) -> list[dict]:
-    raise NotImplementedError("GitHub adapter — list_changed_since (#18)")
+    """Lista issues cujas labels mudaram desde o hash armazenado.
+
+    Estratégia: lista todas as issues com labels crewflow:* e filtra
+    aquelas cujo hash atual difere do ``since_hash``.
+
+    Para um scan de alta escala: use a API de events/timeline para
+    verificar apenas issues com label_added/label_removed recentes.
+    """
+    import itertools
+
+    from flow.domain.state import State
+
+    all_items: list[dict] = []
+    seen_keys: set[str] = set()
+
+    for state in State:
+        raw_list = transport.list_issues_by_label(project, label=state.value)
+        for item in norm.normalize_items(raw_list):
+            k = item["key"]
+            if k not in seen_keys:
+                seen_keys.add(k)
+                current_hash = norm.labels_hash(item["labels"])
+                if current_hash != since_hash:
+                    all_items.append(item)
+
+    return all_items
 
 
 def set_labels(project: str, key: str, labels: list[str]) -> None:
-    raise NotImplementedError("GitHub adapter — set_labels (#18)")
+    number = _parse_issue_number(key)
+    transport.set_issue_labels(project, number, labels)
 
 
 def upsert_state_comment(project: str, key: str, body: str) -> None:
-    raise NotImplementedError("GitHub adapter — upsert_state_comment (#18)")
+    """Cria ou atualiza o comentário <!-- KIRO-FLOW-STATE --> da issue."""
+    number = _parse_issue_number(key)
+    comments = transport.get_issue_comments(project, number)
+
+    # Procura por comentário existente com o marcador
+    existing_id: int | None = None
+    for comment in comments:
+        if norm.STATE_COMMENT_MARKER in comment.get("body", ""):
+            existing_id = comment["id"]
+            break
+
+    if existing_id is not None:
+        transport.update_issue_comment(project, existing_id, body)
+    else:
+        transport.create_issue_comment(project, number, body)
 
 
 def get_state_comment(project: str, key: str) -> str | None:
-    raise NotImplementedError("GitHub adapter — get_state_comment (#18)")
+    """Retorna o conteúdo do comentário de estado, ou None."""
+    number = _parse_issue_number(key)
+    comments = transport.get_issue_comments(project, number)
+
+    for comment in comments:
+        body = comment.get("body", "")
+        if norm.STATE_COMMENT_MARKER in body:
+            return body
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Helpers internos
+# ---------------------------------------------------------------------------
+
+def _parse_issue_number(key: str) -> int:
+    """Extrai o número de issue de diferentes formatos.
+
+    Aceita:
+      "42"            → 42
+      "#42"           → 42
+      "owner/repo#42" → 42
+      "https://github.com/.../issues/42" → 42
+    """
+    key = key.strip()
+    if key.startswith("#"):
+        return int(key[1:])
+    if "/" in key or "https://" in key:
+        # Extrai o número do final da string
+        import re
+        m = re.search(r"#(\d+)$|/(\d+)$", key)
+        if m:
+            return int(m.group(1) or m.group(2))
+    return int(key)
