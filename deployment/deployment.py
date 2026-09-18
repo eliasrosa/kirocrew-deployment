@@ -41,7 +41,7 @@ if _REPO_ROOT not in sys.path:
 
 from flow.ports.issue_provider import provider_for  # noqa: E402
 from flow.scan.cache import open_cache  # noqa: E402
-from flow.scan.scanner import SquadScanConfig, scan_candidates  # noqa: E402
+from flow.scan.scanner import scan_candidates  # noqa: E402
 
 # ── Labels (mantidas para o prompt de dispatch) ───────────────────────────
 LABEL_DEV     = "crewflow:dev"
@@ -252,20 +252,69 @@ def run(ctx: object) -> None:
         logger.warning("deployment: nenhum repo/projeto configurado")
         return
 
-    # ── Inicializa o provider e o cache via arquitetura hexagonal ─────────
-    provider = provider_for(issue_provider_name)
-    squad_config = SquadScanConfig(
-        squad_id=cfg.get("squad_id", "default"),
-        issue_provider=issue_provider_name,
-        projects=tuple(repos),
-        repos=frozenset(repos),  # até squad config ser implementada (#3)
-    )
+    # ── Carrega a SquadConfig: arquivo squads/<id>.yaml > inline da config ─
+    from flow.config.squad import SquadConfig, SquadConfigError, load_squad
 
-    conn: sqlite3.Connection = open_cache(squad_config.squad_id)
+    squad: SquadConfig | None = None
+    squad_file = cfg.get("squad_config")   # caminho opcional na config
+    if squad_file and os.path.exists(squad_file):
+        try:
+            squad = load_squad(squad_file)
+            logger.info("deployment: squad carregada de %s (%s)", squad_file, squad.id)
+        except SquadConfigError as exc:
+            logger.warning("deployment: falha ao carregar squad config: %s", exc)
+
+    if squad is None:
+        # Constrói inline a partir da config legada
+        from flow.config.squad import _parse_squad
+        raw: dict = {
+            "id": cfg.get("squad_id", "default"),
+            "issue_provider": issue_provider_name,
+            "repos": repos,
+            "workflow_template": cfg.get("workflow_template", "versao-c"),
+        }
+        if cfg.get("project"):
+            raw["project"] = cfg["project"]
+        raw_params = cfg.get("workflow_params") or {}
+        if raw_params:
+            raw["workflow_params"] = raw_params
+        raw_routing = cfg.get("routing") or []
+        if raw_routing:
+            raw["routing"] = raw_routing
+        try:
+            squad = _parse_squad(raw)
+            logger.debug("deployment: squad construída inline (id=%s)", squad.id)
+        except SquadConfigError as exc:
+            logger.error("deployment: squad config inválida: %s", exc)
+
+    # ── Inicializa o provider e o cache ────────────────────────────────────
+    provider = provider_for(issue_provider_name)
+
+    # Usa SquadScanConfig como adaptador entre SquadConfig e scan_candidates
+    # (scan_candidates aceita qualquer objeto com squad_id, issue_provider,
+    #  projects e repos — SquadConfig satisfaz essa interface)
+    if squad is not None:
+        from flow.scan.scanner import SquadScanConfig
+        scan_cfg = SquadScanConfig(
+            squad_id=squad.id,
+            issue_provider=squad.issue_provider,
+            projects=tuple(squad.projects),
+            repos=squad.repos,
+        )
+    else:
+        from flow.scan.scanner import SquadScanConfig
+        scan_cfg = SquadScanConfig(
+            squad_id=cfg.get("squad_id", "default"),
+            issue_provider=issue_provider_name,
+            projects=tuple(repos),
+            repos=frozenset(repos),
+        )
+
+    conn: sqlite3.Connection = open_cache(scan_cfg.squad_id)
 
     # ── Executa o scan zero-token ─────────────────────────────────────────
     try:
-        scan_results = scan_candidates(squad_config, provider, conn)
+        scan_results = scan_candidates(scan_cfg, provider, conn)
     except Exception as exc:
         logger.error("deployment: erro no scan: %s", exc)
         from kiro_crew.cron import Skip  # type: ignore[import]

@@ -254,3 +254,46 @@ class TestExecutorDecision:
         assert d.block_reason == ""
         assert d.add_labels == ()
         assert d.remove_labels == ()
+
+
+# ---------------------------------------------------------------------------
+# decide() com squad config
+# ---------------------------------------------------------------------------
+
+class TestDecideComSquadConfig:
+    def _squad_com_routing(self) -> object:
+        from flow.config.squad import _parse_squad
+        return _parse_squad({
+            "id": "test",
+            "issue_provider": "github",
+            "repos": ["owner/repo"],
+            "routing": [
+                {"match": {"labels": ["crewflow:hotfix"]}, "workflow": "hotfix-flow"},
+                {"match": {"labels": ["crewflow:bug"]}, "workflow": "bug-flow"},
+                {"match": {"labels": ["crewflow:debt"]}, "workflow": "debt-flow"},
+                {"default": "feature-flow"},
+            ],
+        })
+
+    def test_usa_resolve_workflow_do_squad(self) -> None:
+        """Com squad, usa routing declarativo em vez de _detect_template."""
+        squad = self._squad_com_routing()
+        r = _result(state=State.TODO, labels=["crewflow:todo", "crewflow:hotfix", "crewflow:p1"])
+        d = decide(r, squad=squad)
+        # hotfix com p1 → dispatch_dev (não notifica TL como debt faria)
+        assert d.action is ActionKind.DISPATCH_DEV
+
+    def test_squad_none_usa_fallback(self) -> None:
+        """Sem squad, continua funcionando com _detect_template."""
+        r = _result(state=State.TODO, labels=["crewflow:todo", "crewflow:feature"])
+        d = decide(r, squad=None)
+        assert d.action is ActionKind.DISPATCH_DEV
+
+    def test_squad_resolve_workflow_debt(self) -> None:
+        """Com squad, o routing de debt vai pelo caminho correto."""
+        squad = self._squad_com_routing()
+        r = _result(state=State.TODO, labels=["crewflow:todo", "crewflow:debt"])
+        d = decide(r, squad=squad)
+        # debt + TODO → notifica TL (GATE DT)
+        assert d.action is ActionKind.NOTIFY_HUMAN
+        assert d.notify_role is HumanRole.TL

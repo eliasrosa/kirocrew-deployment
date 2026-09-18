@@ -16,9 +16,14 @@ notify_chat_id: "<SEU_CHAT_ID>"
 #   true  = dispara uma sessão one-shot que implementa, abre o PR e encerra
 auto_dispatch: false
 
-# ── Template de workflow ──────────────────────────────────────────────────
-# Fase 1: fixo. Fase 3: editável no canvas (estilo n8n).
-workflow_template: versao-c        # versao-a | versao-b | versao-c
+# ── Configuração de squad (opcional mas recomendado) ──────────────────────
+# Caminho para um arquivo squads/*.yaml. Se fornecido, a squad config é
+# carregada dele (routing declarativo, workflow_params, etc.). Caso contrário,
+# o deployment constrói a squad inline com os campos abaixo.
+# squad_config: /path/to/squads/my-squad.yaml
+
+# Identificador da squad (usado no nome do cache SQLite)
+# squad_id: cogna-gateway
 
 # Parâmetros do template (configuráveis por squad)
 workflow_params:

@@ -65,15 +65,15 @@ class ExecutorDecision:
 
 
 # ---------------------------------------------------------------------------
-# Routing de template (provisório — será substituído por #4/#5)
+# Routing de template (fallback quando squad não está disponível)
 # ---------------------------------------------------------------------------
 
 def _detect_template(labels: frozenset[str]) -> str:
-    """Detecta o template da issue pelas labels de routing.
+    """Routing de template pelas labels — usado como fallback quando squad=None.
 
-    Ordem de prioridade: hotfix > bug > debt > feature (default).
-    Na Fase 1 esta é a função de routing — será substituída pelo parser
-    de workflows (#4) e pelo routing configurável (#5).
+    Quando uma SquadConfig é passada para decide(), usa squad.resolve_workflow()
+    que é declarativo e configurável. Este fallback mantém compatibilidade
+    com chamadas que não têm squad disponível.
     """
     if "crewflow:hotfix" in labels:
         return "hotfix"
@@ -88,14 +88,19 @@ def _detect_template(labels: frozenset[str]) -> str:
 # Executor principal
 # ---------------------------------------------------------------------------
 
-def decide(scan_result: object, state_comment: str | None = None) -> ExecutorDecision:
+def decide(
+    scan_result: object,
+    state_comment: str | None = None,
+    squad: object | None = None,
+) -> ExecutorDecision:
     """Decide o que fazer com a issue.
 
     Args:
-        scan_result:   ScanResult do scan (tipado como object para não criar
-                       dependência circular — a verificação é feita em runtime)
-        state_comment: conteúdo do comentário <!-- KIRO-FLOW-STATE --> se já
-                       existir na issue; necessário para o bypass do HML.
+        scan_result:   ScanResult do scan
+        state_comment: conteúdo do <!-- KIRO-FLOW-STATE --> se existir
+        squad:         SquadConfig da squad (opcional); quando fornecido,
+                       usa squad.resolve_workflow() para routing — mais
+                       preciso e configurável que o fallback por labels.
 
     Returns:
         ExecutorDecision com a ação e os metadados para o executor de I/O.
@@ -114,7 +119,15 @@ def decide(scan_result: object, state_comment: str | None = None) -> ExecutorDec
     if current_state is None:
         return ExecutorDecision(action=ActionKind.SKIP, reason="issue fora da esteira")
 
-    template = _detect_template(labels)
+    # Routing: usa squad.resolve_workflow() se disponível, fallback por labels
+    if squad is not None:
+        from flow.config.squad import SquadConfig
+        sq: SquadConfig = squad  # type: ignore[assignment]
+        workflow_name = sq.resolve_workflow(labels)
+        # Normaliza para os nomes curtos que o executor usa internamente
+        template = workflow_name.replace("-flow", "")
+    else:
+        template = _detect_template(labels)
 
     # ── GATE 0 do hotfix: triagem ──────────────────────────────────────
     if template == "hotfix":
