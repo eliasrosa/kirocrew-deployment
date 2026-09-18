@@ -66,5 +66,41 @@ dev_root: "/home/<USER>/dev"
 # Caminho do vault Obsidian para espelhar o progresso (opcional; vazio = não espelha).
 vault_root: ""
 
-# Agente do Kiro Crew usado nas sessões one-shot.
+# Agente do Kiro Crew usado nas sessões one-shot (padrão para todos os estágios).
 agent: "kirocrew"
+
+# ── Modelo por estágio (opcional) ─────────────────────────────────────────
+# Quando os crons por estágio estão ativos (run_dev, run_reviewer, etc.),
+# cada estágio pode usar um modelo/agente diferente. Sobrescreve `agent`
+# apenas para o dispatch daquele estágio.
+#
+# stage_models:
+#   dev:       "kirocrew"    # implementação — modelo mais forte (default: `agent`)
+#   reviewer:  "kirocrew"    # code review   — modelo mais rápido (default: `agent`)
+#   merge:     "kirocrew"    # merge squash  — leve, quase sem raciocínio (default: `agent`)
+#   conflito:  "kirocrew"    # re-trabalho   — modelo de implementação (default: `agent`)
+
+# ── Registro dos crons por estágio (recomendado) ──────────────────────────
+# Em vez de um cron monolítico `run`, registre 4 crons independentes.
+# Cada um tem seu log, intervalo e modelo isolados.
+#
+# cron_add(name="crewflow-dev",
+#          script="~/.kiro/crew/crons/deployment.py:run_dev",
+#          every=600)        # dev: a cada 10 min
+#
+# cron_add(name="crewflow-reviewer",
+#          script="~/.kiro/crew/crons/deployment.py:run_reviewer",
+#          every=300)        # reviewer: a cada 5 min
+#
+# cron_add(name="crewflow-merge",
+#          script="~/.kiro/crew/crons/deployment.py:run_merge",
+#          every=120)        # merge: a cada 2 min
+#
+# cron_add(name="crewflow-conflito",
+#          script="~/.kiro/crew/crons/deployment.py:run_conflito",
+#          every=300)        # re-trabalho: a cada 5 min
+#
+# O cron legado `run` ainda funciona e orquestra todos os 4 estágios em sequência:
+# cron_add(name="crewflow-scan",
+#          script="~/.kiro/crew/crons/deployment.py:run",
+#          every=600)

@@ -14,8 +14,30 @@ O dispatch (chamada de sessão one-shot) ainda vive aqui — é o driving adapte
 
 Depende do Kiro Crew rodando (loopback interno). NÃO é standalone.
 
-Registro (uma vez):
-    cron_add(name="crewflow-scan", script="~/.kiro/crew/crons/deployment.py:run", every=600)
+## Entrypoints por estágio (recomendado)
+
+Em vez de um único cron monolítico, a esteira pode ser dividida em 4 crons
+independentes, cada um responsável por um estágio do fluxo:
+
+    run_dev(ctx)       — issues crewflow:todo → dispatch dev (modelo mais forte)
+    run_reviewer(ctx)  — PRs crewflow:review → dispatch reviewer (modelo mais rápido)
+    run_merge(ctx)     — crewflow:review + crewflow:reviewed → merge squash
+    run_conflito(ctx)  — crewflow:changes-requested → dispatch rework
+
+Vantagens:
+  - Observabilidade: cada cron tem log/histórico isolado
+  - Modelo por ação: cada estágio pode usar um modelo diferente via `stage_models`
+  - Blast radius menor: se merge quebra, dev/reviewer seguem
+  - Interval por estágio: reviewer pode varrer mais rápido que dev
+
+Registro (uma vez por estágio):
+    cron_add(name="crewflow-dev",       script="~/.kiro/crew/crons/deployment.py:run_dev",       every=600)
+    cron_add(name="crewflow-reviewer",  script="~/.kiro/crew/crons/deployment.py:run_reviewer",  every=300)
+    cron_add(name="crewflow-merge",     script="~/.kiro/crew/crons/deployment.py:run_merge",     every=120)
+    cron_add(name="crewflow-conflito",  script="~/.kiro/crew/crons/deployment.py:run_conflito",  every=300)
+
+O entrypoint legado `run(ctx)` ainda funciona e orquestra todos os estágios em
+sequência — útil em modo de aviso (auto_dispatch=false) ou durante a migração.
 
 Config: ~/.kiro/crew/crons/deployment.config.yaml (copie de config.example.yaml).
 """
@@ -1685,3 +1707,463 @@ def _execute_auto_merges(
         ctx.notify(  # type: ignore[attr-defined]
             f"KiroCrew Flow: falha no merge automático.{vm}\n{linhas}"
         )
+
+
+# ── Entrypoints por estágio ───────────────────────────────────────────────
+#
+# Cada função de entrypoint é um cron de script independente.
+# Use `run_dev`, `run_reviewer`, `run_merge` e `run_conflito` em vez de `run`
+# para ter crons com logs, intervalos e modelos isolados por estágio.
+#
+# O parâmetro `model` sobrescreve `cfg.agent` apenas para o dispatch deste
+# estágio — o scanner não usa LLM (zero token), só o dispatch usa.
+# Configure via `stage_models` na deployment.config.yaml:
+#
+#   stage_models:
+#     dev:       "kirocrew"            # modelo mais forte (implementação)
+#     reviewer:  "kirocrew"            # modelo mais rápido (review)
+#     merge:     "kirocrew"            # merge squash (leve)
+#     conflito:  "kirocrew"            # re-trabalho pós-review
+
+_STAGE_DEV      = "dev"
+_STAGE_REVIEWER = "reviewer"
+_STAGE_MERGE    = "merge"
+_STAGE_CONFLITO = "conflito"
+
+# ActionKinds por estágio — o filtro que cada entrypoint aplica sobre o scan
+_STAGE_ACTIONS = {
+    _STAGE_DEV:      frozenset({"dispatch_dev"}),
+    _STAGE_REVIEWER: frozenset({"dispatch_reviewer"}),
+    _STAGE_MERGE:    frozenset({"merge_pr"}),
+    _STAGE_CONFLITO: frozenset({"dispatch_rework"}),
+}
+
+
+def _stage_model(cfg: dict, stage: str) -> str | None:
+    """Retorna o agente/modelo configurado para o estágio, ou None (usa cfg["agent"])."""
+    stage_models = cfg.get("stage_models") or {}
+    return stage_models.get(stage) or None
+
+
+def _run_stage(ctx: object, stage: str) -> None:
+    """Executa o ciclo do cron restrito ao estágio indicado.
+
+    O scan é completo (todos os estados), mas só as decisões do estágio
+    são executadas. Labels, notificações e dry-run funcionam normalmente.
+
+    Args:
+        ctx:   contexto do cron do Kiro Crew
+        stage: um dos valores _STAGE_* (dev/reviewer/merge/conflito)
+    """
+    cfg = _load_config()
+
+    # Substituição de agente por modelo do estágio
+    stage_agent = _stage_model(cfg, stage)
+    if stage_agent:
+        cfg = dict(cfg)  # cópia rasa — não muta a config global
+        cfg["agent"] = stage_agent
+
+    repos: list[str] = cfg.get("repos") or []
+    auto = bool(cfg.get("auto_dispatch", False))
+    max_conc = int(cfg.get("max_concurrent_tasks") or cfg.get("max_concurrent", 2))
+    one_per_repo = bool(cfg.get("one_per_repo", True))
+    dev_root: str = cfg.get("dev_root") or os.path.expanduser("~/dev")
+    chat_id = cfg.get("notify_chat_id") or ""
+    issue_provider_name: str = cfg.get("issue_provider", "github")
+
+    dry_run = bool(os.environ.get("CREWFLOW_DRY_RUN")) or bool(cfg.get("dry_run", False))
+    if dry_run:
+        logger.info("deployment[%s]: modo dry-run ativado — nenhuma ação será executada", stage)
+
+    if not repos:
+        logger.warning("deployment[%s]: nenhum repo/projeto configurado", stage)
+        return
+
+    # ── Carrega a SquadConfig ────────────────────────────────────────────
+    from flow.config.squad import SquadConfig, SquadConfigError, load_squad
+
+    squad: SquadConfig | None = None
+    squad_file = cfg.get("squad_config")
+    if squad_file and not os.path.exists(squad_file):
+        raise RuntimeError(
+            f"deployment[{stage}]: squad_config aponta para um arquivo que não existe: {squad_file!r}"
+        )
+    if squad_file and os.path.exists(squad_file):
+        try:
+            squad = load_squad(squad_file)
+        except SquadConfigError as exc:
+            logger.warning("deployment[%s]: falha ao carregar squad config: %s", stage, exc)
+
+    if squad is None:
+        from flow.config.squad import _parse_squad
+        raw: dict = {
+            "id": cfg.get("squad_id", "default"),
+            "issue_provider": issue_provider_name,
+            "repos": repos,
+            "workflow_template": cfg.get("workflow_template", "versao-c"),
+        }
+        if cfg.get("project"):
+            raw["project"] = cfg["project"]
+        if cfg.get("workflow_params"):
+            raw["workflow_params"] = cfg["workflow_params"]
+        if cfg.get("routing"):
+            raw["routing"] = cfg["routing"]
+        try:
+            squad = _parse_squad(raw)
+        except SquadConfigError as exc:
+            logger.error("deployment[%s]: squad config inválida: %s", stage, exc)
+
+    provider = provider_for(issue_provider_name)
+
+    from flow.scan.scanner import SquadScanConfig
+    if squad is not None:
+        scan_cfg = SquadScanConfig(
+            squad_id=squad.id,
+            issue_provider=squad.issue_provider,
+            projects=tuple(squad.projects),
+            repos=squad.repos,
+        )
+    else:
+        scan_cfg = SquadScanConfig(
+            squad_id=cfg.get("squad_id", "default"),
+            issue_provider=issue_provider_name,
+            projects=tuple(repos),
+            repos=frozenset(repos),
+        )
+
+    conn: sqlite3.Connection = open_cache(scan_cfg.squad_id)
+
+    try:
+        scan_results = scan_candidates(scan_cfg, provider, conn)
+    except Exception as exc:
+        logger.error("deployment[%s]: erro no scan: %s", stage, exc)
+        from kiro_crew.cron import Skip  # type: ignore[import]
+        raise Skip() from exc
+    finally:
+        conn.close()
+
+    from flow.domain.state import Modifier, State
+    from flow.executor.executor import ActionKind, decide, resolve_template
+
+    # Filtra pelo conjunto de ações deste estágio
+    allowed_actions = _STAGE_ACTIONS[stage]
+
+    spec_invalid: list = []
+    dispatch_devs: list = []
+    dispatch_reviewers: list = []
+    dispatch_reworks: list = []
+    needs_human: list = []
+    blocked_bypass: list = []
+    rebranded: list = []
+    merge_prs: list = []
+
+    for result in scan_results:
+        if result.spec_valid is False:
+            spec_invalid.append(result)
+            continue
+
+        needs_comment = (
+            Modifier.HML_BYPASS in result.modifiers
+            or (result.current_state is State.DEV)
+            or (result.current_state is State.TODO and "crewflow:debt" in result.item.labels)
+            or (result.current_state is State.REVIEW and Modifier.REVIEWED in result.modifiers)
+            or (Modifier.CHANGES_REQUESTED in result.modifiers)
+        )
+        state_comment: str | None = None
+        if needs_comment:
+            import contextlib
+            with contextlib.suppress(Exception):
+                state_comment = provider.get_state_comment(
+                    result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+                    or (repos[0] if repos else ""),
+                    result.item.key,
+                )
+
+        pr_head_sha: str | None = None
+        if result.current_state is State.REVIEW and Modifier.REVIEWED in result.modifiers:
+            import contextlib
+            with contextlib.suppress(Exception):
+                _repo = (
+                    result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+                    or (repos[0] if repos else "")
+                )
+                _issue_number = int(result.item.key.split("/issues/")[-1]) if "/issues/" in result.item.key else 0
+                if _issue_number and hasattr(provider, "get_pr_for_issue"):
+                    _pr = provider.get_pr_for_issue(_repo, _issue_number)
+                    if _pr:
+                        pr_head_sha = _pr.get("headRefOid") or _pr.get("headRefName")
+
+        decision = decide(result, state_comment=state_comment, squad=squad, pr_head_sha=pr_head_sha)
+
+        template = resolve_template(result, squad)
+        logger.info(
+            "deployment[%s]: issue=%s template=%s action=%s",
+            stage, result.item.key, template, decision.action,
+        )
+
+        # Aplica filtro por estágio: só processa ações deste cron
+        if decision.action.value not in allowed_actions:
+            if decision.action is ActionKind.SKIP:
+                continue
+            # Ação de outro estágio — silêncio; o cron do estágio certo vai pegar
+            logger.debug(
+                "deployment[%s]: action %s ignorada (pertence a outro estágio)",
+                stage, decision.action,
+            )
+            continue
+
+        # Categoriza a ação
+        if decision.action is ActionKind.DISPATCH_DEV:
+            repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            if not repo:
+                repo = repos[0] if repos else ""
+            issue = _scan_result_to_issue(result)
+            dispatch_devs.append((repo, issue, decision))
+
+        elif decision.action is ActionKind.DISPATCH_REVIEWER:
+            repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            issue = _scan_result_to_issue(result)
+            dispatch_reviewers.append((repo, issue))
+
+        elif decision.action is ActionKind.MERGE_PR:
+            repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            issue = _scan_result_to_issue(result)
+            merge_prs.append((repo, issue, state_comment))
+
+        elif decision.action is ActionKind.DISPATCH_REWORK:
+            repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            if not repo:
+                repo = repos[0] if repos else ""
+            issue = _scan_result_to_issue(result)
+            dispatch_reworks.append((repo, issue, state_comment))
+
+    _log_cycle_summary(
+        ctx=ctx,
+        chat_id=chat_id,
+        scan_total=len(scan_results),
+        dispatch_dev=len(dispatch_devs),
+        dispatch_reviewer=len(dispatch_reviewers),
+        dispatch_rework=len(dispatch_reworks),
+        merge_pr=len(merge_prs),
+        notify_human=len(needs_human),
+        block=len(blocked_bypass),
+        rebrand=len(rebranded),
+        spec_invalid=len(spec_invalid),
+    )
+
+    if not any([spec_invalid, dispatch_devs, dispatch_reviewers, dispatch_reworks,
+                needs_human, blocked_bypass, rebranded, merge_prs]):
+        return
+
+    if dry_run:
+        _dry_run_report(
+            scan_results=scan_results,
+            dispatch_devs=dispatch_devs,
+            dispatch_reviewers=dispatch_reviewers,
+            dispatch_reworks=dispatch_reworks,
+            needs_human=needs_human,
+            blocked_bypass=blocked_bypass,
+            rebranded=rebranded,
+            merge_prs=merge_prs,
+            spec_invalid=spec_invalid,
+        )
+        return
+
+    # ── Executa as ações do estágio ──────────────────────────────────────
+    vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
+
+    if stage == _STAGE_DEV:
+        vagas = (max_conc - _active_sessions()) if auto else 0
+        disparadas: list = []
+        adiadas: list = []
+
+        for repo, issue, _decision in dispatch_devs:
+            if not auto:
+                adiadas.append((repo, issue))
+                continue
+            if vagas <= 0:
+                adiadas.append((repo, issue))
+                continue
+            if one_per_repo and _repo_has_active(repo):
+                adiadas.append((repo, issue))
+                continue
+            if _pr_exists(repo, issue["number"]):
+                continue
+            if not _resource_headroom_ok(ctx, max_conc):
+                adiadas.append((repo, issue))
+                continue
+            _clean_stale_worktree(dev_root, repo, issue["number"])
+            try:
+                prompt_extra = squad.dispatch_prompt_extra if squad else ""
+                _dispatch(ctx, repo, issue, cfg, prompt_extra=prompt_extra)
+                disparadas.append((repo, issue))
+                vagas -= 1
+            except Exception as exc:
+                logger.error("deployment[dev]: erro ao despachar %s: %s", issue.get("number"), exc)
+                adiadas.append((repo, issue))
+
+        if auto and disparadas:
+            linhas = "\n".join(f"  - {r}#{i['number']}: {i['title']}" for r, i in disparadas)
+            extra = ""
+            if adiadas:
+                fila = "\n".join(f"  - {r}#{i['number']}: {i['title']}" for r, i in adiadas)
+                extra = f"\n\nNA FILA:\n{fila}"
+            ctx.notify(  # type: ignore[attr-defined]
+                f"KiroCrew Flow [dev]: disparei sessão(ões) one-shot.{vm}\n{linhas}{extra}"
+            )
+        elif auto and adiadas:
+            fila = "\n".join(f"  - {r}#{i['number']}: {i['title']}" for r, i in adiadas)
+            ctx.notify(  # type: ignore[attr-defined]
+                f"KiroCrew Flow [dev]: {len(adiadas)} issue(s) na fila (limite cheio).{vm}\n{fila}"
+            )
+        elif not auto and dispatch_devs:
+            blocos = "\n".join(
+                f"  - {repo}#{issue['number']}: {issue['title']}"
+                for repo, issue, _ in dispatch_devs
+            )
+            ctx.notify(  # type: ignore[attr-defined]
+                f"KiroCrew Flow [dev] (Fase 1): {len(dispatch_devs)} issue(s) prontas.{vm}\n{blocos}"
+            )
+
+    elif stage == _STAGE_REVIEWER:
+        for repo, issue in dispatch_reviewers:
+            issue_number = issue["number"]
+            if _reviewer_has_active(repo, issue_number):
+                logger.info(
+                    "deployment[reviewer]: reviewer já ativo para %s#%s — dispatch ignorado",
+                    repo, issue_number,
+                )
+                continue
+            try:
+                _dispatch_reviewer(ctx, repo, issue, cfg)
+            except Exception as exc:
+                logger.error(
+                    "deployment[reviewer]: erro ao despachar reviewer para %s#%s: %s",
+                    repo, issue_number, exc,
+                )
+
+    elif stage == _STAGE_MERGE:
+        if merge_prs:
+            _execute_auto_merges(ctx, merge_prs, chat_id, provider)
+
+    elif stage == _STAGE_CONFLITO:
+        for repo, issue, state_comment_rework in dispatch_reworks:
+            issue_number = issue["number"]
+            if not auto:
+                ctx.notify(  # type: ignore[attr-defined]
+                    f"KiroCrew Flow [conflito] (Fase 1): re-trabalho pendente — "
+                    f"{repo}#{issue_number}: {issue['title']}.{vm}\n"
+                    f"  Reviewer pediu mudanças. Ative auto_dispatch para despachar automaticamente."
+                )
+                continue
+            if _rework_has_active(repo, issue_number):
+                logger.info(
+                    "deployment[conflito]: sessão de re-trabalho já ativa para %s#%s — dispatch ignorado",
+                    repo, issue_number,
+                )
+                continue
+
+            branch = f"feat/issue-{issue_number}"
+            pr_number_rework: int | None = None
+            try:
+                import subprocess as _sp
+                _pr_res = _sp.run(
+                    ["gh", "pr", "list", "--repo", repo, "--head", branch,
+                     "--state", "open", "--json", "number"],
+                    capture_output=True, text=True, timeout=15, check=False,
+                )
+                if _pr_res.returncode == 0:
+                    _prs = json.loads(_pr_res.stdout or "[]")
+                    if _prs:
+                        pr_number_rework = int(_prs[0]["number"])
+            except Exception as exc_pr:
+                logger.warning(
+                    "deployment[conflito]: erro ao localizar PR para rework %s#%s: %s",
+                    repo, issue_number, exc_pr,
+                )
+
+            if pr_number_rework is None:
+                ctx.notify(  # type: ignore[attr-defined]
+                    f"KiroCrew Flow [conflito]: re-trabalho pendente mas PR não localizado — "
+                    f"{repo}#{issue_number}.{vm}"
+                )
+                continue
+
+            from flow.audit.state_comment import get_review_iterations_from_comment
+            iteration = get_review_iterations_from_comment(state_comment_rework) + 1
+            try:
+                prompt_extra_rework = squad.dispatch_prompt_extra if squad else ""
+                _dispatch_rework(ctx, repo, issue, pr_number_rework, iteration, cfg,
+                                 prompt_extra=prompt_extra_rework)
+            except Exception as exc:
+                logger.error(
+                    "deployment[conflito]: erro ao despachar rework para %s#%s: %s",
+                    repo, issue_number, exc,
+                )
+
+
+def run_dev(ctx: object) -> None:
+    """Entrypoint do cron de implementação.
+
+    Processa issues em ``crewflow:todo`` e despacha sessões one-shot de dev.
+    Ideal com um modelo forte (ex: sonnet-4.5) e intervalo de 600s.
+
+    Configure o modelo via ``stage_models.dev`` na deployment.config.yaml.
+
+    Registro (uma vez):
+        cron_add(name="crewflow-dev",
+                 script="~/.kiro/crew/crons/deployment.py:run_dev",
+                 every=600)
+    """
+    _run_stage(ctx, _STAGE_DEV)
+
+
+def run_reviewer(ctx: object) -> None:
+    """Entrypoint do cron de code review.
+
+    Processa PRs em ``crewflow:review`` (sem ``crewflow:reviewed``) e
+    despacha sessões one-shot do kiro-reviewer.
+    Ideal com um modelo mais rápido e intervalo de 300s.
+
+    Configure o modelo via ``stage_models.reviewer`` na deployment.config.yaml.
+
+    Registro (uma vez):
+        cron_add(name="crewflow-reviewer",
+                 script="~/.kiro/crew/crons/deployment.py:run_reviewer",
+                 every=300)
+    """
+    _run_stage(ctx, _STAGE_REVIEWER)
+
+
+def run_merge(ctx: object) -> None:
+    """Entrypoint do cron de merge.
+
+    Processa PRs aprovados (``crewflow:review`` + ``crewflow:reviewed`` com
+    ReviewerResult aprovado) e executa o merge squash automático.
+    Intervalo curto recomendado: 120s.
+
+    Configure o modelo via ``stage_models.merge`` na deployment.config.yaml.
+
+    Registro (uma vez):
+        cron_add(name="crewflow-merge",
+                 script="~/.kiro/crew/crons/deployment.py:run_merge",
+                 every=120)
+    """
+    _run_stage(ctx, _STAGE_MERGE)
+
+
+def run_conflito(ctx: object) -> None:
+    """Entrypoint do cron de re-trabalho (conflito pós-review).
+
+    Processa issues com ``crewflow:changes-requested`` e despacha sessões
+    one-shot de rework para aplicar os pedidos do reviewer na mesma PR.
+    Intervalo recomendado: 300s.
+
+    Configure o modelo via ``stage_models.conflito`` na deployment.config.yaml.
+
+    Registro (uma vez):
+        cron_add(name="crewflow-conflito",
+                 script="~/.kiro/crew/crons/deployment.py:run_conflito",
+                 every=300)
+    """
+    _run_stage(ctx, _STAGE_CONFLITO)

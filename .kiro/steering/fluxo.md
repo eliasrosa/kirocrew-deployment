@@ -107,6 +107,31 @@ armazenado. Se não mudou, a issue é ignorada. Token só gasto quando há resul
 A sessão one-shot **nunca mergeia e nunca faz deploy**. Ela entrega o PR em
 `crewflow:review` e encerra. Uma passada.
 
+### Crons por estágio (recomendado — Fase 2+)
+
+Em vez de um único cron monolítico (`run`), a esteira pode ser dividida em
+**4 crons independentes**, cada um com log, intervalo e modelo isolados:
+
+| Entrypoint | Estado alvo | Ação | Intervalo recomendado |
+|---|---|---|---|
+| `run_dev` | `crewflow:todo` | `DISPATCH_DEV` — implementa + abre PR | 600s (10 min) |
+| `run_reviewer` | `crewflow:review` (sem `crewflow:reviewed`) | `DISPATCH_REVIEWER` — code review | 300s (5 min) |
+| `run_merge` | `crewflow:review` + `crewflow:reviewed` aprovado | `MERGE_PR` — merge squash | 120s (2 min) |
+| `run_conflito` | `crewflow:changes-requested` | `DISPATCH_REWORK` — re-trabalho | 300s (5 min) |
+
+O modelo por estágio é configurável via `stage_models` na `deployment.config.yaml`:
+
+```yaml
+stage_models:
+  dev:       "kirocrew"   # modelo mais forte para implementação
+  reviewer:  "kirocrew"   # modelo mais rápido para review
+  merge:     "kirocrew"   # leve (merge squash)
+  conflito:  "kirocrew"   # modelo de implementação para re-trabalho
+```
+
+O entrypoint legado `run` ainda funciona e orquestra todos os 4 estágios em
+sequência — útil para migração gradual ou modo de aviso (auto_dispatch=false).
+
 ## Lock anti-loop: `crewflow:reviewed`
 
 Uma análise por SHA. O robô de review adiciona `crewflow:reviewed` depois de

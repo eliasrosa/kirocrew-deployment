@@ -117,6 +117,27 @@ routing:
 # Edite ~/.kiro/crew/crons/deployment.config.yaml com seus paths.
 ```
 
+Depois registre os crons no dashboard do Kiro Crew. Há duas opções:
+
+**Opção A — crons por estágio (recomendado):**
+```
+# Dev: implementação (issues crewflow:todo)
+cron_add(name="crewflow-dev",      script="~/.kiro/crew/crons/deployment.py:run_dev",      every=600)
+# Reviewer: code review (PRs crewflow:review)
+cron_add(name="crewflow-reviewer", script="~/.kiro/crew/crons/deployment.py:run_reviewer", every=300)
+# Merge: merge squash (crewflow:review + crewflow:reviewed aprovado)
+cron_add(name="crewflow-merge",    script="~/.kiro/crew/crons/deployment.py:run_merge",    every=120)
+# Conflito: re-trabalho pós-review (crewflow:changes-requested)
+cron_add(name="crewflow-conflito", script="~/.kiro/crew/crons/deployment.py:run_conflito", every=300)
+```
+
+Cada cron tem log e histórico isolado, e aceita modelo diferente via `stage_models` no config.
+
+**Opção B — cron monolítico legado (todos os estágios em sequência):**
+```
+cron_add(name="crewflow-scan", script="~/.kiro/crew/crons/deployment.py:run", every=600)
+```
+
 ### 3. Aplique as labels
 
 ```bash
