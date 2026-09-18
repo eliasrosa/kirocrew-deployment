@@ -175,3 +175,21 @@ def merge_pull_request(owner_repo: str, pr_number: int, merge_method: str = "squ
         "--method", "PUT",
         "--field", f"merge_method={merge_method}",
     ]))
+
+
+def delete_branch(owner_repo: str, branch: str) -> None:
+    """Deleta um branch remoto via GitHub API.
+
+    Silencioso se o branch não existir (404 é ignorado).
+    """
+    import subprocess
+    result = subprocess.run(
+        ["gh", "api", f"repos/{owner_repo}/git/refs/heads/{branch}",
+         "--method", "DELETE"],
+        capture_output=True,
+        check=False,
+    )
+    # 404 = branch já deletado ou não existe — não é erro
+    if result.returncode != 0 and b"404" not in result.stderr and b"Not Found" not in result.stderr:
+        from flow.ports.issue_provider import ProviderError
+        raise ProviderError(f"delete_branch {branch}: {result.stderr.decode()[:200]}")

@@ -143,3 +143,15 @@ def _parse_issue_number(key: str) -> int:
         if m:
             return int(m.group(1) or m.group(2))
     return int(key)
+
+
+def delete_branch(project: str, branch: str) -> None:
+    """Deleta um branch remoto. Silencioso se não existir."""
+    from flow.adapters import github_transport as _t
+    _t.delete_branch(project, branch)
+
+
+def add_issue_comment(project: str, issue_number: int, body: str) -> dict:
+    """Adiciona um comentário a uma issue."""
+    from flow.adapters import github_transport as _t
+    return _t.create_issue_comment(project, issue_number, body)

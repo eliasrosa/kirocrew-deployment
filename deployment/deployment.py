@@ -690,9 +690,20 @@ def _execute_auto_merges(
                 continue
 
             pr_number = pr["number"]
+            pr_branch = pr.get("headRefName") or pr.get("head", {}).get("ref", "")
 
             # Merge squash
             gh_client.merge_pull_request(repo, pr_number, merge_method="squash")
+
+            # Deleta a branch após confirmar o merge
+            if pr_branch:
+                import contextlib
+                with contextlib.suppress(Exception):
+                    gh_client.delete_branch(repo, pr_branch)
+                    logger.info(
+                        "deployment: branch %s deletada após merge de #%s",
+                        pr_branch, pr_number,
+                    )
 
             # Atualiza labels da issue: remove review/reviewed, adiciona done
             try:
@@ -708,6 +719,18 @@ def _execute_auto_merges(
                 logger.warning(
                     "deployment: merge ok mas falha ao atualizar labels de %s#%s: %s",
                     repo, issue_number, exc,
+                )
+
+            # Comenta na issue registrando o merge automático
+            from datetime import datetime
+            now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
+            import contextlib
+            with contextlib.suppress(Exception):
+                gh_client.add_issue_comment(
+                    repo,
+                    issue_number,
+                    f"✅ **Merge automático** — PR #{pr_number} mergeado em {now}.\n\n"
+                    f"Reviewer aprovou sem comentários. Branch `{pr_branch}` deletada.",
                 )
 
             merged.append((repo, issue))
