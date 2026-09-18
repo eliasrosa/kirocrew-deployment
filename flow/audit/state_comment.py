@@ -33,6 +33,10 @@ from datetime import UTC
 MARKER_OPEN  = "<!-- KIRO-FLOW-STATE -->"
 MARKER_CLOSE = "<!-- /KIRO-FLOW-STATE -->"
 
+# Marcadores do comentário de review do PR (sem o bloco completo de estado)
+PR_REVIEW_COMMENT_MARKER = "<!-- KIRO-FLOW-REVIEW -->"
+PR_REVIEW_COMMENT_CLOSE  = "<!-- /KIRO-FLOW-REVIEW -->"
+
 
 # ---------------------------------------------------------------------------
 # Modelo
@@ -452,3 +456,41 @@ def get_reviewer_result_from_comment(comment_body: str | None) -> ReviewerResult
     if sc is None:
         return None
     return sc.reviewer_result
+
+
+def render_pr_review_comment(
+    reviewer_result: ReviewerResult,
+    issue_number: int | None = None,
+    issue_url: str | None = None,
+) -> str:
+    """Gera o corpo do comentário de review para postar no PR.
+
+    Formato limpo, sem o bloco <!-- KIRO-FLOW-STATE --> completo.
+    O marcador PR_REVIEW_COMMENT_MARKER serve de âncora para upsert.
+    """
+    status_str = "✅ Aprovado" if reviewer_result.approved else "⚠️ Pedidos de mudança"
+    lines: list[str] = [
+        PR_REVIEW_COMMENT_MARKER,
+        "## 🤖 KiroCrew Review",
+        "",
+        f"**Resultado:** {status_str}",
+        f"**Reviewer:** {reviewer_result.reviewer}",
+    ]
+    if reviewer_result.sha:
+        lines.append(f"**SHA:** `{reviewer_result.sha}`")
+
+    if reviewer_result.comments:
+        lines += [
+            "",
+            "### Pedidos de mudança",
+        ]
+        for c in reviewer_result.comments:
+            lines.append(f"- {c}")
+
+    lines.append("")
+    ref = f"issue #{issue_number}" if issue_number else "a issue"
+    if issue_url:
+        ref = f"[issue #{issue_number}]({issue_url})" if issue_number else f"[a issue]({issue_url})"
+    lines.append(f"*Reviewer automático — {ref}*")
+    lines.append(PR_REVIEW_COMMENT_CLOSE)
+    return "\n".join(lines)

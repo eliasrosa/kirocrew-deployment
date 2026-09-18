@@ -323,6 +323,9 @@ class TestAutoMergeIntegration:
             mock.patch("flow.adapters.github_client.get_work_item",
                        return_value={"labels": ["crewflow:review", "crewflow:reviewed", "crewflow:feature"]}),
             mock.patch("flow.adapters.github_client.set_labels"),
+            mock.patch("flow.adapters.github_client.upsert_pr_review_comment"),
+            mock.patch("flow.adapters.github_client.get_state_comment", return_value=state_body),
+            mock.patch("flow.adapters.github_client.upsert_state_comment"),
         ):
             mock_cache.return_value.__enter__ = mock.MagicMock(
                 return_value=sqlite3.connect(":memory:"))
@@ -813,3 +816,200 @@ class TestRunDispatchReviewer:
             run(ctx)
 
         mock_disp_rev.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _post_reviewer_result_on_pr — posta resultado do reviewer no PR
+# ---------------------------------------------------------------------------
+
+class TestPostReviewerResultOnPr:
+    """_post_reviewer_result_on_pr posta o ReviewerResult no PR e atualiza a issue."""
+
+    def _make_state_comment_with_result(self, approved: bool, comments: list[str]) -> str:
+        from flow.audit.state_comment import StateComment, render
+        sc = StateComment(
+            workflow="feature (v1)",
+            current_node="review",
+            status="running",
+            repo="owner/myrepo",
+        )
+        sc.set_reviewer_result(approved=approved, comments=comments, sha="abc123")
+        return render(sc)
+
+    def test_posta_no_pr_quando_pr_encontrado(self) -> None:
+        from deployment.deployment import _post_reviewer_result_on_pr
+        from flow.adapters import github_client
+
+        state_comment = self._make_state_comment_with_result(approved=True, comments=[])
+        pr = {"number": 10, "headRefName": "feat/issue-42"}
+
+        with mock.patch.object(github_client, "get_pr_for_issue", return_value=pr), \
+             mock.patch.object(github_client, "upsert_pr_review_comment") as mock_upsert, \
+             mock.patch.object(github_client, "get_state_comment", return_value=state_comment), \
+             mock.patch.object(github_client, "upsert_state_comment"):
+            _post_reviewer_result_on_pr("owner/myrepo", 42, "https://github.com/owner/myrepo/issues/42", state_comment)
+
+        mock_upsert.assert_called_once()
+        body = mock_upsert.call_args[0][2]
+        assert "KiroCrew Review" in body
+        assert "✅ Aprovado" in body
+
+    def test_nao_posta_se_pr_nao_encontrado(self) -> None:
+        from deployment.deployment import _post_reviewer_result_on_pr
+        from flow.adapters import github_client
+
+        state_comment = self._make_state_comment_with_result(approved=True, comments=[])
+
+        with mock.patch.object(github_client, "get_pr_for_issue", return_value=None), \
+             mock.patch.object(github_client, "upsert_pr_review_comment") as mock_upsert:
+            _post_reviewer_result_on_pr("owner/myrepo", 42, "https://github.com/owner/myrepo/issues/42", state_comment)
+
+        mock_upsert.assert_not_called()
+
+    def test_nao_posta_se_reviewer_result_ausente(self) -> None:
+        from deployment.deployment import _post_reviewer_result_on_pr
+        from flow.adapters import github_client
+
+        state_comment = "comentário normal sem ReviewerResult"
+
+        with mock.patch.object(github_client, "get_pr_for_issue") as mock_pr, \
+             mock.patch.object(github_client, "upsert_pr_review_comment") as mock_upsert:
+            _post_reviewer_result_on_pr("owner/myrepo", 42, "https://github.com/owner/myrepo/issues/42", state_comment)
+
+        mock_pr.assert_not_called()
+        mock_upsert.assert_not_called()
+
+    def test_posta_pedidos_de_mudanca_quando_reprovado(self) -> None:
+        from deployment.deployment import _post_reviewer_result_on_pr
+        from flow.adapters import github_client
+
+        state_comment = self._make_state_comment_with_result(
+            approved=False,
+            comments=["Falta cobertura em X", "Nome confuso"],
+        )
+        pr = {"number": 10, "headRefName": "feat/issue-42"}
+
+        with mock.patch.object(github_client, "get_pr_for_issue", return_value=pr), \
+             mock.patch.object(github_client, "upsert_pr_review_comment") as mock_upsert, \
+             mock.patch.object(github_client, "get_state_comment", return_value=state_comment), \
+             mock.patch.object(github_client, "upsert_state_comment"):
+            _post_reviewer_result_on_pr("owner/myrepo", 42, "https://github.com/owner/myrepo/issues/42", state_comment)
+
+        mock_upsert.assert_called_once()
+        body = mock_upsert.call_args[0][2]
+        assert "⚠️ Pedidos de mudança" in body
+        assert "Falta cobertura em X" in body
+        assert "Nome confuso" in body
+
+    def test_erro_no_upsert_nao_propaga_excecao(self) -> None:
+        """Falha ao postar no PR é silenciosa — o resultado já está na issue."""
+        from deployment.deployment import _post_reviewer_result_on_pr
+        from flow.adapters import github_client
+        from flow.ports.issue_provider import ProviderError
+
+        state_comment = self._make_state_comment_with_result(approved=True, comments=[])
+        pr = {"number": 10, "headRefName": "feat/issue-42"}
+
+        with mock.patch.object(github_client, "get_pr_for_issue", return_value=pr), \
+             mock.patch.object(github_client, "upsert_pr_review_comment", side_effect=ProviderError("falha")), \
+             mock.patch.object(github_client, "get_state_comment", return_value=None):
+            # Não deve lançar exceção
+            _post_reviewer_result_on_pr("owner/myrepo", 42, "https://github.com/owner/myrepo/issues/42", state_comment)
+
+
+# ---------------------------------------------------------------------------
+# render_pr_review_comment — renderizador do comentário no PR
+# ---------------------------------------------------------------------------
+
+class TestRenderPrReviewComment:
+    """render_pr_review_comment gera o formato correto para o PR."""
+
+    def test_aprovado_sem_comentarios(self) -> None:
+        from flow.audit.state_comment import ReviewerResult, render_pr_review_comment
+
+        rr = ReviewerResult(approved=True, comments=(), sha="abc123")
+        body = render_pr_review_comment(rr, issue_number=42, issue_url="https://github.com/owner/repo/issues/42")
+
+        assert "<!-- KIRO-FLOW-REVIEW -->" in body
+        assert "<!-- /KIRO-FLOW-REVIEW -->" in body
+        assert "✅ Aprovado" in body
+        assert "Pedidos de mudança" not in body
+        assert "issue #42" in body
+
+    def test_reprovado_com_comentarios(self) -> None:
+        from flow.audit.state_comment import ReviewerResult, render_pr_review_comment
+
+        rr = ReviewerResult(approved=False, comments=("Falta teste", "Import errado"), sha="")
+        body = render_pr_review_comment(rr, issue_number=10)
+
+        assert "⚠️ Pedidos de mudança" in body
+        assert "Falta teste" in body
+        assert "Import errado" in body
+
+    def test_marcadores_presentes(self) -> None:
+        from flow.audit.state_comment import (
+            PR_REVIEW_COMMENT_CLOSE,
+            PR_REVIEW_COMMENT_MARKER,
+            ReviewerResult,
+            render_pr_review_comment,
+        )
+
+        rr = ReviewerResult(approved=True, comments=())
+        body = render_pr_review_comment(rr)
+
+        assert PR_REVIEW_COMMENT_MARKER in body
+        assert PR_REVIEW_COMMENT_CLOSE in body
+
+    def test_sha_aparece_quando_fornecido(self) -> None:
+        from flow.audit.state_comment import ReviewerResult, render_pr_review_comment
+
+        rr = ReviewerResult(approved=True, comments=(), sha="deadbeef")
+        body = render_pr_review_comment(rr)
+
+        assert "deadbeef" in body
+
+    def test_sem_sha_nao_aparece_linha_sha(self) -> None:
+        from flow.audit.state_comment import ReviewerResult, render_pr_review_comment
+
+        rr = ReviewerResult(approved=True, comments=(), sha="")
+        body = render_pr_review_comment(rr)
+
+        assert "**SHA:**" not in body
+
+
+# ---------------------------------------------------------------------------
+# upsert_pr_review_comment — upsert no PR (github_client)
+# ---------------------------------------------------------------------------
+
+class TestUpsertPrReviewComment:
+    """upsert_pr_review_comment cria ou atualiza o comentário de review no PR."""
+
+    def test_cria_se_nenhum_existente(self) -> None:
+        from flow.adapters import github_client, github_transport
+
+        with mock.patch.object(github_transport, "get_pr_comments", return_value=[]), \
+             mock.patch.object(github_transport, "create_pr_comment") as mock_create:
+            github_client.upsert_pr_review_comment("owner/repo", 10, "<!-- KIRO-FLOW-REVIEW --> body")
+
+        mock_create.assert_called_once_with("owner/repo", 10, "<!-- KIRO-FLOW-REVIEW --> body")
+
+    def test_atualiza_se_ja_existe(self) -> None:
+        from flow.adapters import github_client, github_transport
+
+        existing = [{"id": 999, "body": "<!-- KIRO-FLOW-REVIEW --> old body <!-- /KIRO-FLOW-REVIEW -->"}]
+        with mock.patch.object(github_transport, "get_pr_comments", return_value=existing), \
+             mock.patch.object(github_transport, "update_pr_comment") as mock_update:
+            github_client.upsert_pr_review_comment("owner/repo", 10, "<!-- KIRO-FLOW-REVIEW --> new body")
+
+        mock_update.assert_called_once_with("owner/repo", 999, "<!-- KIRO-FLOW-REVIEW --> new body")
+
+    def test_nao_cria_duplicata(self) -> None:
+        from flow.adapters import github_client, github_transport
+
+        existing = [{"id": 999, "body": "<!-- KIRO-FLOW-REVIEW --> old body <!-- /KIRO-FLOW-REVIEW -->"}]
+        with mock.patch.object(github_transport, "get_pr_comments", return_value=existing), \
+             mock.patch.object(github_transport, "create_pr_comment") as mock_create, \
+             mock.patch.object(github_transport, "update_pr_comment"):
+            github_client.upsert_pr_review_comment("owner/repo", 10, "body")
+
+        mock_create.assert_not_called()

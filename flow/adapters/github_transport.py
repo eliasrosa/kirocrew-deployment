@@ -177,6 +177,36 @@ def merge_pull_request(owner_repo: str, pr_number: int, merge_method: str = "squ
     ]))
 
 
+def get_pr_comments(owner_repo: str, pr_number: int) -> list:
+    """Retorna os comentários (issue comments) de um PR.
+
+    PRs compartilham a mesma thread de comentários que a issue no GitHub,
+    acessível via ``/issues/{n}/comments``. Usa o número do PR diretamente.
+    """
+    return cast(list, _run([
+        "api", f"repos/{owner_repo}/issues/{pr_number}/comments",
+        "--jq", ".",
+    ]))
+
+
+def create_pr_comment(owner_repo: str, pr_number: int, body: str) -> dict:
+    """Cria um comentário num PR."""
+    return cast(dict, _run([
+        "api", f"repos/{owner_repo}/issues/{pr_number}/comments",
+        "--method", "POST",
+        "--field", f"body={body}",
+    ]))
+
+
+def update_pr_comment(owner_repo: str, comment_id: int, body: str) -> dict:
+    """Atualiza um comentário existente num PR."""
+    return cast(dict, _run([
+        "api", f"repos/{owner_repo}/issues/comments/{comment_id}",
+        "--method", "PATCH",
+        "--field", f"body={body}",
+    ]))
+
+
 def delete_branch(owner_repo: str, branch: str) -> None:
     """Deleta um branch remoto via GitHub API.
 

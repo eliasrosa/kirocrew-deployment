@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from flow.adapters import github_normalization as norm
 from flow.adapters import github_transport as transport
+from flow.audit.state_comment import PR_REVIEW_COMMENT_MARKER
 from flow.ports.issue_provider import ProviderNotFoundError
 
 
@@ -118,6 +119,25 @@ def merge_pull_request(project: str, pr_number: int, merge_method: str = "squash
     Lança ``ProviderError`` se o merge falhar (ex: checks falhando, conflito).
     """
     return transport.merge_pull_request(project, pr_number, merge_method=merge_method)
+
+
+def upsert_pr_review_comment(project: str, pr_number: int, body: str) -> None:
+    """Cria ou atualiza o comentário <!-- KIRO-FLOW-REVIEW --> no PR.
+
+    Segue o mesmo padrão de upsert_state_comment: evita poluir a thread
+    com múltiplos comentários — atualiza in-place se já existir.
+    """
+    comments = transport.get_pr_comments(project, pr_number)
+    existing_id: int | None = None
+    for comment in comments:
+        if PR_REVIEW_COMMENT_MARKER in comment.get("body", ""):
+            existing_id = comment["id"]
+            break
+
+    if existing_id is not None:
+        transport.update_pr_comment(project, existing_id, body)
+    else:
+        transport.create_pr_comment(project, pr_number, body)
 
 
 # ---------------------------------------------------------------------------

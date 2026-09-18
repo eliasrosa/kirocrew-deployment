@@ -379,7 +379,7 @@ def run(ctx: object) -> None:
     needs_human: list[tuple[ScanResult, object, str | None]] = []  # (result, decision, sc)
     blocked_bypass: list[ScanResult] = []                # result com bypass sem justif
     rebranded: list[tuple[ScanResult, object]] = []      # (result, decision)
-    merge_prs: list[tuple[str, dict]] = []               # (repo, issue) — merge squash automático
+    merge_prs: list[tuple[str, dict, str | None]] = []   # (repo, issue, state_comment) — merge squash automático
 
     for result in scan_results:
         # Flags do scan que não precisam do executor
@@ -436,7 +436,7 @@ def run(ctx: object) -> None:
         elif decision.action is ActionKind.MERGE_PR:
             repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
             issue = _scan_result_to_issue(result)
-            merge_prs.append((repo, issue))
+            merge_prs.append((repo, issue, state_comment))
         elif decision.action is ActionKind.DISPATCH_DEV:
             repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
             if not repo:
@@ -604,6 +604,18 @@ def _notify_human_actions(ctx: object, items: list, chat_id: str) -> None:
             )
             continue
         tl_to_notify.append((r, d))
+
+        # Se o state comment tem ReviewerResult, posta no PR antes de notificar o TL
+        # (caso: reviewer retornou pedidos de mudança → NOTIFY_HUMAN TL)
+        if sc_obj is not None and sc_obj.reviewer_result is not None:
+            import contextlib
+            with contextlib.suppress(Exception):
+                key = r.item.key  # https://github.com/owner/repo/issues/N
+                parts = key.rstrip("/").split("/")
+                if len(parts) >= 5:
+                    repo_path = f"{parts[-4]}/{parts[-3]}"
+                    issue_num = int(parts[-1])
+                    _post_reviewer_result_on_pr(repo_path, issue_num, key, sc)
 
         # Atualiza o status no comentário de estado para evitar re-notificação
         if sc_obj is not None:
@@ -809,6 +821,96 @@ def _dispatch_reviewer(
         )
 
 
+def _post_reviewer_result_on_pr(
+    repo: str,
+    issue_number: int,
+    issue_url: str,
+    state_comment: str | None,
+) -> None:
+    """Posta (ou atualiza) o resultado do reviewer como comentário no PR.
+
+    Localiza o PR aberto associado à issue, depois posta o comentário formatado.
+    Silencioso em caso de erro — o resultado já está na issue; o PR é bonus.
+    """
+    import contextlib
+
+    from flow.adapters import github_client as gh_client
+    from flow.audit.state_comment import get_reviewer_result_from_comment, render_pr_review_comment
+
+    reviewer_result = get_reviewer_result_from_comment(state_comment)
+    if reviewer_result is None:
+        logger.warning(
+            "deployment: _post_reviewer_result_on_pr: ReviewerResult ausente para %s#%s",
+            repo, issue_number,
+        )
+        return
+
+    pr = gh_client.get_pr_for_issue(repo, issue_number)
+    if pr is None:
+        logger.info(
+            "deployment: _post_reviewer_result_on_pr: PR aberto não encontrado para %s#%s — pulando",
+            repo, issue_number,
+        )
+        return
+
+    pr_number = pr["number"]
+    body = render_pr_review_comment(
+        reviewer_result,
+        issue_number=issue_number,
+        issue_url=issue_url,
+    )
+
+    with contextlib.suppress(Exception):
+        gh_client.upsert_pr_review_comment(repo, pr_number, body)
+        logger.info(
+            "deployment: resultado do reviewer postado no PR #%s (%s#%s)",
+            pr_number, repo, issue_number,
+        )
+
+    # Referência curta na issue: atualiza o state comment com link para o PR
+    _update_issue_with_pr_ref(repo, issue_number, pr_number, reviewer_result)
+
+
+def _update_issue_with_pr_ref(
+    repo: str,
+    issue_number: int,
+    pr_number: int,
+    reviewer_result: object,
+) -> None:
+    """Adiciona referência curta ao PR no comentário de estado da issue.
+
+    Adiciona linha no histórico indicando onde o review foi postado.
+    Não altera o ReviewerResult — o scan continua lendo dali.
+    """
+    import contextlib
+
+    from flow.adapters import github_client as gh_client
+    from flow.audit.state_comment import ReviewerResult
+    from flow.audit.state_comment import parse as _parse
+    from flow.audit.state_comment import render as _render
+
+    rr: ReviewerResult = reviewer_result  # type: ignore[assignment]
+    state_comment_body = gh_client.get_state_comment(repo, str(issue_number))
+    if state_comment_body is None:
+        return
+
+    sc = _parse(state_comment_body)
+    if sc is None:
+        return
+
+    status_str = "aprovado" if rr.approved else "pedidos de mudança"
+    pr_url = f"https://github.com/{repo}/pull/{pr_number}"
+    sc.add_transition(
+        from_state="review",
+        to_state=f"review (resultado no [PR #{pr_number}]({pr_url}))",
+        actor="kiro-reviewer",
+    )
+    sc.status = f"review postado em PR #{pr_number} — {status_str}"
+
+    with contextlib.suppress(Exception):
+        gh_client.upsert_state_comment(repo, str(issue_number), _render(sc))
+
+
 def _notify_reviewers(ctx: object, items: list, chat_id: str) -> None:
     """Notifica que o kiro-reviewer foi disparado (legado — mantido como referência)."""
     vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
@@ -826,11 +928,12 @@ def _execute_auto_merges(
 ) -> None:
     """Executa merge squash automático para PRs aprovados sem comentários.
 
-    Para cada (repo, issue) em ``items``:
-    1. Localiza o PR aberto associado à issue
-    2. Faz o merge squash via GitHub API
-    3. Atualiza labels: adiciona crewflow:done, remove crewflow:review e crewflow:reviewed
-    4. Notifica TL com resultado (sucesso ou falha)
+    Para cada (repo, issue, state_comment) em ``items``:
+    1. Posta resultado do reviewer no PR (e referência curta na issue)
+    2. Localiza o PR aberto associado à issue
+    3. Faz o merge squash via GitHub API
+    4. Atualiza labels: adiciona crewflow:done, remove crewflow:review e crewflow:reviewed
+    5. Notifica TL com resultado (sucesso ou falha)
     """
     from flow.adapters import github_client as gh_client
     from flow.ports.issue_provider import ProviderError
@@ -840,9 +943,13 @@ def _execute_auto_merges(
     merged: list[tuple[str, dict]] = []
     failed: list[tuple[str, dict, str]] = []
 
-    for repo, issue in items:
+    for repo, issue, state_comment in items:
         issue_number = issue["number"]
+        issue_url = issue.get("url") or f"https://github.com/{repo}/issues/{issue_number}"
         try:
+            # Posta resultado do reviewer no PR antes do merge
+            _post_reviewer_result_on_pr(repo, issue_number, issue_url, state_comment)
+
             # Localiza o PR aberto associado à issue
             pr = gh_client.get_pr_for_issue(repo, issue_number)
             if pr is None:
