@@ -28,12 +28,11 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
-
 # ---------------------------------------------------------------------------
 # Result — envelope de retorno
 # ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Result:
     """Envelope de retorno dos gates.
 
@@ -48,11 +47,11 @@ class Result:
     data: object = None
 
     @classmethod
-    def success(cls, data: object = None) -> "Result":
+    def success(cls, data: object = None) -> Result:
         return cls(ok=True, data=data)
 
     @classmethod
-    def fail(cls, reason: str) -> "Result":
+    def fail(cls, reason: str) -> Result:
         return cls(ok=False, reason=reason)
 
     @property
@@ -67,7 +66,7 @@ class Result:
 # WorkItem e Squad — tipos de entrada (injetados, nunca buscados aqui)
 # ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class WorkItem:
     """Representação mínima de um item de trabalho.
 
@@ -80,7 +79,7 @@ class WorkItem:
     parent_key: str | None = None   # para subtarefa/sub-bug
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Squad:
     """Configuração da squad — vem do arquivo squads/*.yaml.
 
@@ -140,7 +139,7 @@ class TemplateSwitch(Enum):
     FEATURE = "feature"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class GateVerdict:
     """Resultado de um gate de triagem que pode trocar o template.
 
@@ -198,7 +197,6 @@ def triage_hotfix(item: WorkItem) -> GateVerdict:
     Esta é uma heurística, não uma regra absoluta — o TL que aprova o GATE 1
     pode sobrescrever a triagem.
     """
-    from flow.domain.state import Modifier
 
     has_p1 = "crewflow:p1" in item.labels
 

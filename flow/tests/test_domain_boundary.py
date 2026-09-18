@@ -41,8 +41,7 @@ def _get_imports(source: str) -> list[str]:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 found.append(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
+        elif isinstance(node, ast.ImportFrom) and node.module:
                 found.append(node.module)
     return found
 

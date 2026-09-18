@@ -35,6 +35,7 @@ def _run(args: list[str], timeout: int = 30) -> dict | list:
             capture_output=True,
             text=True,
             timeout=timeout,
+            check=False,
         )
     except FileNotFoundError as exc:
         raise ProviderSetupError(

@@ -4,7 +4,6 @@ Todos sem mock — os valores são injetados diretamente nas funções.
 Os casos vieram do desenho dos 4 fluxos e das decisões de 14/09.
 """
 
-import pytest
 
 from flow.domain.gates import (
     GateVerdict,
@@ -19,7 +18,6 @@ from flow.domain.gates import (
     triage_hotfix,
     validate_hml_bypass,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures comuns

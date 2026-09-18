@@ -23,9 +23,10 @@ Duas decisões de design copiadas do issue_radar interno do Kiro Crew:
 
 import inspect
 import unittest
+from typing import ClassVar
 
 from flow.adapters import github_client, jira_client
-from flow.ports.issue_provider import IssueProvider, PROVIDERS
+from flow.ports.issue_provider import PROVIDERS, IssueProvider
 
 
 class TestProviderParity(unittest.TestCase):
@@ -33,7 +34,7 @@ class TestProviderParity(unittest.TestCase):
 
     REFERENCE = "github"
 
-    CLIENTS: dict[str, object] = {
+    CLIENTS: ClassVar[dict[str, object]] = {
         "github": github_client,
         "jira": jira_client,
     }

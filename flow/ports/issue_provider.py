@@ -28,7 +28,6 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-
 # ---------------------------------------------------------------------------
 # Tipos normalizados (o contrato canônico entre adapters e domínio)
 # ---------------------------------------------------------------------------
@@ -137,7 +136,7 @@ _DEFAULT_PROVIDER = "github"
 
 def _build_dispatch() -> dict[str, IssueProvider]:
     """Constrói o dict de dispatch com import lazy para evitar dependências circulares."""
-    from flow.adapters import github_client, jira_client  # noqa: PLC0415
+    from flow.adapters import github_client, jira_client
 
     return {
         "github": github_client,  # type: ignore[dict-item]
@@ -158,7 +157,11 @@ def provider_for(issue_provider: str) -> IssueProvider:
     um bug: degrada para uma chamada GitHub que falhará com erro claro,
     em vez de lançar uma exceção misteriosa na camada de routing.
     """
-    global _dispatch
-    if _dispatch is None:
-        _dispatch = _build_dispatch()
-    return _dispatch.get(issue_provider, _dispatch[_DEFAULT_PROVIDER])
+    if _cache["dispatch"] is None:
+        _cache["dispatch"] = _build_dispatch()
+    dispatch: dict[str, IssueProvider] = _cache["dispatch"]  # type: ignore[assignment]
+    return dispatch.get(issue_provider, dispatch[_DEFAULT_PROVIDER])
+
+
+# Cache mutável num dict para evitar `global` statement (PLW0603).
+_cache: dict[str, dict[str, IssueProvider] | None] = {"dispatch": None}

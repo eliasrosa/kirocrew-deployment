@@ -1,4 +1,4 @@
-"""Modelo de estado × modificador do KiroCrew Flow.
+"""Modelo de estado x modificador do KiroCrew Flow.
 
 Duas dimensões independentes:
 
@@ -14,14 +14,13 @@ Todo este módulo é puro Python sem I/O — testável sem mock.
 
 from __future__ import annotations
 
-from enum import Enum, auto
-
+from enum import StrEnum
 
 # ---------------------------------------------------------------------------
 # Estados (ordem canônica explícita)
 # ---------------------------------------------------------------------------
 
-class State(str, Enum):
+class State(StrEnum):
     """Estados da esteira.  Exatamente um por issue.
 
     A ordem dos membros É a ordem canônica — ``State.SPEC < State.DONE`` é
@@ -64,7 +63,7 @@ class State(str, Enum):
 # Modificadores
 # ---------------------------------------------------------------------------
 
-class Modifier(str, Enum):
+class Modifier(StrEnum):
     """Modificadores que se sobrepõem ao estado (0..N por issue).
 
     Os de parada (``STOP_MODIFIERS``) têm prioridade: mesmo que o estado
@@ -163,9 +162,7 @@ def is_dispatchable(state: State | None, modifiers: frozenset[Modifier]) -> bool
         return False
     if state is not DISPATCH_TRIGGER:
         return False
-    if modifiers & STOP_MODIFIERS:
-        return False
-    return True
+    return not bool(modifiers & STOP_MODIFIERS)
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +190,4 @@ def can_transition(de: State, para: State) -> bool:
         return True
 
     # Voltar para DEV é sempre válido (reprovar gate)
-    if para is State.DEV and de not in (State.SPEC, State.READY, State.TODO, State.DEV):
-        return True
-
-    return False
+    return para is State.DEV and de not in (State.SPEC, State.READY, State.TODO, State.DEV)

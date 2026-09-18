@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from flow.adapters import jira_normalization as norm
 from flow.adapters import jira_transport as transport
+from flow.adapters.jira_normalization import _adf_to_plain
 from flow.ports.issue_provider import ProviderNotFoundError
 
 
@@ -76,7 +77,6 @@ def upsert_state_comment(project: str, key: str, body: str) -> None:
     for comment in comments:
         comment_body = comment.get("body", "")
         if isinstance(comment_body, dict):
-            from flow.adapters.jira_normalization import _adf_to_plain
             comment_body = _adf_to_plain(comment_body)
         if norm.STATE_COMMENT_MARKER in comment_body:
             existing_id = comment.get("id")
@@ -95,7 +95,6 @@ def get_state_comment(project: str, key: str) -> str | None:
     for comment in comments:
         comment_body = comment.get("body", "")
         if isinstance(comment_body, dict):
-            from flow.adapters.jira_normalization import _adf_to_plain
             comment_body = _adf_to_plain(comment_body)
         if norm.STATE_COMMENT_MARKER in comment_body:
             return comment_body

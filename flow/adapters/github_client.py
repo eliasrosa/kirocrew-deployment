@@ -53,7 +53,6 @@ def list_changed_since(project: str, since_hash: str) -> list[dict]:
     Para um scan de alta escala: use a API de events/timeline para
     verificar apenas issues com label_added/label_removed recentes.
     """
-    import itertools
 
     from flow.domain.state import State
 

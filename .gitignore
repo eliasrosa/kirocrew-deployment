@@ -16,3 +16,4 @@ __pycache__/
 # Não versionado: desabilitar o sandbox do Chromium é decisão do ambiente de
 # quem roda, não do projeto. Ver docs/diagramas/README.md.
 .puppeteer.json
+.coverage

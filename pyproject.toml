@@ -15,6 +15,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "mypy>=2.0",
+    "ruff>=0.5",
 ]
 
 [tool.pytest.ini_options]
@@ -22,7 +25,48 @@ testpaths = ["flow/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v"
+addopts = "-v --cov=flow --cov-report=term-missing --cov-fail-under=75"
+
+[tool.coverage.run]
+source = ["flow"]
+omit = ["flow/tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",  # stubs dos adapters são esperados
+    "if __name__ == .__main__.",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+# O dispatch usa dict[str, IssueProvider] mas os módulos não são instâncias;
+# type: ignore[dict-item] está nos locais corretos.
+warn_unused_ignores = false
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+    "PLW",  # pylint warnings
+]
+ignore = [
+    "E501",   # linha muito longa (controlado pelo formatter)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"flow/tests/*" = ["S101"]  # assert é ok em testes
 
 [tool.setuptools.packages.find]
 where = ["."]

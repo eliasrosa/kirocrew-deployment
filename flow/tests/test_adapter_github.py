@@ -10,9 +10,9 @@ from unittest import mock
 
 import pytest
 
-from flow.adapters import github_client, github_normalization as norm, github_transport
+from flow.adapters import github_client, github_transport
+from flow.adapters import github_normalization as norm
 from flow.ports.issue_provider import ProviderNotFoundError, ProviderSetupError
-
 
 # ---------------------------------------------------------------------------
 # Helpers de fixture
@@ -105,8 +105,7 @@ class TestTransportErrors:
         completed.stderr = "not logged in"
         completed.stdout = ""
 
-        with mock.patch("subprocess.run", return_value=completed):
-            with pytest.raises(ProviderSetupError, match="autenticado"):
+        with mock.patch("subprocess.run", return_value=completed), pytest.raises(ProviderSetupError, match="autenticado"):
                 github_transport._run(["issue", "view", "1"])
 
     def test_json_invalido_lanca_provider_error(self) -> None:
@@ -116,8 +115,7 @@ class TestTransportErrors:
         completed.stdout = "não é json"
         completed.stderr = ""
 
-        with mock.patch("subprocess.run", return_value=completed):
-            with pytest.raises(ProviderError, match="JSON inválido"):
+        with mock.patch("subprocess.run", return_value=completed), pytest.raises(ProviderError, match="JSON inválido"):
                 github_transport._run(["api", "anything"])
 
 
@@ -147,8 +145,7 @@ class TestGetWorkItem:
             m.assert_called_once_with("owner/repo", 7)
 
     def test_issue_vazia_lanca_not_found(self) -> None:
-        with mock.patch.object(github_transport, "get_issue", return_value={}):
-            with pytest.raises(ProviderNotFoundError):
+        with mock.patch.object(github_transport, "get_issue", return_value={}), pytest.raises(ProviderNotFoundError):
                 github_client.get_work_item("owner/repo", "999")
 
 
@@ -176,25 +173,25 @@ class TestSetLabels:
 
 class TestUpsertStateComment:
     def test_cria_comentario_se_nenhum_existe(self) -> None:
-        with mock.patch.object(github_transport, "get_issue_comments", return_value=[]):
-            with mock.patch.object(github_transport, "create_issue_comment") as create_m:
-                github_client.upsert_state_comment("owner/repo", "1", "<!-- KIRO-FLOW-STATE -->")
-                create_m.assert_called_once()
+        with mock.patch.object(github_transport, "get_issue_comments", return_value=[]), \
+             mock.patch.object(github_transport, "create_issue_comment") as create_m:
+            github_client.upsert_state_comment("owner/repo", "1", "<!-- KIRO-FLOW-STATE -->")
+            create_m.assert_called_once()
 
     def test_atualiza_comentario_existente(self) -> None:
         existing = [{"id": 555, "body": f"{norm.STATE_COMMENT_MARKER} old"}]
-        with mock.patch.object(github_transport, "get_issue_comments", return_value=existing):
-            with mock.patch.object(github_transport, "update_issue_comment") as update_m:
-                github_client.upsert_state_comment("owner/repo", "1", "novo body")
-                update_m.assert_called_once_with("owner/repo", 555, "novo body")
+        with mock.patch.object(github_transport, "get_issue_comments", return_value=existing), \
+             mock.patch.object(github_transport, "update_issue_comment") as update_m:
+            github_client.upsert_state_comment("owner/repo", "1", "novo body")
+            update_m.assert_called_once_with("owner/repo", 555, "novo body")
 
     def test_nao_cria_duplicata_se_ja_existe(self) -> None:
         existing = [{"id": 555, "body": f"{norm.STATE_COMMENT_MARKER} old"}]
-        with mock.patch.object(github_transport, "get_issue_comments", return_value=existing):
-            with mock.patch.object(github_transport, "create_issue_comment") as create_m:
-                with mock.patch.object(github_transport, "update_issue_comment"):
-                    github_client.upsert_state_comment("owner/repo", "1", "body")
-                    create_m.assert_not_called()
+        with mock.patch.object(github_transport, "get_issue_comments", return_value=existing), \
+             mock.patch.object(github_transport, "create_issue_comment") as create_m, \
+             mock.patch.object(github_transport, "update_issue_comment"):
+            github_client.upsert_state_comment("owner/repo", "1", "body")
+            create_m.assert_not_called()
 
 
 class TestGetStateComment:

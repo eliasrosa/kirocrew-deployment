@@ -10,9 +10,9 @@ from unittest import mock
 
 import pytest
 
-from flow.adapters import jira_client, jira_normalization as norm, jira_transport
+from flow.adapters import jira_client, jira_transport
+from flow.adapters import jira_normalization as norm
 from flow.ports.issue_provider import ProviderNotFoundError, ProviderSetupError
-
 
 # ---------------------------------------------------------------------------
 # Helpers de fixture
@@ -126,33 +126,28 @@ class TestJiraNormalization:
 class TestJiraTransportErrors:
     def test_falta_de_configuracao_lanca_setup_error(self) -> None:
         import os
-        with mock.patch.dict(os.environ, {}, clear=True):
-            # Remove variáveis de Jira se existirem
-            env = {k: v for k, v in os.environ.items()
-                   if not k.startswith("JIRA_")}
-            with mock.patch.dict(os.environ, env, clear=True):
-                with pytest.raises(ProviderSetupError, match="JIRA_BASE_URL"):
-                    jira_transport._get_config()
+        env = {k: v for k, v in os.environ.items() if not k.startswith("JIRA_")}
+        with mock.patch.dict(os.environ, env, clear=True), \
+             pytest.raises(ProviderSetupError, match="JIRA_BASE_URL"):
+            jira_transport._get_config()
 
     def test_http_404_lanca_not_found(self) -> None:
         import urllib.error
         err = urllib.error.HTTPError(url="x", code=404, msg="Not Found", hdrs=None, fp=None)
         err.read = lambda: b""
-        with mock.patch("urllib.request.urlopen", side_effect=err):
-            with mock.patch.object(jira_transport, "_get_config",
-                                   return_value=("https://jira.test", {})):
-                with pytest.raises(ProviderNotFoundError):
-                    jira_transport._http_request("GET", "https://jira.test/x", {})
+        with mock.patch("urllib.request.urlopen", side_effect=err), \
+             mock.patch.object(jira_transport, "_get_config", return_value=("https://jira.test", {})), \
+             pytest.raises(ProviderNotFoundError):
+            jira_transport._http_request("GET", "https://jira.test/x", {})
 
     def test_http_401_lanca_setup_error(self) -> None:
         import urllib.error
         err = urllib.error.HTTPError(url="x", code=401, msg="Unauthorized", hdrs=None, fp=None)
         err.read = lambda: b""
-        with mock.patch("urllib.request.urlopen", side_effect=err):
-            with mock.patch.object(jira_transport, "_get_config",
-                                   return_value=("https://jira.test", {})):
-                with pytest.raises(ProviderSetupError):
-                    jira_transport._http_request("GET", "https://jira.test/x", {})
+        with mock.patch("urllib.request.urlopen", side_effect=err), \
+             mock.patch.object(jira_transport, "_get_config", return_value=("https://jira.test", {})), \
+             pytest.raises(ProviderSetupError):
+            jira_transport._http_request("GET", "https://jira.test/x", {})
 
 
 # ---------------------------------------------------------------------------
@@ -168,9 +163,9 @@ class TestGetWorkItem:
         assert "crewflow:dev" in item["labels"]
 
     def test_issue_vazia_lanca_not_found(self) -> None:
-        with mock.patch.object(jira_transport, "get_issue", return_value={}):
-            with pytest.raises(ProviderNotFoundError):
-                jira_client.get_work_item("VGAT", "VGAT-999")
+        with mock.patch.object(jira_transport, "get_issue", return_value={}), \
+             pytest.raises(ProviderNotFoundError):
+            jira_client.get_work_item("VGAT", "VGAT-999")
 
 
 class TestListByState:
@@ -198,22 +193,22 @@ class TestSetLabels:
 
 class TestUpsertStateComment:
     def test_cria_comentario_se_nenhum_existe(self) -> None:
-        with mock.patch.object(jira_transport, "get_issue_comments", return_value=[]):
-            with mock.patch.object(jira_transport, "add_issue_comment") as add_m:
-                jira_client.upsert_state_comment("VGAT", "VGAT-1", "<!-- KIRO-FLOW-STATE -->")
-                add_m.assert_called_once()
+        with mock.patch.object(jira_transport, "get_issue_comments", return_value=[]), \
+             mock.patch.object(jira_transport, "add_issue_comment") as add_m:
+            jira_client.upsert_state_comment("VGAT", "VGAT-1", "<!-- KIRO-FLOW-STATE -->")
+            add_m.assert_called_once()
 
     def test_atualiza_comentario_existente(self) -> None:
         existing = [{"id": "10001", "body": f"{norm.STATE_COMMENT_MARKER} old"}]
-        with mock.patch.object(jira_transport, "get_issue_comments", return_value=existing):
-            with mock.patch.object(jira_transport, "update_comment") as update_m:
-                jira_client.upsert_state_comment("VGAT", "VGAT-1", "novo")
-                update_m.assert_called_once_with("VGAT-1", "10001", "novo")
+        with mock.patch.object(jira_transport, "get_issue_comments", return_value=existing), \
+             mock.patch.object(jira_transport, "update_comment") as update_m:
+            jira_client.upsert_state_comment("VGAT", "VGAT-1", "novo")
+            update_m.assert_called_once_with("VGAT-1", "10001", "novo")
 
     def test_nao_cria_duplicata(self) -> None:
         existing = [{"id": "10001", "body": f"{norm.STATE_COMMENT_MARKER} old"}]
-        with mock.patch.object(jira_transport, "get_issue_comments", return_value=existing):
-            with mock.patch.object(jira_transport, "add_issue_comment") as add_m:
-                with mock.patch.object(jira_transport, "update_comment"):
-                    jira_client.upsert_state_comment("VGAT", "VGAT-1", "body")
-                    add_m.assert_not_called()
+        with mock.patch.object(jira_transport, "get_issue_comments", return_value=existing), \
+             mock.patch.object(jira_transport, "add_issue_comment") as add_m, \
+             mock.patch.object(jira_transport, "update_comment"):
+            jira_client.upsert_state_comment("VGAT", "VGAT-1", "body")
+            add_m.assert_not_called()

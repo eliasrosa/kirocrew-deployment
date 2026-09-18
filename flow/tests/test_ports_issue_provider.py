@@ -4,18 +4,16 @@ Testa o contrato da porta, o dispatch e os erros normalizados.
 NÃO testa a implementação dos adapters (isso é responsabilidade de #18, #19, #20).
 """
 
-import pytest
 
 from flow.ports.issue_provider import (
-    IssueProvider,
     PROVIDERS,
+    IssueProvider,
     ProviderError,
     ProviderNotFoundError,
     ProviderPermissionError,
     ProviderSetupError,
     provider_for,
 )
-
 
 # ---------------------------------------------------------------------------
 # Constantes e metadados da porta

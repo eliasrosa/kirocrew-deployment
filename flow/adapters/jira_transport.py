@@ -12,15 +12,12 @@ Erros são normalizados para ProviderError antes de sair deste módulo.
 
 from __future__ import annotations
 
-from typing import Any
-
 from flow.ports.issue_provider import (
     ProviderError,
     ProviderNotFoundError,
     ProviderPermissionError,
     ProviderSetupError,
 )
-
 
 # ---------------------------------------------------------------------------
 # Interface MCP (injetável nos testes)
