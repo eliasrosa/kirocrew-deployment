@@ -121,8 +121,8 @@ class TestDecideFeature:
 # ---------------------------------------------------------------------------
 
 class TestAntiLoopReviewed:
-    def test_review_com_reviewed_skip(self) -> None:
-        """Se já foi analisado neste SHA, não dispara de novo."""
+    def test_review_com_reviewed_sem_resultado_skip(self) -> None:
+        """crewflow:reviewed presente mas sem resultado do reviewer → SKIP (aguardando)."""
         r = _result(
             state=State.REVIEW,
             labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
@@ -130,7 +130,7 @@ class TestAntiLoopReviewed:
         )
         d = decide(r)
         assert d.action is ActionKind.SKIP
-        assert "anti-loop" in d.reason
+        assert "ainda não disponível" in d.reason
 
     def test_review_sem_reviewed_despacha(self) -> None:
         r = _result(
@@ -297,3 +297,111 @@ class TestDecideComSquadConfig:
         # debt + TODO → notifica TL (GATE DT)
         assert d.action is ActionKind.NOTIFY_HUMAN
         assert d.notify_role is HumanRole.TL
+
+
+# ---------------------------------------------------------------------------
+# decide() — GATE 2: reviewer automático + merge automático
+# ---------------------------------------------------------------------------
+
+class TestGate2AutoMerge:
+    """Testa os 3 caminhos do GATE 2 (reviewer + merge automático)."""
+
+    def _make_review_result(
+        self,
+        approved: bool = True,
+        comments: list[str] | None = None,
+    ) -> str:
+        """Retorna um state_comment com resultado do reviewer."""
+        from flow.audit.state_comment import StateComment, render
+        sc = StateComment(
+            workflow="feature (v1)",
+            current_node="review",
+            status="reviewed",
+            repo="kirocrew-flow",
+        )
+        sc.set_reviewer_result(
+            approved=approved,
+            comments=comments or [],
+            sha="abc123",
+        )
+        return render(sc)
+
+    def test_review_com_reviewed_sem_resultado_skip(self) -> None:
+        """crewflow:reviewed presente mas sem ReviewerResult → SKIP (reviewer ainda rodando)."""
+        r = _result(
+            state=State.REVIEW,
+            labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
+            modifiers={Modifier.REVIEWED},
+        )
+        d = decide(r, state_comment=None)
+        assert d.action is ActionKind.SKIP
+        assert "ainda não disponível" in d.reason
+
+    def test_review_com_reviewed_aprovado_sem_comentarios_merge(self) -> None:
+        """Reviewer aprovado, zero comentários → MERGE_PR (caminho feliz)."""
+        state_comment = self._make_review_result(approved=True, comments=[])
+        r = _result(
+            state=State.REVIEW,
+            labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
+            modifiers={Modifier.REVIEWED},
+        )
+        d = decide(r, state_comment=state_comment)
+        assert d.action is ActionKind.MERGE_PR
+        assert "crewflow:done" in d.add_labels
+        assert "crewflow:review" in d.remove_labels
+        assert "crewflow:reviewed" in d.remove_labels
+
+    def test_review_com_reviewed_aprovado_com_comentarios_notifica_tl(self) -> None:
+        """Reviewer aprovado mas com comentários → NOTIFY_HUMAN TL."""
+        state_comment = self._make_review_result(
+            approved=True,
+            comments=["Falta cobertura em scanner.py"],
+        )
+        r = _result(
+            state=State.REVIEW,
+            labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
+            modifiers={Modifier.REVIEWED},
+        )
+        d = decide(r, state_comment=state_comment)
+        assert d.action is ActionKind.NOTIFY_HUMAN
+        assert d.notify_role is HumanRole.TL
+        assert "Falta cobertura" in d.reason
+
+    def test_review_com_reviewed_reprovado_notifica_tl(self) -> None:
+        """Reviewer reprovado com comentários → NOTIFY_HUMAN TL."""
+        state_comment = self._make_review_result(
+            approved=False,
+            comments=["Lógica incorreta", "Sem testes"],
+        )
+        r = _result(
+            state=State.REVIEW,
+            labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
+            modifiers={Modifier.REVIEWED},
+        )
+        d = decide(r, state_comment=state_comment)
+        assert d.action is ActionKind.NOTIFY_HUMAN
+        assert d.notify_role is HumanRole.TL
+
+    def test_review_sem_reviewed_despacha_reviewer(self) -> None:
+        """Sem crewflow:reviewed → dispara o reviewer (caminho normal)."""
+        r = _result(
+            state=State.REVIEW,
+            labels=["crewflow:review", "crewflow:feature"],
+        )
+        d = decide(r)
+        assert d.action is ActionKind.DISPATCH_REVIEWER
+        assert "crewflow:reviewed" in d.add_labels
+
+    def test_merge_pr_labels_corretas(self) -> None:
+        """MERGE_PR deve adicionar done e remover review+reviewed."""
+        state_comment = self._make_review_result(approved=True, comments=[])
+        r = _result(
+            state=State.REVIEW,
+            labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
+            modifiers={Modifier.REVIEWED},
+        )
+        d = decide(r, state_comment=state_comment)
+        assert d.action is ActionKind.MERGE_PR
+        assert set(d.add_labels) == {"crewflow:done"}
+        assert "crewflow:review" in d.remove_labels
+        assert "crewflow:reviewed" in d.remove_labels

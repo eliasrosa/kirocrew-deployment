@@ -370,6 +370,7 @@ def run(ctx: object) -> None:
     needs_human: list[tuple[ScanResult, object, str | None]] = []  # (result, decision, sc)
     blocked_bypass: list[ScanResult] = []                # result com bypass sem justif
     rebranded: list[tuple[ScanResult, object]] = []      # (result, decision)
+    merge_prs: list[tuple[str, dict]] = []               # (repo, issue) — merge squash automático
 
     for result in scan_results:
         # Flags do scan que não precisam do executor
@@ -385,6 +386,8 @@ def run(ctx: object) -> None:
             Modifier.HML_BYPASS in result.modifiers
             or (hasattr(result.current_state, "__eq__") and result.current_state is State.DEV)
             or (result.current_state is State.TODO and "crewflow:debt" in result.item.labels)
+            # GATE 2: lê o resultado do reviewer quando em review+reviewed
+            or (result.current_state is State.REVIEW and Modifier.REVIEWED in result.modifiers)
         )
         state_comment: str | None = None
         if needs_comment:
@@ -421,6 +424,10 @@ def run(ctx: object) -> None:
             repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
             issue = _scan_result_to_issue(result)
             dispatch_reviewers.append((repo, issue))
+        elif decision.action is ActionKind.MERGE_PR:
+            repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            issue = _scan_result_to_issue(result)
+            merge_prs.append((repo, issue))
         elif decision.action is ActionKind.DISPATCH_DEV:
             repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
             if not repo:
@@ -430,7 +437,7 @@ def run(ctx: object) -> None:
 
     # Sem nada a fazer?
     if not any([spec_invalid, dispatch_devs, dispatch_reviewers,
-                needs_human, blocked_bypass, rebranded]):
+                needs_human, blocked_bypass, rebranded, merge_prs]):
         return
 
     # ── Notifica specs inválidas ──────────────────────────────────────────
@@ -530,6 +537,9 @@ def run(ctx: object) -> None:
 
     if dispatch_reviewers:
         _notify_reviewers(ctx, dispatch_reviewers, chat_id)
+
+    if merge_prs:
+        _execute_auto_merges(ctx, merge_prs, chat_id, provider)
 
 
 def _notify_human_actions(ctx: object, items: list, chat_id: str) -> None:
@@ -637,3 +647,95 @@ def _notify_reviewers(ctx: object, items: list, chat_id: str) -> None:
     ctx.notify(  # type: ignore[attr-defined]
         f"KiroCrew Flow: análise automatizada de code review disparada.{vm}\n{linhas}"
     )
+
+
+def _execute_auto_merges(
+    ctx: object,
+    items: list,
+    chat_id: str,
+    provider: object,
+) -> None:
+    """Executa merge squash automático para PRs aprovados sem comentários.
+
+    Para cada (repo, issue) em ``items``:
+    1. Localiza o PR aberto associado à issue
+    2. Faz o merge squash via GitHub API
+    3. Atualiza labels: adiciona crewflow:done, remove crewflow:review e crewflow:reviewed
+    4. Notifica TL com resultado (sucesso ou falha)
+    """
+    from flow.adapters import github_client as gh_client
+    from flow.ports.issue_provider import ProviderError
+
+    vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
+
+    merged: list[tuple[str, dict]] = []
+    failed: list[tuple[str, dict, str]] = []
+
+    for repo, issue in items:
+        issue_number = issue["number"]
+        try:
+            # Localiza o PR aberto associado à issue
+            pr = gh_client.get_pr_for_issue(repo, issue_number)
+            if pr is None:
+                failed.append((repo, issue, f"PR aberto para #{issue_number} não encontrado"))
+                continue
+
+            pr_number = pr["number"]
+
+            # Merge squash
+            gh_client.merge_pull_request(repo, pr_number, merge_method="squash")
+
+            # Atualiza labels da issue: remove review/reviewed, adiciona done
+            try:
+                item_data = gh_client.get_work_item(repo, str(issue_number))
+                current_labels = list(item_data.get("labels", []))
+                for lbl in ("crewflow:review", "crewflow:reviewed"):
+                    if lbl in current_labels:
+                        current_labels.remove(lbl)
+                if "crewflow:done" not in current_labels:
+                    current_labels.append("crewflow:done")
+                gh_client.set_labels(repo, str(issue_number), current_labels)
+            except Exception as exc:
+                logger.warning(
+                    "deployment: merge ok mas falha ao atualizar labels de %s#%s: %s",
+                    repo, issue_number, exc,
+                )
+
+            merged.append((repo, issue))
+            logger.info(
+                "deployment: merge squash automático PR #%s (issue #%s) em %s",
+                pr_number, issue_number, repo,
+            )
+
+        except ProviderError as exc:
+            msg = str(exc)
+            failed.append((repo, issue, msg))
+            logger.error(
+                "deployment: falha no merge automático de %s#%s: %s",
+                repo, issue_number, exc,
+            )
+        except Exception as exc:
+            msg = str(exc)
+            failed.append((repo, issue, msg))
+            logger.error(
+                "deployment: erro inesperado no merge de %s#%s: %s",
+                repo, issue_number, exc,
+            )
+
+    if merged:
+        linhas = "\n".join(
+            f"  ✅ {r}#{i['number']}: {i['title']}"
+            for r, i in merged
+        )
+        ctx.notify(  # type: ignore[attr-defined]
+            f"KiroCrew Flow: PR(s) mergeado(s) automaticamente — reviewer sem comentários.{vm}\n{linhas}"
+        )
+
+    if failed:
+        linhas = "\n".join(
+            f"  ❌ {r}#{i['number']}: {i['title']} — {motivo}"
+            for r, i, motivo in failed
+        )
+        ctx.notify(  # type: ignore[attr-defined]
+            f"KiroCrew Flow: falha no merge automático.{vm}\n{linhas}"
+        )

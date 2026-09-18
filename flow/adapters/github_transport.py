@@ -130,3 +130,48 @@ def update_issue_comment(owner_repo: str, comment_id: int, body: str) -> dict:
         "--method", "PATCH",
         "--field", f"body={body}",
     ]))
+
+
+def get_pr_for_issue(owner_repo: str, issue_number: int) -> dict | None:
+    """Retorna o PR aberto que fecha a issue dada, ou None se não existir.
+
+    Usa a API de search para encontrar PR com 'Closes #N' no body.
+    Retorna apenas PRs abertos (state=open) com head na branch feat/issue-N.
+    """
+    try:
+        prs = cast(list, _run([
+            "pr", "list",
+            "--repo", owner_repo,
+            "--state", "open",
+            "--json", "number,title,headRefName,body,mergeable",
+            "--limit", "50",
+        ]))
+    except ProviderError:
+        return None
+
+    needle = f"#{issue_number}"
+    closes_patterns = [
+        f"closes {needle}",
+        f"closes: {needle}",
+        f"close {needle}",
+        f"fixes {needle}",
+        f"resolves {needle}",
+    ]
+    for pr in prs:
+        body_lower = (pr.get("body") or "").lower()
+        if any(p in body_lower for p in closes_patterns):
+            return cast(dict, pr)
+    return None
+
+
+def merge_pull_request(owner_repo: str, pr_number: int, merge_method: str = "squash") -> dict:
+    """Faz o merge de um PR via GitHub API.
+
+    ``merge_method`` = "squash" | "merge" | "rebase"
+    Lança ``ProviderError`` se o merge falhar.
+    """
+    return cast(dict, _run([
+        "api", f"repos/{owner_repo}/pulls/{pr_number}/merge",
+        "--method", "PUT",
+        "--field", f"merge_method={merge_method}",
+    ]))

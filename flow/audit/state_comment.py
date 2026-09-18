@@ -64,6 +64,27 @@ class ApprovalEntry:
     when: str      # ISO 8601
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewerResult:
+    """Resultado estruturado do kiro-reviewer.
+
+    ``approved`` — True se o reviewer não pediu mudanças.
+    ``comments`` — lista de pedidos de mudança (strings curtas).
+    ``sha``       — SHA do commit do PR no momento da análise (anti-loop).
+    ``reviewer``  — identificador do agente que fez a análise.
+    """
+
+    approved: bool
+    comments: tuple[str, ...]
+    sha: str = ""
+    reviewer: str = "kiro-reviewer"
+
+    @property
+    def is_auto_mergeable(self) -> bool:
+        """True se aprovado sem nenhum pedido de mudança (critério zero-comentários)."""
+        return self.approved and len(self.comments) == 0
+
+
 @dataclass(slots=True)
 class StateComment:
     """Representação completa do comentário de estado.
@@ -79,6 +100,7 @@ class StateComment:
     history: list[TransitionEntry] = field(default_factory=list)
     exceptions: list[ExceptionEntry] = field(default_factory=list)
     approvals: list[ApprovalEntry] = field(default_factory=list)
+    reviewer_result: ReviewerResult | None = None
 
     def add_transition(
         self, from_state: str, to_state: str, actor: str, when: str | None = None
@@ -116,6 +138,25 @@ class StateComment:
     def has_approval(self, gate: str) -> bool:
         """Retorna True se o gate especificado foi aprovado."""
         return any(a.gate == gate for a in self.approvals)
+
+    def set_reviewer_result(
+        self,
+        approved: bool,
+        comments: list[str],
+        sha: str = "",
+        reviewer: str = "kiro-reviewer",
+    ) -> None:
+        """Registra o resultado do kiro-reviewer no comentário de estado."""
+        self.reviewer_result = ReviewerResult(
+            approved=approved,
+            comments=tuple(comments),
+            sha=sha,
+            reviewer=reviewer,
+        )
+
+    def get_reviewer_result(self) -> ReviewerResult | None:
+        """Retorna o resultado do reviewer, ou None se ainda não analisado."""
+        return self.reviewer_result
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +206,25 @@ def render(sc: StateComment) -> str:
         ]
         for apv in sc.approvals:
             lines.append(f"| `{apv.gate}` | {apv.actor} | {apv.when} |")
+        lines.append("")
+
+    if sc.reviewer_result is not None:
+        rr = sc.reviewer_result
+        status_str = "✅ aprovado" if rr.approved else "❌ com pedidos de mudança"
+        lines += [
+            "### Resultado do Reviewer",
+            f"**Status:** {status_str}",
+            f"**Reviewer:** {rr.reviewer}",
+            f"**SHA:** {rr.sha}" if rr.sha else "",
+            f"**Auto-merge:** {'sim' if rr.is_auto_mergeable else 'não'}",
+        ]
+        # Remove linha vazia do SHA quando sha é vazio
+        lines = [line for line in lines if line != ""]
+        if rr.comments:
+            lines.append("")
+            lines.append("**Pedidos de mudança:**")
+            for c in rr.comments:
+                lines.append(f"- {c}")
         lines.append("")
 
     lines.append(MARKER_CLOSE)
@@ -254,6 +314,46 @@ def _parse_block(block: str) -> StateComment:
             if a_entry:
                 sc.approvals.append(a_entry)
 
+    # Parseia resultado do reviewer
+    in_reviewer = False
+    rev_approved: bool | None = None
+    rev_sha = ""
+    rev_reviewer = "kiro-reviewer"
+    rev_comments: list[str] = []
+    in_comments_list = False
+    for line in lines:
+        if "### Resultado do Reviewer" in line:
+            in_reviewer = True
+            in_comments_list = False
+            continue
+        if in_reviewer:
+            if line.startswith("###"):
+                in_reviewer = False
+                in_comments_list = False
+                continue
+            if "**Status:**" in line:
+                rev_approved = "✅" in line or "aprovado" in line.lower()
+                in_comments_list = False
+                continue
+            if "**Reviewer:**" in line:
+                rev_reviewer = line.split("**Reviewer:**", 1)[1].strip()
+                continue
+            if "**SHA:**" in line:
+                rev_sha = line.split("**SHA:**", 1)[1].strip()
+                continue
+            if "**Pedidos de mudança:**" in line:
+                in_comments_list = True
+                continue
+            if in_comments_list and line.startswith("- "):
+                rev_comments.append(line[2:].strip())
+    if rev_approved is not None:
+        sc.reviewer_result = ReviewerResult(
+            approved=rev_approved,
+            comments=tuple(rev_comments),
+            sha=rev_sha,
+            reviewer=rev_reviewer,
+        )
+
     return sc
 
 
@@ -342,3 +442,13 @@ def has_equivalence_test_signal(comment_body: str | None) -> bool:
         sc.get_justification("equivalencia_test") is not None
         or "equivalencia_test: true" in comment_body.lower()
     )
+
+
+def get_reviewer_result_from_comment(comment_body: str | None) -> ReviewerResult | None:
+    """Atalho: extrai o ReviewerResult do state comment, ou None."""
+    if not comment_body:
+        return None
+    sc = parse(comment_body)
+    if sc is None:
+        return None
+    return sc.reviewer_result

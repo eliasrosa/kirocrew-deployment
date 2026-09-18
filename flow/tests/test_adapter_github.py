@@ -205,3 +205,64 @@ class TestGetStateComment:
         with mock.patch.object(github_transport, "get_issue_comments", return_value=[{"body": "normal"}]):
             result = github_client.get_state_comment("owner/repo", "1")
         assert result is None
+
+
+class TestGetPrForIssue:
+    def _make_pr(self, body: str, pr_number: int = 10) -> dict:
+        return {
+            "number": pr_number,
+            "title": "feat: something",
+            "headRefName": "feat/issue-42",
+            "body": body,
+            "mergeable": "MERGEABLE",
+        }
+
+    def test_encontra_pr_por_closes(self) -> None:
+        pr = self._make_pr("Closes #42\nSome description")
+        with mock.patch.object(github_transport, "_run", return_value=[pr]):
+            result = github_client.get_pr_for_issue("owner/repo", 42)
+        assert result is not None
+        assert result["number"] == 10
+
+    def test_encontra_pr_por_fixes(self) -> None:
+        pr = self._make_pr("fixes #42")
+        with mock.patch.object(github_transport, "_run", return_value=[pr]):
+            result = github_client.get_pr_for_issue("owner/repo", 42)
+        assert result is not None
+
+    def test_retorna_none_quando_sem_pr(self) -> None:
+        pr = self._make_pr("unrelated PR body")
+        with mock.patch.object(github_transport, "_run", return_value=[pr]):
+            result = github_client.get_pr_for_issue("owner/repo", 42)
+        assert result is None
+
+    def test_retorna_none_em_lista_vazia(self) -> None:
+        with mock.patch.object(github_transport, "_run", return_value=[]):
+            result = github_client.get_pr_for_issue("owner/repo", 42)
+        assert result is None
+
+    def test_nao_confunde_numeros_diferentes(self) -> None:
+        pr = self._make_pr("Closes #99")
+        with mock.patch.object(github_transport, "_run", return_value=[pr]):
+            result = github_client.get_pr_for_issue("owner/repo", 42)
+        assert result is None
+
+
+class TestMergePullRequest:
+    def test_merge_squash_chama_transport(self) -> None:
+        with mock.patch.object(github_transport, "_run", return_value={"merged": True}) as run_m:
+            github_client.merge_pull_request("owner/repo", 10)
+        run_m.assert_called_once()
+        args = run_m.call_args[0][0]
+        assert "pulls/10/merge" in " ".join(args)
+        assert "squash" in " ".join(args)
+
+    def test_merge_propaga_provider_error(self) -> None:
+        from flow.ports.issue_provider import ProviderError
+        with mock.patch.object(
+            github_transport, "_run",
+            side_effect=ProviderError("checks failing"),
+        ):
+            import pytest
+            with pytest.raises(ProviderError, match="checks failing"):
+                github_client.merge_pull_request("owner/repo", 10)

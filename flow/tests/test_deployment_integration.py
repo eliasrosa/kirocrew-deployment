@@ -234,6 +234,114 @@ class TestRunIntegration:
 
 
 # ---------------------------------------------------------------------------
+# Teste de integração do merge automático (GATE 2)
+# ---------------------------------------------------------------------------
+
+class TestAutoMergeIntegration:
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "secret"
+        ctx.job.id = "test-job"
+        return ctx
+
+    def _make_review_scan_result(self) -> object:
+        """ScanResult em crewflow:review com crewflow:reviewed."""
+        from flow.audit.state_comment import StateComment, render
+        from flow.domain.gates import WorkItem
+        from flow.domain.state import Modifier, State
+        from flow.scan.scanner import ScanResult
+
+        sc = StateComment(
+            workflow="feature (v1)", current_node="review",
+            status="reviewed", repo="owner/repo",
+        )
+        sc.set_reviewer_result(approved=True, comments=[], sha="abc123")
+        state_body = render(sc)
+
+        return ScanResult(
+            item=WorkItem(
+                key="https://github.com/owner/repo/issues/42",
+                title="[owner/repo] Feature X",
+                labels=frozenset(["crewflow:review", "crewflow:reviewed", "crewflow:feature"]),
+            ),
+            current_state=State.REVIEW,
+            modifiers=frozenset([Modifier.REVIEWED]),
+            dispatch_candidate=False,
+            spec_valid=None,
+            changed=True,
+            reason="reviewer aprovado",
+        ), state_body
+
+    def test_merge_automatico_notifica_tl(self) -> None:
+        """Quando reviewer aprova sem comentários, notifica TL com sucesso."""
+        from flow.audit.state_comment import StateComment, render
+        from flow.domain.gates import WorkItem
+        from flow.domain.state import Modifier, State
+        from flow.scan.scanner import ScanResult
+
+        ctx = self._make_ctx()
+
+        sc = StateComment(
+            workflow="feature (v1)", current_node="review",
+            status="reviewed", repo="owner/repo",
+        )
+        sc.set_reviewer_result(approved=True, comments=[], sha="abc123")
+        state_body = render(sc)
+
+        result = ScanResult(
+            item=WorkItem(
+                key="https://github.com/owner/repo/issues/42",
+                title="[owner/repo] Feature X",
+                labels=frozenset(["crewflow:review", "crewflow:reviewed", "crewflow:feature"]),
+            ),
+            current_state=State.REVIEW,
+            modifiers=frozenset([Modifier.REVIEWED]),
+            dispatch_candidate=False,
+            spec_valid=None,
+            changed=True,
+            reason="reviewer aprovado",
+        )
+
+        # Simula get_state_comment retornando o state_body com resultado do reviewer
+        def _fake_get_state_comment(repo: str, key: str) -> str:
+            return state_body
+
+        fake_pr = {"number": 99, "title": "feat: Feature X", "headRefName": "feat/issue-42", "body": "Closes #42"}
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value=_minimal_config(auto=True)),
+            mock.patch("deployment.deployment.scan_candidates",
+                       return_value=[result]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+            mock.patch("flow.adapters.github_client.get_pr_for_issue",
+                       return_value=fake_pr),
+            mock.patch("flow.adapters.github_client.merge_pull_request",
+                       return_value={"merged": True}),
+            mock.patch("flow.adapters.github_client.get_work_item",
+                       return_value={"labels": ["crewflow:review", "crewflow:reviewed", "crewflow:feature"]}),
+            mock.patch("flow.adapters.github_client.set_labels"),
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider = mock.MagicMock()
+            mock_provider.get_state_comment = _fake_get_state_comment
+            mock_provider_for.return_value = mock_provider
+
+            run(ctx)
+
+        # Deve notificar sobre o merge automático
+        notify_calls = ctx.notify.call_args_list
+        msgs = [str(c) for c in notify_calls]
+        assert any("mergead" in m.lower() or "automati" in m.lower() for m in msgs), (
+            f"Esperava notificação de merge automático, got: {msgs}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Fix 1 — _repo_has_active / _active_sessions com detecção de locks obsoletos
 # ---------------------------------------------------------------------------
 

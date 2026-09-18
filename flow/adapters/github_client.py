@@ -107,6 +107,19 @@ def get_state_comment(project: str, key: str) -> str | None:
     return None
 
 
+def get_pr_for_issue(project: str, issue_number: int) -> dict | None:
+    """Retorna o PR aberto associado à issue, ou None se não encontrado."""
+    return transport.get_pr_for_issue(project, issue_number)
+
+
+def merge_pull_request(project: str, pr_number: int, merge_method: str = "squash") -> dict:
+    """Faz o merge squash de um PR.
+
+    Lança ``ProviderError`` se o merge falhar (ex: checks falhando, conflito).
+    """
+    return transport.merge_pull_request(project, pr_number, merge_method=merge_method)
+
+
 # ---------------------------------------------------------------------------
 # Helpers internos
 # ---------------------------------------------------------------------------

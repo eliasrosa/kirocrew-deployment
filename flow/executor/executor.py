@@ -28,6 +28,7 @@ class ActionKind(StrEnum):
     NOTIFY_HUMAN   = "notify_human"      # avisa humano (TL, QA, Dev)
     BLOCK          = "block"             # marca crewflow:blocked + motivo
     REBRAND        = "rebrand"           # troca de template (GATE 0 do hotfix)
+    MERGE_PR       = "merge_pr"          # merge squash automático (reviewer aprovado, zero comentários)
     SKIP           = "skip"              # nada a fazer neste ciclo
 
 
@@ -183,10 +184,35 @@ def decide(
             )
 
     # ── Lock anti-loop: crewflow:reviewed ─────────────────────────────
+    # Se reviewed está presente, lemos o resultado do reviewer no state_comment.
+    # - Aprovado sem comentários → MERGE_PR (caminho feliz)
+    # - Aprovado com comentários → NOTIFY_HUMAN TL
+    # - Resultado ainda não disponível (reviewer ainda rodando) → SKIP
     if current_state is State.REVIEW and Modifier.REVIEWED in modifiers:
+        from flow.audit.state_comment import get_reviewer_result_from_comment
+        reviewer_result = get_reviewer_result_from_comment(state_comment)
+
+        if reviewer_result is None:
+            # Reviewer ainda não postou resultado — aguardar
+            return ExecutorDecision(
+                action=ActionKind.SKIP,
+                reason="crewflow:reviewed presente mas resultado do reviewer ainda não disponível — aguardando",
+            )
+
+        if reviewer_result.is_auto_mergeable:
+            return ExecutorDecision(
+                action=ActionKind.MERGE_PR,
+                reason="reviewer aprovado sem pedidos de mudança — merge squash automático",
+                add_labels=("crewflow:done",),
+                remove_labels=("crewflow:review", "crewflow:reviewed"),
+            )
+
+        # Reviewer tem comentários — notifica TL com o conteúdo do review
+        comments_text = "; ".join(reviewer_result.comments) if reviewer_result.comments else "(ver comentário na issue)"
         return ExecutorDecision(
-            action=ActionKind.SKIP,
-            reason="lock anti-loop: crewflow:reviewed presente — já analisado neste SHA",
+            action=ActionKind.NOTIFY_HUMAN,
+            reason=f"reviewer retornou pedidos de mudança: {comments_text}",
+            notify_role=HumanRole.TL,
         )
 
     # ── Pré-condição COV (débito técnico em dev) ───────────────────────

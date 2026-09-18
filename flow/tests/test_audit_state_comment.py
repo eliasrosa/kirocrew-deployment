@@ -208,3 +208,82 @@ class TestHelpers:
         sc.add_exception("equivalencia_test", "teste escrito antes da refatoração", "kiro-dev", "2026-09-15")
         text = render(sc)
         assert has_equivalence_test_signal(text) is True
+
+
+# ---------------------------------------------------------------------------
+# ReviewerResult
+# ---------------------------------------------------------------------------
+
+class TestReviewerResult:
+    def test_is_auto_mergeable_sem_comentarios(self) -> None:
+        from flow.audit.state_comment import ReviewerResult
+        rr = ReviewerResult(approved=True, comments=())
+        assert rr.is_auto_mergeable is True
+
+    def test_nao_auto_mergeable_com_comentarios(self) -> None:
+        from flow.audit.state_comment import ReviewerResult
+        rr = ReviewerResult(approved=True, comments=("Falta teste",))
+        assert rr.is_auto_mergeable is False
+
+    def test_nao_auto_mergeable_reprovado(self) -> None:
+        from flow.audit.state_comment import ReviewerResult
+        rr = ReviewerResult(approved=False, comments=())
+        assert rr.is_auto_mergeable is False
+
+    def test_set_reviewer_result_persiste(self) -> None:
+        sc = _make_sc()
+        sc.set_reviewer_result(approved=True, comments=[], sha="abc123", reviewer="kiro-reviewer")
+        rr = sc.get_reviewer_result()
+        assert rr is not None
+        assert rr.approved is True
+        assert rr.sha == "abc123"
+        assert rr.is_auto_mergeable is True
+
+    def test_roundtrip_reviewer_result_aprovado(self) -> None:
+        sc = _make_sc()
+        sc.set_reviewer_result(approved=True, comments=[], sha="deadbeef")
+        text = render(sc)
+        parsed = parse(text)
+        assert parsed is not None
+        rr = parsed.reviewer_result
+        assert rr is not None
+        assert rr.approved is True
+        assert rr.is_auto_mergeable is True
+
+    def test_roundtrip_reviewer_result_com_comentarios(self) -> None:
+        sc = _make_sc()
+        sc.set_reviewer_result(
+            approved=False,
+            comments=["Falta cobertura em X", "Nome de variável confuso"],
+            sha="deadbeef",
+        )
+        text = render(sc)
+        parsed = parse(text)
+        assert parsed is not None
+        rr = parsed.reviewer_result
+        assert rr is not None
+        assert rr.approved is False
+        assert len(rr.comments) == 2
+        assert rr.comments[0] == "Falta cobertura em X"
+        assert rr.is_auto_mergeable is False
+
+    def test_roundtrip_sem_reviewer_result(self) -> None:
+        sc = _make_sc()
+        text = render(sc)
+        parsed = parse(text)
+        assert parsed is not None
+        assert parsed.reviewer_result is None
+
+    def test_get_reviewer_result_from_comment_aprovado(self) -> None:
+        from flow.audit.state_comment import get_reviewer_result_from_comment
+        sc = _make_sc()
+        sc.set_reviewer_result(approved=True, comments=[])
+        text = render(sc)
+        rr = get_reviewer_result_from_comment(text)
+        assert rr is not None
+        assert rr.is_auto_mergeable is True
+
+    def test_get_reviewer_result_from_comment_none(self) -> None:
+        from flow.audit.state_comment import get_reviewer_result_from_comment
+        assert get_reviewer_result_from_comment(None) is None
+        assert get_reviewer_result_from_comment("sem marcador") is None
