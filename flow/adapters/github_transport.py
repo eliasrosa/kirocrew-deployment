@@ -89,15 +89,21 @@ def list_issues_by_label(owner_repo: str, label: str, limit: int = 50) -> list:
 
 
 def set_issue_labels(owner_repo: str, number: int, labels: list[str]) -> None:
-    """Substitui todas as labels da issue."""
-    # Remove todas as labels atuais e adiciona as novas.
-    # gh issue edit aceita --add-label e --remove-label mas não "set".
-    # A forma mais segura é usar a API diretamente via gh api.
-    _run([
-        "api", f"repos/{owner_repo}/issues/{number}/labels",
-        "--method", "PUT",
-        "--field", f"labels={json.dumps(labels)}",
-    ])
+    """Substitui todas as labels da issue via API do GitHub (PUT /issues/{n}/labels)."""
+    import subprocess as _sp
+    # gh api --input lê JSON do stdin — única forma de mandar array sem serializar como string
+    body = json.dumps({"labels": labels})
+    result = _sp.run(
+        ["gh", "api", f"repos/{owner_repo}/issues/{number}/labels",
+         "--method", "PUT", "--input", "-"],
+        input=body,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ProviderError(f"gh label PUT falhou: {result.stderr.strip()}")
 
 
 def get_issue_comments(owner_repo: str, number: int) -> list:
