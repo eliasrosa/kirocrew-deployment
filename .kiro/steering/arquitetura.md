@@ -156,6 +156,32 @@ with mock.patch.object(transport, "fn"), pytest.raises(Error):
 4. **Obrigatório:** adicionar à tabela `CLIENTS` em `test_provider_parity.py`
 5. O `test_a_tabela_cobre_todos_os_providers_registrados` quebra até o passo 4
 
+## Dependências de ambiente
+
+### Para desenvolvimento e CI
+
+```bash
+pip install -e ".[dev]"
+# Instala: pytest, pytest-cov, mypy, ruff, pyyaml
+```
+
+**PyYAML é obrigatório** para squads que usam `routing:` com formato multi-linha
+no `squads/*.yaml`. Sem PyYAML, o `_mini_yaml` só suporta routing inline
+(`{labels: ["crewflow:hotfix"]}`). Com PyYAML instalado, qualquer YAML válido funciona.
+
+### Para o cron de scan (sistema)
+
+| Dependência | Por quê | Como verificar |
+|---|---|---|
+| `gh` autenticado | `gh issue list`, `gh api` | `gh auth status` |
+| Clone do repo | worktree de implementação | `ls /path/to/kirocrew-flow/flow/` |
+| Python 3.12+ | executa o scan | `python3 --version` |
+| `scripts/install-cron.sh` executado | `flow/` no sys.path | ver `~/.kiro/crew/crons/deployment.py` |
+
+**Nunca copiar `deployment.py` manualmente** — usar `./scripts/install-cron.sh` que
+aplica o patch de sys.path automaticamente. Se copiado manualmente, o cron vai
+falhar com `ModuleNotFoundError: No module named 'flow'`.
+
 ## Instalação do cron
 
 **Use sempre `scripts/install-cron.sh`** em vez de copiar manualmente.
