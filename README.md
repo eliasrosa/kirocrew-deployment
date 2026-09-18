@@ -164,6 +164,40 @@ python3 -m ruff check flow/ && python3 -m pytest flow/tests/ --cov=flow --cov-fa
 
 260 testes, 82% cobertura, ruff limpo (Fase 1).
 
+## Dry-run — inspecionar sem despachar
+
+Antes de ativar o `auto_dispatch`, use o modo dry-run para validar o que o motor faria:
+
+```bash
+CREWFLOW_DRY_RUN=1 python3 deployment/deployment.py
+```
+
+Ou via config (`deployment.config.yaml`):
+
+```yaml
+dry_run: true
+```
+
+Saída esperada:
+
+```
+[DRY-RUN] ──────────────────────────────────────────
+[DRY-RUN] 2 issue(s) processada(s) pelo scan
+[DRY-RUN] Decisões (nenhuma será executada):
+
+[DRY-RUN] owner/repo#73 → DISPATCH_DEV (template via executor) — [repo] feat: dry-run
+[DRY-RUN] owner/repo#74 → NOTIFY_HUMAN tl — [repo] Fix: aguarda gate-tl
+
+[DRY-RUN] ── Nenhuma sessão despachada, label alterada ou notificação enviada. ──
+```
+
+Garantias do modo dry-run:
+- O scan roda normalmente (lê issues, executa o executor, decide ações)
+- `_dispatch()` **não** é chamado — nenhuma sessão one-shot é aberta
+- `provider.set_labels()` **não** é chamado — nenhuma label é alterada
+- `ctx.notify()` **não** é chamado — nenhuma notificação é enviada
+- Nenhum lock é criado
+
 ## Roadmap
 
 | Fase | Estado |

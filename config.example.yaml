@@ -48,6 +48,17 @@ one_per_repo: true       # no máx 1 sessão ativa por repo
 #   - Commits em pt-BR com prefixo convencional.
 #   - Steering em /home/elias/dev/cogna/.kiro/steering/ tem regras adicionais.
 
+# Modo dry-run: inspeciona o que o motor faria sem executar nenhuma ação.
+# Útil para validar a configuração da squad antes de ativar o dispatch.
+# Ativado por esta flag ou pela variável de ambiente CREWFLOW_DRY_RUN=1.
+#
+# Exemplo de saída:
+#   [DRY-RUN] owner/repo#73 → DISPATCH_DEV (template via executor) — [repo] feat: dry-run
+#   [DRY-RUN] owner/repo#74 → NOTIFY_HUMAN tl ([repo] Fix: aguarda gate-tl)
+#   [DRY-RUN] Nenhuma sessão despachada, label alterada ou notificação enviada.
+#
+# dry_run: false
+
 # Onde ficam os clones locais usados como base dos worktrees (sem reclonar).
 # A esteira cria worktrees isolados em <dev_root>/.esteira-worktrees/<repo>-<n>.
 dev_root: "/home/<USER>/dev"

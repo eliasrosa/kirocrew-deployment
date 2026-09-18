@@ -47,7 +47,7 @@ from flow.audit.state_comment import (  # noqa: E402
 )
 from flow.ports.issue_provider import provider_for  # noqa: E402
 from flow.scan.cache import open_cache  # noqa: E402
-from flow.scan.scanner import scan_candidates  # noqa: E402
+from flow.scan.scanner import ScanResult, scan_candidates  # noqa: E402
 
 # ── Labels (mantidas para o prompt de dispatch) ───────────────────────────
 LABEL_DEV     = "crewflow:dev"
@@ -268,7 +268,6 @@ def _dispatch(
 
 def _scan_result_to_issue(result: object) -> dict:
     """Converte um ScanResult para o formato mínimo que o prompt de dispatch precisa."""
-    from flow.scan.scanner import ScanResult
     r: ScanResult = result  # type: ignore[assignment]
     item = r.item
     # Extrai o número da issue key ("VGAT-123" → 123, "owner/repo#42" → 42)
@@ -284,6 +283,60 @@ def _scan_result_to_issue(result: object) -> dict:
 
 # ── Ponto de entrada do cron ──────────────────────────────────────────────
 
+def _dry_run_report(
+    scan_results: list,
+    dispatch_devs: list,
+    dispatch_reviewers: list,
+    needs_human: list,
+    blocked_bypass: list,
+    rebranded: list,
+    merge_prs: list,
+    spec_invalid: list,
+) -> None:
+    """Imprime o relatório de dry-run no stdout sem executar nenhum efeito colateral."""
+
+    print("[DRY-RUN] ──────────────────────────────────────────")
+    print(f"[DRY-RUN] {len(scan_results)} issue(s) processada(s) pelo scan")
+    print("[DRY-RUN] Decisões (nenhuma será executada):")
+    print()
+
+    for repo, issue, decision in dispatch_devs:
+        print(f"[DRY-RUN] {repo}#{issue['number']} → DISPATCH_DEV (template via executor) — {issue['title']}")
+
+    for repo, issue in dispatch_reviewers:
+        print(f"[DRY-RUN] {repo}#{issue['number']} → DISPATCH_REVIEWER — {issue['title']}")
+
+    for repo, issue in merge_prs:
+        print(f"[DRY-RUN] {repo}#{issue['number']} → MERGE_PR — {issue['title']}")
+
+    for result, decision, _sc in needs_human:
+        r: ScanResult = result  # type: ignore[assignment]
+        print(f"[DRY-RUN] {r.item.key} → NOTIFY_HUMAN {getattr(getattr(decision, 'notify_role', None), 'value', '?')} ({r.item.title})")
+
+    for result, decision in rebranded:
+        r = result  # type: ignore[assignment]
+        print(f"[DRY-RUN] {r.item.key} → REBRAND → {getattr(decision, 'new_template', '?')} ({r.item.title})")
+
+    for result in blocked_bypass:
+        r = result  # type: ignore[assignment]
+        print(f"[DRY-RUN] {r.item.key} → BLOCK (hml-bypass sem justificativa) — {r.item.title}")
+
+    for result in spec_invalid:
+        r = result  # type: ignore[assignment]
+        print(f"[DRY-RUN] {r.item.key} → SPEC_INVALID (sem repo no título) — {r.item.title}")
+
+    total_actions = (
+        len(dispatch_devs) + len(dispatch_reviewers) + len(merge_prs)
+        + len(needs_human) + len(rebranded) + len(blocked_bypass) + len(spec_invalid)
+    )
+    skipped = max(0, len(scan_results) - total_actions)
+    if skipped > 0:
+        print(f"[DRY-RUN] {skipped} issue(s) sem ação (SKIP)")
+
+    print()
+    print("[DRY-RUN] ── Nenhuma sessão despachada, label alterada ou notificação enviada. ──")
+
+
 def run(ctx: object) -> None:
     cfg = _load_config()
     repos: list[str] = cfg.get("repos") or []
@@ -292,6 +345,12 @@ def run(ctx: object) -> None:
     one_per_repo = bool(cfg.get("one_per_repo", True))
     chat_id = cfg.get("notify_chat_id") or ""
     issue_provider_name: str = cfg.get("issue_provider", "github")
+
+    # ── Modo dry-run: inspeciona o que seria feito sem executar efeitos ──
+    # Ativado por CREWFLOW_DRY_RUN=1 (variável de ambiente) ou dry_run: true na config.
+    dry_run = bool(os.environ.get("CREWFLOW_DRY_RUN")) or bool(cfg.get("dry_run", False))
+    if dry_run:
+        logger.info("deployment: modo dry-run ativado — nenhuma ação será executada")
 
     if not repos:
         logger.warning("deployment: nenhum repo/projeto configurado")
@@ -374,7 +433,6 @@ def run(ctx: object) -> None:
     # ── Separa candidatos de dispatch dos informativos ────────────────────
     # ── Passa todos os resultados pelo executor ────────────────────────────
     from flow.executor.executor import ActionKind, decide, resolve_template
-    from flow.scan.scanner import ScanResult
 
     # Categorias de resultado após o executor — tipadas para mypy
     spec_invalid: list[ScanResult] = []
@@ -451,6 +509,20 @@ def run(ctx: object) -> None:
     # Sem nada a fazer?
     if not any([spec_invalid, dispatch_devs, dispatch_reviewers,
                 needs_human, blocked_bypass, rebranded, merge_prs]):
+        return
+
+    # ── Modo dry-run: imprime relatório e encerra sem executar ────────────
+    if dry_run:
+        _dry_run_report(
+            scan_results=scan_results,
+            dispatch_devs=dispatch_devs,
+            dispatch_reviewers=dispatch_reviewers,
+            needs_human=needs_human,
+            blocked_bypass=blocked_bypass,
+            rebranded=rebranded,
+            merge_prs=merge_prs,
+            spec_invalid=spec_invalid,
+        )
         return
 
     # ── Notifica specs inválidas ──────────────────────────────────────────

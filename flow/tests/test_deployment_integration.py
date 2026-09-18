@@ -1102,3 +1102,224 @@ class TestUpsertPrReviewComment:
             github_client.upsert_pr_review_comment("owner/repo", 10, "body")
 
         mock_create.assert_not_called()
+
+
+def _make_dispatch_scan_result(
+    key: str = "https://github.com/owner/repo/issues/42",
+    title: str = "[owner/repo] Fix",
+) -> object:
+    from flow.domain.gates import WorkItem
+    from flow.domain.state import State
+    from flow.scan.scanner import ScanResult
+
+    return ScanResult(
+        item=WorkItem(key=key, title=title, labels=frozenset(["crewflow:todo", "crewflow:feature"])),
+        current_state=State.TODO,
+        modifiers=frozenset(),
+        dispatch_candidate=True,
+        spec_valid=None,
+        changed=True,
+        reason="CANDIDATO A DISPATCH; labels mudaram",
+    )
+
+
+class TestDryRun:
+    """dry_run=True/CREWFLOW_DRY_RUN=1 — scan roda, efeitos colaterais não."""
+
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "secret"
+        ctx.job.id = "test-job"
+        return ctx
+
+    def _dry_run_config(self, dry_run_in_config: bool = False) -> dict:
+        cfg: dict = {
+            "repos": ["owner/repo"],
+            "auto_dispatch": True,
+            "max_concurrent": 2,
+            "one_per_repo": True,
+            "notify_chat_id": "",
+            "squad_id": "test",
+            "issue_provider": "github",
+            "dev_root": "/tmp/dev",
+            "agent": "kirocrew",
+        }
+        if dry_run_in_config:
+            cfg["dry_run"] = True
+        return cfg
+
+    def test_dispatch_nao_chamado_em_dry_run_via_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CREWFLOW_DRY_RUN=1 → _dispatch NÃO é chamado."""
+        monkeypatch.setenv("CREWFLOW_DRY_RUN", "1")
+        ctx = self._make_ctx()
+        result = _make_dispatch_scan_result()
+
+        with (
+            mock.patch("deployment.deployment._load_config", return_value=self._dry_run_config()),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+            mock.patch("deployment.deployment._dispatch") as mock_dispatch,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider_for.return_value = mock.MagicMock()
+
+            run(ctx)
+
+        mock_dispatch.assert_not_called()
+
+    def test_dispatch_nao_chamado_em_dry_run_via_config(self) -> None:
+        """dry_run: true na config → _dispatch NÃO é chamado."""
+        ctx = self._make_ctx()
+        result = _make_dispatch_scan_result()
+
+        with (
+            mock.patch(
+                "deployment.deployment._load_config",
+                return_value=self._dry_run_config(dry_run_in_config=True),
+            ),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+            mock.patch("deployment.deployment._dispatch") as mock_dispatch,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider_for.return_value = mock.MagicMock()
+
+            run(ctx)
+
+        mock_dispatch.assert_not_called()
+
+    def test_notify_nao_chamado_em_dry_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Nenhuma notificação enviada no modo dry-run."""
+        monkeypatch.setenv("CREWFLOW_DRY_RUN", "1")
+        ctx = self._make_ctx()
+        result = _make_dispatch_scan_result()
+
+        with (
+            mock.patch("deployment.deployment._load_config", return_value=self._dry_run_config()),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider_for.return_value = mock.MagicMock()
+
+            run(ctx)
+
+        ctx.notify.assert_not_called()
+
+    def test_set_labels_nao_chamado_em_dry_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """provider.set_labels NÃO é chamado no modo dry-run (nenhuma label alterada)."""
+        monkeypatch.setenv("CREWFLOW_DRY_RUN", "1")
+        ctx = self._make_ctx()
+        result = _make_dispatch_scan_result()
+
+        with (
+            mock.patch("deployment.deployment._load_config", return_value=self._dry_run_config()),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider = mock.MagicMock()
+            mock_provider_for.return_value = mock_provider
+
+            run(ctx)
+
+        mock_provider.set_labels.assert_not_called()
+
+    def test_dry_run_imprime_relatorio_stdout(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """dry-run imprime as decisões no stdout em formato legível."""
+        monkeypatch.setenv("CREWFLOW_DRY_RUN", "1")
+        ctx = self._make_ctx()
+        result = _make_dispatch_scan_result(
+            key="https://github.com/owner/repo/issues/42",
+            title="[owner/repo] Feature X",
+        )
+
+        with (
+            mock.patch("deployment.deployment._load_config", return_value=self._dry_run_config()),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider_for.return_value = mock.MagicMock()
+
+            run(ctx)
+
+        captured = capsys.readouterr()
+        assert "[DRY-RUN]" in captured.out
+        assert "DISPATCH_DEV" in captured.out
+        assert "#42" in captured.out
+
+    def test_sem_dry_run_dispatch_e_chamado(self) -> None:
+        """Sem dry-run, _dispatch É chamado normalmente (regressão)."""
+        ctx = self._make_ctx()
+        result = _make_dispatch_scan_result()
+
+        with (
+            mock.patch("deployment.deployment._load_config", return_value=self._dry_run_config()),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+            mock.patch("deployment.deployment._active_sessions", return_value=0),
+            mock.patch("deployment.deployment._repo_has_active", return_value=False),
+            mock.patch("deployment.deployment._pr_exists", return_value=False),
+            mock.patch("deployment.deployment._dispatch") as mock_dispatch,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider_for.return_value = mock.MagicMock()
+
+            run(ctx)
+
+        mock_dispatch.assert_called_once()
+
+    def test_dry_run_env_vazia_nao_ativa(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CREWFLOW_DRY_RUN='' (variável vazia) NÃO ativa o dry-run."""
+        monkeypatch.setenv("CREWFLOW_DRY_RUN", "")
+        ctx = self._make_ctx()
+        result = _make_dispatch_scan_result()
+
+        with (
+            mock.patch("deployment.deployment._load_config", return_value=self._dry_run_config()),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+            mock.patch("deployment.deployment._active_sessions", return_value=0),
+            mock.patch("deployment.deployment._repo_has_active", return_value=False),
+            mock.patch("deployment.deployment._pr_exists", return_value=False),
+            mock.patch("deployment.deployment._dispatch") as mock_dispatch,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider_for.return_value = mock.MagicMock()
+
+            run(ctx)
+
+        mock_dispatch.assert_called_once()
