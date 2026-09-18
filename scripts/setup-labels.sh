@@ -38,6 +38,10 @@ LABELS=(
   # Pedido de mudanca do reviewer: a issue volta pro dev para re-trabalho na MESMA PR.
   # Removida automaticamente quando o dev abre o novo commit (crewflow:reviewed some).
   "crewflow:changes-requested|9333EA|Reviewer pediu mudanca: dev deve corrigir e re-submeter na mesma PR"
+  # PR tem conflito de merge ou base desatualizada. O cron de conflito resolve o
+  # rebase/merge na branch feat/issue-N existente e atualiza a MESMA PR.
+  # Nunca abre PR nova.
+  "crewflow:conflito|F97316|PR com conflito de merge ou base desatualizada: cron de conflito resolve e atualiza a mesma branch"
 
   # ── TIPO DE FLUXO (routing: define qual workflow aplicar) ────────────
   "crewflow:feature|A855F7|Feature nova"

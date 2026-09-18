@@ -251,6 +251,7 @@ Os prompts das sessões one-shot (dev e reviewer) vivem em arquivos MD editávei
 | `dev.md` | implementação inicial | `DISPATCH_DEV` — issue em `crewflow:todo` |
 | `reviewer.md` | code review | `DISPATCH_REVIEWER` — issue em `crewflow:review` |
 | `rework.md` | re-trabalho pós-review | `DISPATCH_REWORK` — issue com `crewflow:changes-requested` |
+| `conflict.md` | resolução de conflito | `DISPATCH_CONFLICT_RESOLVER` — issue com `crewflow:conflito` |
 
 ### Ciclo de re-trabalho (crewflow:changes-requested)
 

@@ -76,6 +76,7 @@ class Modifier(StrEnum):
     REVIEWED          = "crewflow:reviewed"           # lock anti-loop: já analisado neste SHA
     HML_BYPASS        = "crewflow:hml-bypass"         # exceção auditada: hotfix pulou o HML
     CHANGES_REQUESTED = "crewflow:changes-requested"  # reviewer pediu mudança — volta pro dev
+    CONFLITO          = "crewflow:conflito"           # PR tem conflito de merge ou base desatualizada
 
 
 # Modificadores que impedem dispatch mesmo com o estado correto.

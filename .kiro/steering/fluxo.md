@@ -73,6 +73,7 @@ sobrepostos. **Modificador de parada tem prioridade sobre o estado.**
 | `crewflow:reviewed` | ⚫ `#6B7280` | lock anti-loop: já analisado neste SHA |
 | `crewflow:hml-bypass` | 🟧 `#C2410C` | **exceção auditada:** hotfix foi direto pra PRD sem HML — exige justificativa no comentário (o motor **bloqueia o merge** sem ela) |
 | `crewflow:changes-requested` | 🟣 `#9333EA` | reviewer pediu mudança — **re-trabalho na mesma PR** (teto: N rounds → NOTIFY_HUMAN tl) |
+| `crewflow:conflito` | 🟠 `#F97316` | PR com conflito de merge ou base desatualizada — **cron de conflito resolve via rebase na mesma branch** |
 
 ### Tipo de fluxo (routing) e prioridade
 
@@ -95,6 +96,8 @@ squads/*.yaml
         DISPATCH_DEV       → sessão one-shot (implementa + abre PR)
         DISPATCH_REVIEWER  → notifica que kiro-reviewer foi disparado
         DISPATCH_REWORK    → sessão dev de re-trabalho (pedidos do reviewer na mesma PR)
+        DISPATCH_CONFLICT_RESOLVER → sessão de resolução de conflito (rebase na branch feat/issue-N)
+        MARK_CONFLITO      → aplica crewflow:conflito na issue (PR com mergeable=CONFLICTING)
         NOTIFY_HUMAN       → avisa TL / Dev / QA pelo papel correto
         BLOCK              → notifica bypass sem justificativa
         REBRAND            → atualiza labels (GATE 0 do hotfix)
@@ -117,7 +120,8 @@ Em vez de um único cron monolítico (`run`), a esteira pode ser dividida em
 | `run_dev` | `crewflow:todo` | `DISPATCH_DEV` — implementa + abre PR | 600s (10 min) |
 | `run_reviewer` | `crewflow:review` (sem `crewflow:reviewed`) | `DISPATCH_REVIEWER` — code review | 300s (5 min) |
 | `run_merge` | `crewflow:review` + `crewflow:reviewed` aprovado | `MERGE_PR` — merge squash | 120s (2 min) |
-| `run_conflito` | `crewflow:changes-requested` | `DISPATCH_REWORK` — re-trabalho | 300s (5 min) |
+| `run_rework` | `crewflow:changes-requested` | `DISPATCH_REWORK` — re-trabalho pós-review | 300s (5 min) |
+| `run_conflito` | `crewflow:conflito` | `DISPATCH_CONFLICT_RESOLVER` — resolve conflito de merge | 300s (5 min) |
 
 O modelo por estágio é configurável via `stage_models` na `deployment.config.yaml`:
 

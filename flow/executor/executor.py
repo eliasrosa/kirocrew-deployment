@@ -23,14 +23,16 @@ from enum import StrEnum
 # ---------------------------------------------------------------------------
 
 class ActionKind(StrEnum):
-    DISPATCH_DEV      = "dispatch_dev"       # dispara sessão one-shot de implementação
-    DISPATCH_REVIEWER = "dispatch_reviewer"  # dispara kiro-reviewer
-    DISPATCH_REWORK   = "dispatch_rework"    # dispara sessão dev de re-trabalho (pós-review com pedidos)
-    NOTIFY_HUMAN      = "notify_human"       # avisa humano (TL, QA, Dev)
-    BLOCK             = "block"              # marca crewflow:blocked + motivo
-    REBRAND           = "rebrand"            # troca de template (GATE 0 do hotfix)
-    MERGE_PR          = "merge_pr"           # merge squash automático (reviewer aprovado, zero comentários)
-    SKIP              = "skip"               # nada a fazer neste ciclo
+    DISPATCH_DEV              = "dispatch_dev"              # dispara sessão one-shot de implementação
+    DISPATCH_REVIEWER         = "dispatch_reviewer"         # dispara kiro-reviewer
+    DISPATCH_REWORK           = "dispatch_rework"           # dispara sessão dev de re-trabalho (pós-review com pedidos)
+    DISPATCH_CONFLICT_RESOLVER = "dispatch_conflict_resolver"  # dispara sessão de resolução de conflito
+    NOTIFY_HUMAN              = "notify_human"              # avisa humano (TL, QA, Dev)
+    BLOCK                     = "block"                     # marca crewflow:blocked + motivo
+    REBRAND                   = "rebrand"                   # troca de template (GATE 0 do hotfix)
+    MERGE_PR                  = "merge_pr"                  # merge squash automático (reviewer aprovado, zero comentários)
+    MARK_CONFLITO             = "mark_conflito"             # aplica crewflow:conflito na PR com conflito de merge
+    SKIP                      = "skip"                      # nada a fazer neste ciclo
 
 
 class HumanRole(StrEnum):
@@ -118,6 +120,7 @@ def decide(
     squad: object | None = None,
     pr_head_sha: str | None = None,
     max_review_iterations: int | None = None,
+    pr_mergeable: str | None = None,
 ) -> ExecutorDecision:
     """Decide o que fazer com a issue.
 
@@ -135,6 +138,12 @@ def decide(
                                não faz I/O.
         max_review_iterations: Teto de ciclos review↔dev antes de escalar para TL.
                                None usa o default de ``gates.DEFAULT_MAX_REVIEW_ITERATIONS``.
+        pr_mergeable:          Estado de mergeabilidade do PR associado à issue (opcional).
+                               Valores: "MERGEABLE", "CONFLICTING", "UNKNOWN".
+                               Quando "CONFLICTING", o executor emite MARK_CONFLITO para
+                               que o driving adapter aplique crewflow:conflito na issue.
+                               Deve ser obtido via get_pr_for_issue() — o executor não
+                               faz I/O.
 
     Returns:
         ExecutorDecision com a ação e os metadados para o executor de I/O.
@@ -193,6 +202,19 @@ def decide(
                 ),
                 notify_role=HumanRole.TL,
             )
+
+    # ── Cron de conflito: crewflow:conflito ───────────────────────────
+    # Quando a PR tem conflito de merge ou base desatualizada, o reviewer
+    # (ou qualquer estágio) aplica crewflow:conflito. O cron de conflito
+    # localiza a branch feat/issue-N, faz rebase/resolve e atualiza a mesma
+    # branch — NUNCA abre PR nova.
+    if Modifier.CONFLITO in modifiers and current_state is State.REVIEW:
+        return ExecutorDecision(
+            action=ActionKind.DISPATCH_CONFLICT_RESOLVER,
+            reason="crewflow:conflito detectado — despachando sessão de resolução de conflito",
+            add_labels=("crewflow:running",),
+            remove_labels=("crewflow:conflito",),
+        )
 
     # ── Ciclo de re-trabalho pós-review: crewflow:changes-requested ───
     # Quando o reviewer pediu mudança (marcou changes-requested), o motor
@@ -303,13 +325,14 @@ def decide(
             )
 
     # ── Ações por estado ───────────────────────────────────────────────
-    return _decide_by_state(current_state, template, r)
+    return _decide_by_state(current_state, template, r, pr_mergeable=pr_mergeable)
 
 
 def _decide_by_state(
     current_state: object,
     template: str,
     r: object,
+    pr_mergeable: str | None = None,
 ) -> ExecutorDecision:
     """Decide a ação com base no estado atual da issue."""
     from flow.domain.state import State
@@ -325,6 +348,14 @@ def _decide_by_state(
         )
 
     if s is State.REVIEW:
+        # Detecção de conflito de merge: se o PR está CONFLICTING, aplica
+        # crewflow:conflito para que o cron de conflito resolva antes do review.
+        if pr_mergeable == "CONFLICTING":
+            return ExecutorDecision(
+                action=ActionKind.MARK_CONFLITO,
+                reason="PR com conflito de merge — aplicando crewflow:conflito para resolução",
+                add_labels=("crewflow:conflito",),
+            )
         # kiro-reviewer: dispara análise automatizada de code review
         return ExecutorDecision(
             action=ActionKind.DISPATCH_REVIEWER,

@@ -482,8 +482,12 @@ def _dry_run_report(
     rebranded: list,
     merge_prs: list,
     spec_invalid: list,
+    conflict_resolvers: list | None = None,
+    mark_conflitos: list | None = None,
 ) -> None:
     """Imprime o relatório de dry-run no stdout sem executar nenhum efeito colateral."""
+    _conflict_resolvers = conflict_resolvers or []
+    _mark_conflitos = mark_conflitos or []
 
     print("[DRY-RUN] ──────────────────────────────────────────")
     print(f"[DRY-RUN] {len(scan_results)} issue(s) processada(s) pelo scan")
@@ -498,6 +502,13 @@ def _dry_run_report(
 
     for repo, issue, _sc in dispatch_reworks:
         print(f"[DRY-RUN] {repo}#{issue['number']} → DISPATCH_REWORK — {issue['title']}")
+
+    for repo, issue in _conflict_resolvers:
+        print(f"[DRY-RUN] {repo}#{issue['number']} → DISPATCH_CONFLICT_RESOLVER — {issue['title']}")
+
+    for result in _mark_conflitos:
+        _r_mc: ScanResult = result  # type: ignore[assignment]
+        print(f"[DRY-RUN] {_r_mc.item.key} → MARK_CONFLITO — {_r_mc.item.title}")
 
     for repo, issue in merge_prs:
         print(f"[DRY-RUN] {repo}#{issue['number']} → MERGE_PR — {issue['title']}")
@@ -542,11 +553,14 @@ def _log_cycle_summary(
     block: int,
     rebrand: int,
     spec_invalid: int,
+    conflict_resolver: int = 0,
+    mark_conflito: int = 0,
 ) -> None:
     """Emite 1 linha de resumo do ciclo no log e no ctx.notify() quando configurado."""
     total_actions = (
         dispatch_dev + dispatch_reviewer + dispatch_rework + merge_pr
         + notify_human + block + rebrand + spec_invalid
+        + conflict_resolver + mark_conflito
     )
     skipped = max(0, scan_total - total_actions)
     summary = (
@@ -555,6 +569,8 @@ def _log_cycle_summary(
         f"dispatch_dev:{dispatch_dev} "
         f"dispatch_reviewer:{dispatch_reviewer} "
         f"dispatch_rework:{dispatch_rework} "
+        f"conflict_resolver:{conflict_resolver} "
+        f"mark_conflito:{mark_conflito} "
         f"merge_pr:{merge_pr} "
         f"notify_human:{notify_human} "
         f"block:{block} "
@@ -670,6 +686,8 @@ def run(ctx: object) -> None:
     dispatch_devs: list[tuple[str, dict, object]] = []   # (repo, issue, decision)
     dispatch_reviewers: list[tuple[str, dict]] = []      # (repo, issue)
     dispatch_reworks: list[tuple[str, dict, str | None]] = []  # (repo, issue, state_comment)
+    conflict_resolvers: list[tuple[str, dict]] = []      # (repo, issue) — cron de conflito
+    mark_conflitos: list[ScanResult] = []                # issues para marcar crewflow:conflito
     needs_human: list[tuple[ScanResult, object, str | None]] = []  # (result, decision, sc)
     blocked_bypass: list[ScanResult] = []                # result com bypass sem justif
     rebranded: list[tuple[ScanResult, object]] = []      # (result, decision)
@@ -706,8 +724,10 @@ def run(ctx: object) -> None:
 
         # Busca o SHA do HEAD do PR quando em review+reviewed para que o
         # executor possa detectar push pós-review sem fazer I/O ele mesmo.
+        # Também lê mergeability para detecção de conflito (crewflow:conflito).
         pr_head_sha: str | None = None
-        if result.current_state is State.REVIEW and Modifier.REVIEWED in result.modifiers:
+        pr_mergeable: str | None = None
+        if result.current_state is State.REVIEW:
             import contextlib
             with contextlib.suppress(Exception):
                 _repo = (
@@ -719,8 +739,9 @@ def run(ctx: object) -> None:
                     _pr = provider.get_pr_for_issue(_repo, _issue_number)
                     if _pr:
                         pr_head_sha = _pr.get("headRefOid") or _pr.get("headRefName")
+                        pr_mergeable = _pr.get("mergeable")  # "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
 
-        decision = decide(result, state_comment=state_comment, squad=squad, pr_head_sha=pr_head_sha)
+        decision = decide(result, state_comment=state_comment, squad=squad, pr_head_sha=pr_head_sha, pr_mergeable=pr_mergeable)
 
         # Loga o template resolvido pelo executor e a ação decidida, para
         # cada issue processada — facilita debugar por que uma issue foi para
@@ -741,6 +762,14 @@ def run(ctx: object) -> None:
             rebranded.append((result, decision))
         elif decision.action is ActionKind.NOTIFY_HUMAN:
             needs_human.append((result, decision, state_comment))
+        elif decision.action is ActionKind.MARK_CONFLITO:
+            mark_conflitos.append(result)
+        elif decision.action is ActionKind.DISPATCH_CONFLICT_RESOLVER:
+            repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            if not repo:
+                repo = repos[0] if repos else ""
+            issue = _scan_result_to_issue(result)
+            conflict_resolvers.append((repo, issue))
         elif decision.action is ActionKind.DISPATCH_REVIEWER:
             repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
             issue = _scan_result_to_issue(result)
@@ -770,6 +799,8 @@ def run(ctx: object) -> None:
         dispatch_dev=len(dispatch_devs),
         dispatch_reviewer=len(dispatch_reviewers),
         dispatch_rework=len(dispatch_reworks),
+        conflict_resolver=len(conflict_resolvers),
+        mark_conflito=len(mark_conflitos),
         merge_pr=len(merge_prs),
         notify_human=len(needs_human),
         block=len(blocked_bypass),
@@ -779,6 +810,7 @@ def run(ctx: object) -> None:
 
     # Sem nada a fazer?
     if not any([spec_invalid, dispatch_devs, dispatch_reviewers, dispatch_reworks,
+                conflict_resolvers, mark_conflitos,
                 needs_human, blocked_bypass, rebranded, merge_prs]):
         return
 
@@ -794,6 +826,8 @@ def run(ctx: object) -> None:
             rebranded=rebranded,
             merge_prs=merge_prs,
             spec_invalid=spec_invalid,
+            conflict_resolvers=conflict_resolvers,
+            mark_conflitos=mark_conflitos,
         )
         return
 
@@ -999,6 +1033,84 @@ def run(ctx: object) -> None:
 
     if merge_prs:
         _execute_auto_merges(ctx, merge_prs, chat_id, provider)
+
+    # ── Aplica crewflow:conflito nas PRs com conflito detectado ──────────
+    if mark_conflitos:
+        for result in mark_conflitos:
+            try:
+                _repo_mc = result.item.key.split("/issues/")[0].replace("https://github.com/", "") or (repos[0] if repos else "")
+                current_labels = list(result.item.labels)
+                for lbl in ("crewflow:conflito",):
+                    if lbl not in current_labels:
+                        current_labels.append(lbl)
+                provider.set_labels(_repo_mc, result.item.key, current_labels)
+                logger.info("deployment: crewflow:conflito aplicado em %s", result.item.key)
+            except Exception as exc:
+                logger.error("deployment: erro ao aplicar conflito em %s: %s", result.item.key, exc)
+        vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
+        linhas_mc = "\n".join(f"  - {r.item.key}: {r.item.title}" for r in mark_conflitos)
+        ctx.notify(  # type: ignore[attr-defined]
+            f"KiroCrew Flow: {len(mark_conflitos)} PR(s) com conflito de merge detectado — "
+            f"crewflow:conflito aplicado.{vm}\n{linhas_mc}"
+        )
+
+    # ── Cron de conflito: resolve rebase na branch existente ─────────────
+    if conflict_resolvers:
+        for repo, issue in conflict_resolvers:
+            issue_number_cr = issue["number"]
+            if not auto:
+                vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
+                ctx.notify(  # type: ignore[attr-defined]
+                    f"KiroCrew Flow (Fase 1): conflito pendente — "
+                    f"{repo}#{issue_number_cr}: {issue['title']}.{vm}\n"
+                    f"  Ative auto_dispatch para despachar o resolvedor de conflito automaticamente."
+                )
+                continue
+            if _conflict_resolver_has_active(repo, issue_number_cr):
+                logger.info(
+                    "deployment: resolvedor de conflito já ativo para %s#%s — dispatch ignorado",
+                    repo, issue_number_cr,
+                )
+                continue
+            # Localiza o PR existente para passar o número ao prompt
+            branch_cr = f"feat/issue-{issue_number_cr}"
+            pr_number_cr: int | None = None
+            try:
+                import subprocess as _sp2
+                _pr_cr_res = _sp2.run(
+                    ["gh", "pr", "list", "--repo", repo, "--head", branch_cr,
+                     "--state", "open", "--json", "number"],
+                    capture_output=True, text=True, timeout=15, check=False,
+                )
+                if _pr_cr_res.returncode == 0:
+                    _prs_cr = json.loads(_pr_cr_res.stdout or "[]")
+                    if _prs_cr:
+                        pr_number_cr = int(_prs_cr[0]["number"])
+            except Exception as exc_cr:
+                logger.warning(
+                    "deployment: erro ao localizar PR para conflict resolver %s#%s: %s",
+                    repo, issue_number_cr, exc_cr,
+                )
+            if pr_number_cr is None:
+                vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
+                logger.warning(
+                    "deployment: PR aberto não encontrado para conflict resolver %s#%s — notificando",
+                    repo, issue_number_cr,
+                )
+                ctx.notify(  # type: ignore[attr-defined]
+                    f"KiroCrew Flow: crewflow:conflito mas PR não localizado — "
+                    f"{repo}#{issue_number_cr}.{vm}"
+                )
+                continue
+            try:
+                prompt_extra_cr = squad.dispatch_prompt_extra if squad else ""
+                _dispatch_conflict_resolver(ctx, repo, issue, pr_number_cr, cfg,
+                                            prompt_extra=prompt_extra_cr)
+            except Exception as exc:
+                logger.error(
+                    "deployment: erro ao despachar conflict resolver para %s#%s: %s",
+                    repo, issue_number_cr, exc,
+                )
 
 
 def _notify_human_actions(ctx: object, items: list, chat_id: str) -> None:
@@ -1413,6 +1525,161 @@ def _dispatch_rework(
     except Exception as exc:
         logger.error(
             "deployment: falha ao despachar rework para %s#%s: %s",
+            repo, issue["number"], exc,
+        )
+
+
+def _conflict_resolver_has_active(repo: str, issue_number: int) -> bool:
+    """Retorna True se já existe sessão de resolução de conflito ativa para esta issue."""
+    short = repo.split("/")[-1]
+    locks = glob.glob(
+        os.path.join(_sessdir(), f"dashboard_esteira-{short}-{issue_number}.jsonl.lock")
+    )
+    return any(not _lock_is_stale(p) for p in locks)
+
+
+# Fallback embutido para o prompt do conflict resolver — usado quando
+# flow/prompts/conflict.md não existe no disco.
+_CONFLICT_PROMPT_FALLBACK = (
+    "------------ AGENT HEADER ----------------\n"
+    "REPO: {{repo}}\n"
+    "ISSUE: #{{issue_number}} — {{issue_title}}\n"
+    "PR: #{{pr_number}}\n"
+    "URL: {{issue_url}}\n"
+    "SESSION TITLE: {{session_title}}\n"
+    "------------ CONTEXT TASK ----------------\n"
+    "Você é um agente de RESOLUÇÃO DE CONFLITO ONE-SHOT. Tarefa ÚNICA, sem loop, sem watchdog.\n\n"
+    "USE O WORKTREE E BRANCH EXISTENTES — NÃO crie branch nova, NÃO abra PR novo.\n"
+    "  `cd {{worktree_path}}`\n"
+    "  Se não existir: `cd {{dev_root}}/{{repo_short}} && git fetch origin && "
+    "git worktree add {{worktree_path}} feat/issue-{{issue_number}}`\n\n"
+    "RESOLVA O CONFLITO:\n"
+    "  `git fetch origin && git rebase origin/{{base_branch}}`\n"
+    "  Resolva conflitos manualmente se necessário, depois:\n"
+    "  `git push origin feat/issue-{{issue_number}} --force-with-lease`\n\n"
+    "Remove `crewflow:conflito` e `crewflow:running` da issue.\n"
+    "NUNCA mergeie. NUNCA faça deploy. NUNCA abra PR novo.\n"
+    "------------------------------------------\n"
+    "{{prompt_extra}}"
+)
+
+
+def _conflict_prompt(
+    repo: str,
+    issue: dict,
+    pr_number: int,
+    cfg: dict,
+    prompt_extra: str = "",
+) -> str:
+    """Carrega e renderiza o template MD do estágio 'conflict'."""
+    import subprocess as _sp3
+
+    short = repo.split("/")[-1]
+    dev_root = cfg.get("dev_root") or os.path.expanduser("~/dev")
+    chat_id = cfg.get("notify_chat_id") or ""
+    vault = cfg.get("vault_root") or ""
+
+    # Descobre a branch base do repo
+    base_branch = "main"
+    try:
+        _bb = _sp3.run(
+            ["gh", "repo", "view", repo, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if _bb.returncode == 0:
+            base_branch = _bb.stdout.strip() or "main"
+    except Exception:
+        pass
+
+    vault_step = ""
+    if vault:
+        vault_step = (
+            f"   - VAULT: `sh {vault}/.sync.sh \"<msg>\"` se a branch foi atualizada "
+            "significativamente."
+        )
+    notify_step = (
+        f"avise via voice_maybe (chat_id {chat_id}, intent auto) com TL;DR, "
+        if chat_id else "reporte o resultado, "
+    )
+    worktree = _worktree_path(dev_root, repo, issue["number"])
+    session_title = f"conflito: {short} #{issue['number']} PR #{pr_number}: {issue['title']}"
+
+    try:
+        return render_prompt(
+            "conflict",
+            fallback=_CONFLICT_PROMPT_FALLBACK,
+            repo=repo,
+            repo_short=short,
+            issue_number=str(issue["number"]),
+            issue_title=issue["title"],
+            issue_url=issue.get("url", ""),
+            session_title=session_title,
+            pr_number=str(pr_number),
+            dev_root=dev_root,
+            worktree_path=worktree,
+            base_branch=base_branch,
+            notify_step=notify_step,
+            vault_step=vault_step,
+            prompt_extra=prompt_extra.strip(),
+        )
+    except PromptRenderError:
+        logger.exception(
+            "deployment: erro ao renderizar template 'conflict' para %s#%s — dispatch abortado",
+            repo, issue["number"],
+        )
+        raise
+
+
+def _dispatch_conflict_resolver(
+    ctx: object,
+    repo: str,
+    issue: dict,
+    pr_number: int,
+    cfg: dict,
+    prompt_extra: str = "",
+) -> None:
+    """Fire-and-forget POST /api/chat para a sessão one-shot de resolução de conflito."""
+    import urllib.request as _u
+
+    short = repo.split("/")[-1]
+    slot = f"esteira-{short}-{issue['number']}"
+
+    try:
+        message = _conflict_prompt(repo, issue, pr_number, cfg, prompt_extra=prompt_extra)
+    except PromptRenderError as exc:
+        logger.error(
+            "deployment: _dispatch_conflict_resolver abortado — template 'conflict' inválido para %s#%s: %s",
+            repo, issue["number"], exc,
+        )
+        return
+
+    body = json.dumps({
+        "message": message,
+        "agent": cfg.get("agent") or "kirocrew",
+        "slot": slot,
+        "memory_mode": "temporary",
+    }).encode()
+    req = _u.Request(
+        f"http://localhost:{ctx._port}/api/chat",  # type: ignore[attr-defined]
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Internal-Secret": ctx._secret,  # type: ignore[attr-defined]
+            "X-Session-Key": f"cron:{ctx.job.id}",  # type: ignore[attr-defined]
+        },
+        method="POST",
+    )
+    try:
+        from kiro_crew.loopback_http import loopback_urlopen  # type: ignore[import]
+        with loopback_urlopen(req, timeout=3) as resp:
+            resp.read(1)
+        logger.info(
+            "deployment: conflict resolver despachado para %s#%s (PR #%s)",
+            repo, issue["number"], pr_number,
+        )
+    except Exception as exc:
+        logger.error(
+            "deployment: falha ao despachar conflict resolver para %s#%s: %s",
             repo, issue["number"], exc,
         )
 

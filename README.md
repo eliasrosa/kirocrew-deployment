@@ -35,6 +35,7 @@ crewflow:spec → crewflow:ready → crewflow:todo → crewflow:dev → crewflow
 | `crewflow:reviewed` | Lock anti-loop: já analisado neste SHA |
 | `crewflow:hml-bypass` | Exceção auditada: hotfix pulou o HML (exige justificativa) |
 | `crewflow:changes-requested` | Reviewer pediu mudança — dev corrige na mesma PR e re-submete |
+| `crewflow:conflito` | PR com conflito de merge ou base desatualizada — cron resolve e atualiza a mesma branch |
 
 ### Tipo de fluxo (routing) e prioridade
 
