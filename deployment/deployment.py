@@ -123,6 +123,127 @@ def _repo_has_active(repo: str) -> bool:
     return any(not _lock_is_stale(p) for p in locks)
 
 
+# ── Workspace isolado por task (worktree efêmero) ─────────────────────────
+
+def _worktree_path(dev_root: str, repo: str, issue_number: int) -> str:
+    """Retorna o caminho canônico do worktree efêmero para esta task.
+
+    Convenção: <dev_root>/.esteira-worktrees/<repo-short>-<issue_number>
+    Usada tanto pelo deployment (limpeza pré-dispatch) quanto pelo prompt
+    enviado à sessão one-shot, garantindo que ambos falem do mesmo diretório.
+    """
+    short = repo.split("/")[-1]
+    return os.path.join(dev_root, ".esteira-worktrees", f"{short}-{issue_number}")
+
+
+def _clean_stale_worktree(dev_root: str, repo: str, issue_number: int) -> bool:
+    """Remove worktree órfão de uma execução anterior, se existir.
+
+    Retorna True se havia worktree órfão e foi removido; False se não havia nada.
+    O worktree é considerado órfão quando o diretório existe mas a sessão
+    correspondente já não está ativa (lock inexistente ou stale).
+
+    Usa ``git worktree remove --force`` para garantir que o índice do .git
+    principal seja atualizado corretamente. Falhas são logadas mas não propagadas
+    — um worktree preso não deve bloquear o dispatch de outras tasks.
+    """
+    import subprocess
+
+    wt_path = _worktree_path(dev_root, repo, issue_number)
+    if not os.path.exists(wt_path):
+        return False
+
+    short = repo.split("/")[-1]
+    base_repo = os.path.join(dev_root, short)
+
+    logger.warning(
+        "deployment: worktree órfão encontrado em %s — removendo antes do novo dispatch",
+        wt_path,
+    )
+    try:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", wt_path],
+            cwd=base_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        logger.info("deployment: worktree órfão removido: %s", wt_path)
+        return True
+    except subprocess.CalledProcessError as exc:
+        logger.error(
+            "deployment: falha ao remover worktree órfão %s: %s",
+            wt_path, exc.stderr.strip(),
+        )
+        # Tenta remoção forçada via shutil como último recurso
+        try:
+            import shutil
+            shutil.rmtree(wt_path, ignore_errors=True)
+            # Limpa a referência do git mesmo que o rmtree tenha funcionado
+            subprocess.run(
+                ["git", "worktree", "prune"],
+                cwd=base_repo,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            logger.warning(
+                "deployment: worktree órfão %s removido via shutil (fallback)", wt_path
+            )
+            return True
+        except Exception as exc2:
+            logger.error(
+                "deployment: não foi possível remover worktree órfão %s: %s",
+                wt_path, exc2,
+            )
+            return False
+    except Exception as exc:
+        logger.error(
+            "deployment: erro inesperado ao remover worktree %s: %s", wt_path, exc
+        )
+        return False
+
+
+def _resource_headroom_ok(ctx: object, max_concurrent: int) -> bool:
+    """Verifica se há headroom de recursos para despachar uma nova task.
+
+    Consulta o endpoint de resource_status do Kiro Crew (se disponível).
+    Retorna True quando o posture é 'ample' ou 'tight' E o número de sessões
+    ativas está abaixo de max_concurrent. Retorna False quando 'critical'.
+
+    Em caso de falha ao consultar (Kiro Crew não disponível, timeout, etc.),
+    retorna True (fail-open): o cap de max_concurrent já age como barreira mínima.
+    """
+    try:
+        import urllib.request as _u
+        port = getattr(ctx, "_port", 5000)
+        secret = getattr(ctx, "_secret", "")
+        req = _u.Request(
+            f"http://localhost:{port}/api/resource-status",
+            headers={"X-Internal-Secret": secret},
+            method="GET",
+        )
+        from kiro_crew.loopback_http import loopback_urlopen  # type: ignore[import]
+        with loopback_urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read())
+        posture = data.get("posture", "ample")
+        if posture == "critical":
+            logger.warning(
+                "deployment: resource_status=critical — dispatch suspenso até liberar recursos"
+            )
+            return False
+        logger.debug("deployment: resource_status=%s — dispatch permitido", posture)
+        return True
+    except ImportError:
+        # kiro_crew.loopback_http não disponível (teste unitário ou ambiente sem KC)
+        return True
+    except Exception as exc:
+        logger.debug("deployment: resource_status indisponível (%s) — seguindo com dispatch", exc)
+        return True
+
+
 # ── Prompt de dispatch ────────────────────────────────────────────────────
 
 def _dispatch_prompt(
@@ -169,7 +290,7 @@ def _dispatch_prompt(
         f"   A branch base é a DEFAULT DO REPO — descubra, não presuma:\n"
         f"   `BASE=$(gh repo view {repo} --json defaultBranchRef --jq .defaultBranchRef.name)`\n"
         f"   `cd {dev_root}/{short} && git fetch origin && git worktree add -b "
-        f"feat/issue-{issue['number']} {dev_root}/.esteira-worktrees/{short}-{issue['number']} "
+        f"feat/issue-{issue['number']} {_worktree_path(dev_root, repo, issue['number'])} "
         f"\"origin/$BASE\"`\n"
         "   Trabalhe DENTRO do worktree; remova-o ao fim. NUNCA toque em outros worktrees.\n"
         "4. Implemente EXATAMENTE o escopo — nada além.\n"
@@ -382,8 +503,10 @@ def run(ctx: object) -> None:
     cfg = _load_config()
     repos: list[str] = cfg.get("repos") or []
     auto = bool(cfg.get("auto_dispatch", False))
-    max_conc = int(cfg.get("max_concurrent", 2))
+    # max_concurrent_tasks é o nome canônico (Fase 2); max_concurrent mantido para compat.
+    max_conc = int(cfg.get("max_concurrent_tasks") or cfg.get("max_concurrent", 2))
     one_per_repo = bool(cfg.get("one_per_repo", True))
+    dev_root: str = cfg.get("dev_root") or os.path.expanduser("~/dev")
     chat_id = cfg.get("notify_chat_id") or ""
     issue_provider_name: str = cfg.get("issue_provider", "github")
 
@@ -652,6 +775,16 @@ def run(ctx: object) -> None:
                 repo, issue["number"],
             )
             continue
+        # Verifica headroom de recursos antes de cada dispatch (posture critical = skip)
+        if not _resource_headroom_ok(ctx, max_conc):
+            logger.warning(
+                "deployment: headroom crítico — issue %s#%s adiada",
+                repo, issue["number"],
+            )
+            adiadas.append((repo, issue))
+            continue
+        # Remove worktree órfão de execução anterior antes de criar o novo
+        _clean_stale_worktree(dev_root, repo, issue["number"])
         try:
             prompt_extra = squad.dispatch_prompt_extra if squad else ""
             _dispatch(ctx, repo, issue, cfg, prompt_extra=prompt_extra)

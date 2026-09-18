@@ -78,6 +78,44 @@ squads/my-squad.yaml
 O `deployment.py` é o **driving adapter** que executa esse loop como cron de
 script do Kiro Crew (zero token no polling).
 
+## Workspace isolado por task (Fase 2)
+
+Cada dispatch cria um **worktree efêmero** dedicado, garantindo que múltiplas
+tasks rodem em paralelo sem pisar uma na outra.
+
+### Convenção de caminhos
+
+```
+<dev_root>/<repo-short>/          ← clone-base (nunca tocado diretamente)
+<dev_root>/.esteira-worktrees/
+    <repo-short>-<issue_number>/  ← worktree efêmero (criado no dispatch, removido no fim)
+```
+
+A função `_worktree_path(dev_root, repo, issue_number)` é a **fonte única de
+verdade** do caminho: usada pelo `deployment.py` na limpeza pré-dispatch e pelo
+prompt enviado à sessão one-shot. Os dois lados sempre falam do mesmo diretório.
+
+### Fluxo pré-dispatch
+
+```
+scan_candidates()
+    → executor.decide()
+    → _resource_headroom_ok()   ← posture critical suspende dispatch
+    → _clean_stale_worktree()   ← remove worktree órfão de sessão anterior
+    → _dispatch()               ← prompt inclui git worktree add no caminho canônico
+```
+
+### Cap de concorrência
+
+`max_concurrent_tasks` (alias de `max_concurrent` para compat) limita sessões ativas
+simultaneamente. O headroom de recursos é verificado via `resource_status` do Kiro
+Crew antes de cada dispatch — posture `critical` adia a task sem bloquear o ciclo.
+
+| Campo config | Função | Default |
+|---|---|---|
+| `max_concurrent_tasks` | Cap global de tasks em paralelo | `2` |
+| `one_per_repo` | No máx 1 sessão ativa por repo | `true` |
+
 ## Identificação e labels
 
 O prefixo `crewflow:` funciona em Jira e GitHub. Confluence rejeita `:` — fora

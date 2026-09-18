@@ -34,7 +34,7 @@ workflow_params:
   deploy_hml_mode: manual          # manual | auto (futuro)
 
 # Limites de segurança
-max_concurrent: 2        # máx de sessões da esteira rodando ao mesmo tempo (global)
+max_concurrent_tasks: 2  # máx de tasks em paralelo ao mesmo tempo (global; alias: max_concurrent)
 max_turns_per_task: 60   # teto duro de turnos por sessão disparada
 one_per_repo: true       # no máx 1 sessão ativa por repo
 

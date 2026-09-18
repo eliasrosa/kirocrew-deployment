@@ -1524,3 +1524,354 @@ class TestRunEmiteCicleSummary:
         assert kw["scan_total"] == 1
         assert kw["dispatch_dev"] == 1
         assert kw["dispatch_reviewer"] == 0
+# Workspace isolado por task (#92)
+# ---------------------------------------------------------------------------
+
+from deployment.deployment import (  # noqa: E402
+    _clean_stale_worktree,
+    _resource_headroom_ok,
+    _worktree_path,
+)
+
+
+class TestWorktreePath:
+    """_worktree_path() retorna convenção canônica consistente."""
+
+    def test_caminho_canônico(self) -> None:
+        path = _worktree_path("/home/user/dev", "owner/my-repo", 42)
+        assert path == "/home/user/dev/.esteira-worktrees/my-repo-42"
+
+    def test_usa_short_do_repo(self) -> None:
+        path = _worktree_path("/dev", "org/project-name", 7)
+        assert "project-name-7" in path
+
+    def test_sem_slash_extra(self) -> None:
+        path = _worktree_path("/home/user/dev", "owner/repo", 1)
+        assert "//" not in path
+
+
+class TestCleanStaleWorktree:
+    """_clean_stale_worktree() remove worktrees órfãos antes do dispatch."""
+
+    def test_retorna_false_quando_nao_existe(self, tmp_path: Path) -> None:
+        """Sem worktree no disco → retorna False sem erro."""
+        dev_root = str(tmp_path)
+        result = _clean_stale_worktree(dev_root, "owner/repo", 99)
+        assert result is False
+
+    def test_remove_worktree_via_git(self, tmp_path: Path) -> None:
+        """Worktree órfão presente → chama git worktree remove e retorna True."""
+        dev_root = str(tmp_path)
+        wt = tmp_path / ".esteira-worktrees" / "repo-5"
+        wt.mkdir(parents=True)
+
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(returncode=0, stderr="")
+            result = _clean_stale_worktree(dev_root, "owner/repo", 5)
+
+        assert result is True
+        call_args = mock_run.call_args[0][0]
+        assert "git" in call_args
+        assert "worktree" in call_args
+        assert "remove" in call_args
+
+    def test_fallback_shutil_quando_git_falha(self, tmp_path: Path) -> None:
+        """git worktree remove falha → shutil.rmtree usado como fallback."""
+        import subprocess
+        dev_root = str(tmp_path)
+        wt = tmp_path / ".esteira-worktrees" / "repo-6"
+        wt.mkdir(parents=True)
+        (wt / "file.txt").write_text("stub")
+
+        with mock.patch("subprocess.run") as mock_run:
+            # Primeira chamada (git worktree remove) falha
+            mock_run.side_effect = [
+                subprocess.CalledProcessError(1, "git", stderr="not a worktree"),
+                mock.MagicMock(returncode=0),  # git worktree prune ok
+            ]
+            result = _clean_stale_worktree(dev_root, "owner/repo", 6)
+
+        assert result is True
+        # O diretório deve ter sido removido pelo shutil
+        assert not wt.exists()
+
+    def test_nao_propaga_excecao_quando_tudo_falha(
+        self, tmp_path: Path
+    ) -> None:
+        """Falha total → retorna False sem propagar exceção."""
+        dev_root = str(tmp_path)
+        wt = tmp_path / ".esteira-worktrees" / "repo-7"
+        wt.mkdir(parents=True)
+
+        with mock.patch("subprocess.run", side_effect=RuntimeError("boom")):
+            result = _clean_stale_worktree(dev_root, "owner/repo", 7)
+
+        assert result is False
+
+
+class TestResourceHeadroomOk:
+    """_resource_headroom_ok() honra resource_status do Kiro Crew."""
+
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "secret"
+        return ctx
+
+    def test_retorna_true_quando_kc_indisponivel(self) -> None:
+        """ImportError (sem Kiro Crew) → fail-open, retorna True."""
+        ctx = self._make_ctx()
+
+        with mock.patch.dict("sys.modules", {"kiro_crew.loopback_http": None}):
+            result = _resource_headroom_ok(ctx, 2)
+
+        assert result is True
+
+    def test_retorna_true_para_posture_ample(self) -> None:
+        ctx = self._make_ctx()
+
+        mock_resp = mock.MagicMock()
+        mock_resp.__enter__ = mock.MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = mock.MagicMock(return_value=False)
+        mock_resp.read.return_value = b'{"posture": "ample"}'
+
+        mock_loopback = mock.MagicMock()
+        mock_loopback.loopback_urlopen.return_value = mock_resp
+
+        with mock.patch.dict("sys.modules", {"kiro_crew.loopback_http": mock_loopback}):
+            result = _resource_headroom_ok(ctx, 2)
+
+        assert result is True
+
+    def test_retorna_true_para_posture_tight(self) -> None:
+        ctx = self._make_ctx()
+
+        mock_resp = mock.MagicMock()
+        mock_resp.__enter__ = mock.MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = mock.MagicMock(return_value=False)
+        mock_resp.read.return_value = b'{"posture": "tight"}'
+
+        mock_loopback = mock.MagicMock()
+        mock_loopback.loopback_urlopen.return_value = mock_resp
+
+        with mock.patch.dict("sys.modules", {"kiro_crew.loopback_http": mock_loopback}):
+            result = _resource_headroom_ok(ctx, 2)
+
+        assert result is True
+
+    def test_retorna_false_para_posture_critical(self) -> None:
+        ctx = self._make_ctx()
+
+        mock_resp = mock.MagicMock()
+        mock_resp.__enter__ = mock.MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = mock.MagicMock(return_value=False)
+        mock_resp.read.return_value = b'{"posture": "critical"}'
+
+        mock_loopback = mock.MagicMock()
+        mock_loopback.loopback_urlopen.return_value = mock_resp
+
+        with mock.patch.dict("sys.modules", {"kiro_crew.loopback_http": mock_loopback}):
+            result = _resource_headroom_ok(ctx, 2)
+
+        assert result is False
+
+    def test_fail_open_quando_excecao(self) -> None:
+        """Qualquer exceção → fail-open, retorna True."""
+        ctx = self._make_ctx()
+
+        mock_loopback = mock.MagicMock()
+        mock_loopback.loopback_urlopen.side_effect = OSError("connection refused")
+
+        with mock.patch.dict("sys.modules", {"kiro_crew.loopback_http": mock_loopback}):
+            result = _resource_headroom_ok(ctx, 2)
+
+        assert result is True
+
+
+class TestParallelDispatchIsolation:
+    """Paralelismo: dois dispatches sem colisão de worktree; cap de max_concurrent respeitado."""
+
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "secret"
+        ctx.job.id = "test-job"
+        return ctx
+
+    def _auto_config(self, max_concurrent: int = 3) -> dict:
+        return {
+            "repos": ["owner/repo-a", "owner/repo-b"],
+            "auto_dispatch": True,
+            "max_concurrent_tasks": max_concurrent,
+            "one_per_repo": False,  # desligado para testar isolamento por worktree
+            "notify_chat_id": "",
+            "squad_id": "test",
+            "issue_provider": "github",
+            "dev_root": "/tmp/dev",
+            "agent": "kirocrew",
+        }
+
+    def test_dois_repos_diferentes_despacham_em_paralelo(self) -> None:
+        """Duas issues em repos diferentes são despachadas na mesma rodada."""
+        ctx = self._make_ctx()
+        result_a = _make_dispatch_scan_result(
+            key="https://github.com/owner/repo-a/issues/1",
+            title="[repo-a] Feature A",
+        )
+        result_b = _make_dispatch_scan_result(
+            key="https://github.com/owner/repo-b/issues/2",
+            title="[repo-b] Feature B",
+        )
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value=self._auto_config(max_concurrent=3)),
+            mock.patch("deployment.deployment.scan_candidates",
+                       return_value=[result_a, result_b]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+            mock.patch("deployment.deployment._active_sessions", return_value=0),
+            mock.patch("deployment.deployment._repo_has_active", return_value=False),
+            mock.patch("deployment.deployment._pr_exists", return_value=False),
+            mock.patch("deployment.deployment._resource_headroom_ok", return_value=True),
+            mock.patch("deployment.deployment._clean_stale_worktree"),
+            mock.patch("deployment.deployment._dispatch") as mock_dispatch,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider_for.return_value = mock.MagicMock()
+            run(ctx)
+
+        # Ambas as issues devem ter sido despachadas
+        assert mock_dispatch.call_count == 2
+
+    def test_cap_max_concurrent_tasks_respeitado(self) -> None:
+        """Com max_concurrent_tasks=1 e 2 candidatos, só 1 é despachado."""
+        ctx = self._make_ctx()
+        result_a = _make_dispatch_scan_result(
+            key="https://github.com/owner/repo-a/issues/10",
+            title="[repo-a] Task 10",
+        )
+        result_b = _make_dispatch_scan_result(
+            key="https://github.com/owner/repo-b/issues/11",
+            title="[repo-b] Task 11",
+        )
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value=self._auto_config(max_concurrent=1)),
+            mock.patch("deployment.deployment.scan_candidates",
+                       return_value=[result_a, result_b]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+            mock.patch("deployment.deployment._active_sessions", return_value=0),
+            mock.patch("deployment.deployment._repo_has_active", return_value=False),
+            mock.patch("deployment.deployment._pr_exists", return_value=False),
+            mock.patch("deployment.deployment._resource_headroom_ok", return_value=True),
+            mock.patch("deployment.deployment._clean_stale_worktree"),
+            mock.patch("deployment.deployment._dispatch") as mock_dispatch,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider_for.return_value = mock.MagicMock()
+            run(ctx)
+
+        # Só 1 deve ter sido despachado
+        assert mock_dispatch.call_count == 1
+
+    def test_resource_critical_adia_dispatch(self) -> None:
+        """Posture critical → nenhuma sessão despachada mesmo com vagas disponíveis."""
+        ctx = self._make_ctx()
+        result = _make_dispatch_scan_result()
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value=self._auto_config(max_concurrent=3)),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+            mock.patch("deployment.deployment._active_sessions", return_value=0),
+            mock.patch("deployment.deployment._repo_has_active", return_value=False),
+            mock.patch("deployment.deployment._pr_exists", return_value=False),
+            mock.patch("deployment.deployment._resource_headroom_ok", return_value=False),
+            mock.patch("deployment.deployment._clean_stale_worktree"),
+            mock.patch("deployment.deployment._dispatch") as mock_dispatch,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider_for.return_value = mock.MagicMock()
+            run(ctx)
+
+        mock_dispatch.assert_not_called()
+
+    def test_clean_worktree_chamado_antes_dispatch(self) -> None:
+        """_clean_stale_worktree() é chamado para cada issue antes de despachar."""
+        ctx = self._make_ctx()
+        result = _make_dispatch_scan_result(
+            key="https://github.com/owner/repo/issues/42",
+            title="[repo] Fix",
+        )
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value=self._auto_config()),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+            mock.patch("deployment.deployment._active_sessions", return_value=0),
+            mock.patch("deployment.deployment._repo_has_active", return_value=False),
+            mock.patch("deployment.deployment._pr_exists", return_value=False),
+            mock.patch("deployment.deployment._resource_headroom_ok", return_value=True),
+            mock.patch("deployment.deployment._clean_stale_worktree") as mock_clean,
+            mock.patch("deployment.deployment._dispatch"),
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider_for.return_value = mock.MagicMock()
+            run(ctx)
+
+        mock_clean.assert_called_once()
+        # Verifica que o número de issue correto foi passado
+        call_kwargs = mock_clean.call_args
+        assert 42 in call_kwargs[0] or 42 in call_kwargs[1].values()
+
+    def test_max_concurrent_tasks_alias_compat(self) -> None:
+        """max_concurrent_tasks tem precedência sobre max_concurrent (compat backward)."""
+        ctx = self._make_ctx()
+        result_a = _make_dispatch_scan_result(
+            key="https://github.com/owner/repo-a/issues/20",
+            title="[repo-a] Task 20",
+        )
+        result_b = _make_dispatch_scan_result(
+            key="https://github.com/owner/repo-b/issues/21",
+            title="[repo-b] Task 21",
+        )
+        # max_concurrent=5 mas max_concurrent_tasks=1 → cap de 1 deve vencer
+        cfg = self._auto_config()
+        cfg["max_concurrent"] = 5
+        cfg["max_concurrent_tasks"] = 1
+
+        with (
+            mock.patch("deployment.deployment._load_config", return_value=cfg),
+            mock.patch("deployment.deployment.scan_candidates",
+                       return_value=[result_a, result_b]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+            mock.patch("deployment.deployment._active_sessions", return_value=0),
+            mock.patch("deployment.deployment._repo_has_active", return_value=False),
+            mock.patch("deployment.deployment._pr_exists", return_value=False),
+            mock.patch("deployment.deployment._resource_headroom_ok", return_value=True),
+            mock.patch("deployment.deployment._clean_stale_worktree"),
+            mock.patch("deployment.deployment._dispatch") as mock_dispatch,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider_for.return_value = mock.MagicMock()
+            run(ctx)
+
+        assert mock_dispatch.call_count == 1

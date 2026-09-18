@@ -228,3 +228,9 @@ python3 -m ruff check flow/ && python3 -m mypy flow/ --ignore-missing-imports &&
 - `deployment.py` é o **driving adapter** da Fase 1. Quando a arquitetura for
   conectada de ponta a ponta, ele só precisará de `load_squad()`, `scan_candidates()`
   e `executor.decide()` — toda a lógica de negócio já está nos módulos.
+- **Workspace isolado (Fase 2):** cada dispatch cria um worktree efêmero em
+  `<dev_root>/.esteira-worktrees/<repo-short>-<issue_number>`. Use sempre
+  `_worktree_path(dev_root, repo, issue_number)` para construir o caminho — é a
+  fonte única de verdade, usada tanto pelo deployment quanto pelo prompt da sessão.
+  O `deployment.py` limpa worktrees órfãos via `_clean_stale_worktree()` antes de
+  cada dispatch. Use `max_concurrent_tasks` na config (alias de `max_concurrent`).
