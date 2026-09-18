@@ -324,15 +324,16 @@ def run(ctx: object) -> None:
 
     # ── Separa candidatos de dispatch dos informativos ────────────────────
     # ── Passa todos os resultados pelo executor ────────────────────────────
-    from flow.executor.executor import ActionKind, decide
+    from flow.executor.executor import ActionKind, decide, resolve_template
+    from flow.scan.scanner import ScanResult
 
-    # Categorias de resultado após o executor
-    spec_invalid: list = []
+    # Categorias de resultado após o executor — tipadas para mypy
+    spec_invalid: list[ScanResult] = []
     dispatch_devs: list[tuple[str, dict, object]] = []   # (repo, issue, decision)
     dispatch_reviewers: list[tuple[str, dict]] = []      # (repo, issue)
-    needs_human: list[tuple[object, object]] = []        # (result, decision)
-    blocked_bypass: list[object] = []                    # result com bypass sem justif
-    rebranded: list[tuple[object, object]] = []          # (result, decision)
+    needs_human: list[tuple[ScanResult, object]] = []    # (result, decision)
+    blocked_bypass: list[ScanResult] = []                # result com bypass sem justif
+    rebranded: list[tuple[ScanResult, object]] = []      # (result, decision)
 
     for result in scan_results:
         # Flags do scan que não precisam do executor
@@ -359,6 +360,17 @@ def run(ctx: object) -> None:
                 )
 
         decision = decide(result, state_comment=state_comment, squad=squad)
+
+        # Loga o template resolvido pelo executor e a ação decidida, para
+        # cada issue processada — facilita debugar por que uma issue foi para
+        # REBRAND (GATE 0) em vez de DISPATCH_DEV.
+        template = resolve_template(result, squad)
+        logger.info(
+            "deployment: issue=%s template=%s action=%s",
+            result.item.key,
+            template,
+            decision.action,
+        )
 
         if decision.action is ActionKind.SKIP:
             continue
@@ -405,7 +417,7 @@ def run(ctx: object) -> None:
         )
 
     # ── Aplica rebranding (troca de template) ─────────────────────────────
-    for result, decision in rebranded:
+    for result, decision in rebranded:  # type: ignore[assignment]
         try:
             # Atualiza as labels para refletir o novo template
             current_labels = list(result.item.labels)

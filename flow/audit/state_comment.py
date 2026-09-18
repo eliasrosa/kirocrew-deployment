@@ -193,9 +193,9 @@ def _parse_block(block: str) -> StateComment:
             if line.startswith("###") and "Histórico" not in line:
                 in_history = False
                 continue
-            entry = _parse_history_row(line)
-            if entry:
-                sc.history.append(entry)
+            t_entry = _parse_history_row(line)
+            if t_entry:
+                sc.history.append(t_entry)
 
     # Parseia exceções
     in_exceptions = False
@@ -207,9 +207,9 @@ def _parse_block(block: str) -> StateComment:
             if line.startswith("###"):
                 in_exceptions = False
                 continue
-            entry = _parse_exception_row(line)
-            if entry:
-                sc.exceptions.append(entry)
+            e_entry = _parse_exception_row(line)
+            if e_entry:
+                sc.exceptions.append(e_entry)
 
     return sc
 

@@ -84,6 +84,28 @@ def _detect_template(labels: frozenset[str]) -> str:
     return "feature"
 
 
+def resolve_template(scan_result: object, squad: object | None = None) -> str:
+    """Resolve o template de uma issue com o MESMO routing que decide() usa.
+
+    Fonte única de verdade do routing de template: usa squad.resolve_workflow()
+    quando uma SquadConfig é fornecida (declarativo/configurável) e cai no
+    fallback por labels caso contrário. Exposto para que chamadores (ex.: o
+    driving adapter em deployment.run()) possam logar/inspecionar o template
+    resolvido pelo executor sem re-implementar a lógica e arriscar drift.
+    """
+    from flow.scan.scanner import ScanResult
+
+    r: ScanResult = scan_result  # type: ignore[assignment]
+    labels = r.item.labels
+
+    if squad is not None:
+        from flow.config.squad import SquadConfig
+        sq: SquadConfig = squad  # type: ignore[assignment]
+        # Normaliza "*-flow" para o nome curto que o executor usa internamente
+        return sq.resolve_workflow(labels).replace("-flow", "")
+    return _detect_template(labels)
+
+
 # ---------------------------------------------------------------------------
 # Executor principal
 # ---------------------------------------------------------------------------
@@ -113,21 +135,14 @@ def decide(
     item = r.item
     current_state = r.current_state
     modifiers = r.modifiers
-    labels = item.labels
 
     # Nada a fazer se não há estado ou não é candidato
     if current_state is None:
         return ExecutorDecision(action=ActionKind.SKIP, reason="issue fora da esteira")
 
-    # Routing: usa squad.resolve_workflow() se disponível, fallback por labels
-    if squad is not None:
-        from flow.config.squad import SquadConfig
-        sq: SquadConfig = squad  # type: ignore[assignment]
-        workflow_name = sq.resolve_workflow(labels)
-        # Normaliza para os nomes curtos que o executor usa internamente
-        template = workflow_name.replace("-flow", "")
-    else:
-        template = _detect_template(labels)
+    # Routing: usa squad.resolve_workflow() se disponível, fallback por labels.
+    # Fonte única em resolve_template() — reusada por chamadores externos.
+    template = resolve_template(r, squad)
 
     # ── GATE 0 do hotfix: triagem ──────────────────────────────────────
     if template == "hotfix":

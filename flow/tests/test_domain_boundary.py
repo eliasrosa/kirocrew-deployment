@@ -30,7 +30,7 @@ FORBIDDEN_IMPORTS = [
 
 # Módulos de stdlib que têm I/O mas são aceitáveis no domínio
 # (ex: pathlib pra constantes de caminho, se necessário)
-ALLOWED_STDLIB_IO = set()  # nenhum por enquanto; adicionar com critério
+ALLOWED_STDLIB_IO: set[str] = set()  # nenhum por enquanto; adicionar com critério
 
 
 def _get_imports(source: str) -> list[str]:

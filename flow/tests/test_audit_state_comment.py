@@ -140,6 +140,7 @@ class TestParse:
         text = render(sc)
         parsed = parse(text)
         # O header "|-----..." não deve virar TransitionEntry
+        assert parsed is not None
         assert all(e.from_state != "---" for e in parsed.history)
 
 

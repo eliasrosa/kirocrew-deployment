@@ -80,7 +80,7 @@ class TestProviderParity(unittest.TestCase):
 
     def test_todo_adapter_tem_todos_os_metodos_da_porta(self) -> None:
         """Cada adapter deve ter todos os métodos declarados no Protocol."""
-        metodos = list(IssueProvider.__protocol_attrs__)
+        metodos = list(IssueProvider.__protocol_attrs__)  # type: ignore[attr-defined]
 
         for nome_provider, client in self.CLIENTS.items():
             for metodo in metodos:
@@ -103,7 +103,7 @@ class TestProviderParity(unittest.TestCase):
         ref = self.CLIENTS[self.REFERENCE]
         ref_metodos: dict[str, inspect.Signature] = {}
 
-        for attr in IssueProvider.__protocol_attrs__:
+        for attr in IssueProvider.__protocol_attrs__:  # type: ignore[attr-defined]
             fn = getattr(ref, attr, None)
             if callable(fn):
                 ref_metodos[attr] = inspect.signature(fn)
@@ -146,7 +146,7 @@ class TestProviderParity(unittest.TestCase):
         e pode indicar drift da porta.
         """
         ref = self.CLIENTS[self.REFERENCE]
-        porta_metodos = set(IssueProvider.__protocol_attrs__)
+        porta_metodos = set(IssueProvider.__protocol_attrs__)  # type: ignore[attr-defined]
 
         ref_publicos = {
             name for name in dir(ref)

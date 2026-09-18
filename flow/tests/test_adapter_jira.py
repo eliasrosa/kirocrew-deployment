@@ -133,8 +133,8 @@ class TestJiraTransportErrors:
 
     def test_http_404_lanca_not_found(self) -> None:
         import urllib.error
-        err = urllib.error.HTTPError(url="x", code=404, msg="Not Found", hdrs=None, fp=None)
-        err.read = lambda: b""
+        err = urllib.error.HTTPError(url="x", code=404, msg="Not Found", hdrs=None, fp=None)  # type: ignore[arg-type]
+        err.read = lambda: b""  # type: ignore[method-assign, misc, assignment]
         with mock.patch("urllib.request.urlopen", side_effect=err), \
              mock.patch.object(jira_transport, "_get_config", return_value=("https://jira.test", {})), \
              pytest.raises(ProviderNotFoundError):
@@ -142,8 +142,8 @@ class TestJiraTransportErrors:
 
     def test_http_401_lanca_setup_error(self) -> None:
         import urllib.error
-        err = urllib.error.HTTPError(url="x", code=401, msg="Unauthorized", hdrs=None, fp=None)
-        err.read = lambda: b""
+        err = urllib.error.HTTPError(url="x", code=401, msg="Unauthorized", hdrs=None, fp=None)  # type: ignore[arg-type]
+        err.read = lambda: b""  # type: ignore[method-assign, misc, assignment]
         with mock.patch("urllib.request.urlopen", side_effect=err), \
              mock.patch.object(jira_transport, "_get_config", return_value=("https://jira.test", {})), \
              pytest.raises(ProviderSetupError):

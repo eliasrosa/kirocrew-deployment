@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from typing import cast
 
 from flow.ports.issue_provider import (
     ProviderError,
@@ -22,7 +23,7 @@ from flow.ports.issue_provider import (
 )
 
 
-def _run(args: list[str], timeout: int = 30) -> dict | list:
+def _run(args: list[str], timeout: int = 30) -> dict | list:  # type: ignore[type-arg]
     """Executa um comando ``gh`` e retorna o JSON parseado.
 
     Lança ``ProviderSetupError`` se o ``gh`` não estiver autenticado.
@@ -68,23 +69,23 @@ def _run(args: list[str], timeout: int = 30) -> dict | list:
 
 def get_issue(owner_repo: str, number: int) -> dict:
     """Retorna o JSON cru de uma issue do GitHub."""
-    return _run([
+    return cast(dict, _run([
         "issue", "view", str(number),
         "--repo", owner_repo,
         "--json", "number,title,labels,body,state,url,comments",
-    ])
+    ]))
 
 
 def list_issues_by_label(owner_repo: str, label: str, limit: int = 50) -> list:
     """Lista issues abertas com a label dada."""
-    return _run([
+    return cast(list, _run([
         "issue", "list",
         "--repo", owner_repo,
         "--label", label,
         "--state", "open",
         "--json", "number,title,labels,url",
         "--limit", str(limit),
-    ])
+    ]))
 
 
 def set_issue_labels(owner_repo: str, number: int, labels: list[str]) -> None:
@@ -101,25 +102,25 @@ def set_issue_labels(owner_repo: str, number: int, labels: list[str]) -> None:
 
 def get_issue_comments(owner_repo: str, number: int) -> list:
     """Retorna os comentários de uma issue."""
-    return _run([
+    return cast(list, _run([
         "api", f"repos/{owner_repo}/issues/{number}/comments",
         "--jq", ".",
-    ])
+    ]))
 
 
 def create_issue_comment(owner_repo: str, number: int, body: str) -> dict:
     """Cria um comentário na issue."""
-    return _run([
+    return cast(dict, _run([
         "api", f"repos/{owner_repo}/issues/{number}/comments",
         "--method", "POST",
         "--field", f"body={body}",
-    ])
+    ]))
 
 
 def update_issue_comment(owner_repo: str, comment_id: int, body: str) -> dict:
     """Atualiza um comentário existente."""
-    return _run([
+    return cast(dict, _run([
         "api", f"repos/{owner_repo}/issues/comments/{comment_id}",
         "--method", "PATCH",
         "--field", f"body={body}",
-    ])
+    ]))

@@ -56,7 +56,7 @@ class TestIssueProviderProtocol:
     def test_modulo_github_client_satisfaz_o_protocol_estruturalmente(self) -> None:
         """Os stubs já devem ter todos os métodos, mesmo retornando NotImplementedError."""
         from flow.adapters import github_client
-        for m in IssueProvider.__protocol_attrs__:
+        for m in IssueProvider.__protocol_attrs__:  # type: ignore[attr-defined]
             assert hasattr(github_client, m), (
                 f"github_client não tem {m!r} — "
                 f"adicione o stub antes de implementar (#18)"
@@ -64,7 +64,7 @@ class TestIssueProviderProtocol:
 
     def test_modulo_jira_client_satisfaz_o_protocol_estruturalmente(self) -> None:
         from flow.adapters import jira_client
-        for m in IssueProvider.__protocol_attrs__:
+        for m in IssueProvider.__protocol_attrs__:  # type: ignore[attr-defined]
             assert hasattr(jira_client, m), (
                 f"jira_client não tem {m!r} — "
                 f"adicione o stub antes de implementar (#19)"
