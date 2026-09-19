@@ -1,17 +1,18 @@
+# {{session_title}}
+
 ## Agente
 
-REPO: {{repo}}
-ISSUE: #{{issue_number}} — {{issue_title}}
-PR: #{{pr_number}}
-URL: {{issue_url}}
-SESSION TITLE: {{session_title}}
+| Campo | Valor |
+|-------|-------|
+| Repo | `{{repo}}` |
+| Issue | [#{{issue_number}}]({{issue_url}}) — {{issue_title}} |
+| PR | #{{pr_number}} |
 
 ## Contexto da task
 Você é um agente de RE-TRABALHO pós-review ONE-SHOT. Tarefa ÚNICA, sem loop, sem watchdog.
 Seu único objetivo: aplicar os pedidos de mudança do reviewer na PR existente e devolver a issue para review.
 
 FLUXO (execute UMA vez, do início ao fim, e PARE):
-0. TÍTULO: como PRIMEIRA ação, defina o título da sessão = `SESSION TITLE`.
 1. CONTEXTO — leia tudo antes de agir:
    - `.kiro/steering/*.md` (steerings do projeto)
    - A issue e seus comentários:

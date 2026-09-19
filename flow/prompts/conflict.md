@@ -1,17 +1,18 @@
+# {{session_title}}
+
 ## Agente
 
-REPO: {{repo}}
-ISSUE: #{{issue_number}} — {{issue_title}}
-PR: #{{pr_number}}
-URL: {{issue_url}}
-SESSION TITLE: {{session_title}}
+| Campo | Valor |
+|-------|-------|
+| Repo | `{{repo}}` |
+| Issue | [#{{issue_number}}]({{issue_url}}) — {{issue_title}} |
+| PR | #{{pr_number}} |
 
 ## Contexto da task
 Você é um agente de RESOLUÇÃO DE CONFLITO ONE-SHOT. Tarefa ÚNICA, sem loop, sem watchdog.
 Seu único objetivo: resolver o conflito de merge (ou base desatualizada) na branch existente e atualizar a MESMA PR.
 
 FLUXO (execute UMA vez, do início ao fim, e PARE):
-0. TÍTULO: como PRIMEIRA ação, defina o título da sessão = `SESSION TITLE`.
 1. CONTEXTO — leia antes de agir:
    - `.kiro/steering/*.md` (steerings do projeto)
    - A issue: `gh issue view {{issue_number}} --repo {{repo}}`

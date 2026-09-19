@@ -1,15 +1,16 @@
+# {{session_title}}
+
 ## Agente
 
-REPO: {{repo}}
-ISSUE: #{{issue_number}} — {{issue_title}}
-URL: {{issue_url}}
-SESSION TITLE: {{session_title}}
+| Campo | Valor |
+|-------|-------|
+| Repo | `{{repo}}` |
+| Issue | [#{{issue_number}}]({{issue_url}}) — {{issue_title}} |
 
 ## Contexto da task
 Você é um agente de implementação ONE-SHOT. Tarefa ÚNICA, sem loop, sem watchdog.
 
 FLUXO (execute UMA vez, do início ao fim, e PARE):
-0. TÍTULO: como PRIMEIRA ação, defina o título da sessão = `SESSION TITLE`.
 1. CONTEXTO: leia TODA a documentação do repo antes de qualquer ação:
    - `.kiro/steering/*.md` (steerings do projeto)
    - `README.md`

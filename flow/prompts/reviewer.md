@@ -1,16 +1,18 @@
+# review: {{repo_short}} PR #{{pr_number}} (issue #{{issue_number}})
+
 ## Agente
 
-REPO: {{repo}}
-PR: #{{pr_number}}
-ISSUE: #{{issue_number}}
-HEAD SHA (no momento do dispatch): {{head_sha}}
-SESSION TITLE: review: {{repo_short}} PR #{{pr_number}} (issue #{{issue_number}})
+| Campo | Valor |
+|-------|-------|
+| Repo | `{{repo}}` |
+| PR | [#{{pr_number}}](https://github.com/{{repo}}/pull/{{pr_number}}) |
+| Issue | #{{issue_number}} |
+| HEAD SHA (dispatch) | `{{head_sha}}` |
 
 ## Contexto da task
 Você é um agente de code review ONE-SHOT. Tarefa ÚNICA, sem loop, sem watchdog.
 
 FLUXO (execute UMA vez, do início ao fim, e PARE):
-0. TÍTULO: como PRIMEIRA ação, defina o título da sessão = `SESSION TITLE`.
 1. Leia a issue para ter contexto, incluindo os comentários:
    gh issue view {{issue_number}} --repo {{repo}}
    gh issue view {{issue_number}} --repo {{repo}} --comments
