@@ -33,7 +33,7 @@ flow/
 │   ├── jira_normalization.py   — payload Jira → contrato canônico
 │   └── jira_client.py          — orquestração; satisfaz IssueProvider
 ├── scan/
-│   ├── cache.py                — SQLite: hash de labels por issue (zero token)
+│   ├── cache.py                — SQLite: hash de labels por issue (zero token) + running_since
 │   └── scanner.py              — scan_candidates(): filtra candidatos a dispatch
 ├── executor/
 │   └── executor.py             — decide(): decide a ação por template sem I/O
@@ -238,6 +238,12 @@ python3 -m ruff check flow/ && python3 -m mypy flow/ --ignore-missing-imports &&
   fonte única de verdade, usada tanto pelo deployment quanto pelo prompt da sessão.
   O `deployment.py` limpa worktrees órfãos via `_clean_stale_worktree()` antes de
   cada dispatch. Use `max_concurrent_tasks` na config (alias de `max_concurrent`).
+- **Concorrência orientada ao estado da issue:** o dispatch decide se há sessão ativa
+  pelo ESTADO real — worktree presente + PR aberto + backstop lock curto (2min),
+  não por timeout de arquivo de 2h. Cap primário = issues em `crewflow:dev + running`
+  no scan (sem depender de locks). Sessão morta (running >40min sem sinais de vida)
+  é detectada por `_is_dead_session()` e recuperada via `_recover_dead_session()` que
+  remove `crewflow:running` e notifica o TL — nunca redespacha sozinho (fail-closed).
 
 ## Prompts externalizados — `flow/prompts/`
 

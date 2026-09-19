@@ -107,21 +107,28 @@ prompt enviado à sessão one-shot. Os dois lados sempre falam do mesmo diretór
 ```
 scan_candidates()
     → executor.decide()
-    → _resource_headroom_ok()   ← posture critical suspende dispatch
-    → _clean_stale_worktree()   ← remove worktree órfão de sessão anterior
-    → _dispatch()               ← prompt inclui git worktree add no caminho canônico
+    → _resource_headroom_ok()        ← posture critical suspende dispatch
+    → _clean_stale_worktree()        ← remove worktree órfão de sessão anterior
+    → _issue_has_active_session()    ← mecanismo primário: worktree + PR + backstop
+    → _is_dead_session()             ← detecta sessão morta pelo timeout longo
+    → _dispatch()                    ← prompt inclui git worktree add no caminho canônico
 ```
 
-### Cap de concorrência
+### Cap de concorrência e detecção de sessão morta
 
-`max_concurrent_tasks` (alias de `max_concurrent` para compat) limita sessões ativas
-simultaneamente. O headroom de recursos é verificado via `resource_status` do Kiro
-Crew antes de cada dispatch — posture `critical` adia a task sem bloquear o ciclo.
+A concorrência é decidida pelo **estado da issue**, não por lock de tempo:
+
+- **Cap primário:** contagem de issues em `crewflow:dev + crewflow:running` no scan atual — não locks de arquivo.
+- **Backstop anti-duplo-dispatch:** lock de arquivo (2min) — protege o intervalo entre dispatch e o label chegar na API.
+- **`_issue_has_active_session()`:** verifica worktree ativo, PR aberto na branch, e backstop lock — retorna `True` se qualquer sinal indicar sessão viva.
+- **Detector de sessão morta (`_is_dead_session()`):** issue em running há >40min sem PR, sem worktree, sem backstop lock → sessão morta confirmada.
+- **Recuperação fail-closed (`_recover_dead_session()`):** remove `crewflow:running`, notifica TL, espera redespacho no próximo ciclo. Nunca redespacha sozinho em caso de ambiguidade.
+- O headroom de recursos é verificado via `resource_status` do Kiro Crew antes de cada dispatch — posture `critical` adia sem bloquear o ciclo.
 
 | Campo config | Função | Default |
 |---|---|---|
 | `max_concurrent_tasks` | Cap global de tasks em paralelo | `2` |
-| `one_per_repo` | No máx 1 sessão ativa por repo | `true` |
+| `one_per_repo` | Reservado (não mais usado como guard primário) | `true` |
 
 ## Identificação e labels
 

@@ -68,7 +68,12 @@ from flow.audit.state_comment import (  # noqa: E402
 )
 from flow.ports.issue_provider import provider_for  # noqa: E402
 from flow.prompts.loader import PromptRenderError, render_prompt  # noqa: E402
-from flow.scan.cache import open_cache  # noqa: E402
+from flow.scan.cache import (  # noqa: E402
+    clear_running_since,
+    get_running_since,
+    open_cache,
+    set_running_since,
+)
 from flow.scan.scanner import ScanResult, scan_candidates  # noqa: E402
 
 # ── Labels (mantidas para o prompt de dispatch) ───────────────────────────
@@ -121,28 +126,227 @@ def _sessdir() -> str:
     return os.path.expanduser("~/.kiro/crew/sessions")
 
 
-_LOCK_STALE_SECS = 2 * 3600  # locks mais velhos que 2h são considerados obsoletos
+# Backstop anti-duplo-dispatch: lock válido apenas por poucos segundos.
+# NÃO é o mecanismo principal de concorrência — só evita que dois ciclos
+# consecutivos despachem a mesma issue antes de o primeiro ciclo ter marcado
+# crewflow:running na API.
+_DISPATCH_BACKSTOP_SECS = 120  # 2 minutos: tempo mínimo para o label aparecer na API
+
+# Timeout de morte de sessão: quanto tempo uma issue pode ficar em
+# crewflow:running sem sinais de vida antes de ser considerada morta.
+# Deve ser maior que o tempo máximo de uma sessão legítima (~30min).
+DEAD_SESSION_TIMEOUT_SECS = 40 * 60  # 40 minutos
 
 
 def _lock_is_stale(path: str) -> bool:
-    """Retorna True se o arquivo de lock existe mas é antigo (sessão provavelmente encerrada)."""
+    """Retorna True se o arquivo de lock existe mas expirou o backstop anti-duplo-dispatch."""
     try:
         age = __import__("time").time() - os.path.getmtime(path)
-        return age > _LOCK_STALE_SECS
+        return age > _DISPATCH_BACKSTOP_SECS
     except OSError:
-        # Arquivo desapareceu entre o glob e a stat — trata como ausente (não ativo).
+        # Arquivo desapareceu entre o glob e a stat — trata como ausente.
         return True
 
 
 def _active_sessions() -> int:
+    """Retorna o número de sessões com backstop ativo (anti-duplo-dispatch).
+
+    Mantido para uso como cap de concorrência em ``run()`` e ``_run_stage()``.
+    A contagem é pelo backstop de locks (curto), não pelo timeout longo de morte.
+    """
     locks = glob.glob(os.path.join(_sessdir(), "dashboard_esteira-*.jsonl.lock"))
     return sum(1 for p in locks if not _lock_is_stale(p))
 
 
 def _repo_has_active(repo: str) -> bool:
+    """Retorna True se há lock de backstop ativo para este repo.
+
+    Usado APENAS como backstop anti-duplo-dispatch (curto).
+    O mecanismo primário de concorrência é _issue_has_active_session().
+    """
     short = repo.split("/")[-1]
     locks = glob.glob(os.path.join(_sessdir(), f"dashboard_esteira-{short}-*.jsonl.lock"))
     return any(not _lock_is_stale(p) for p in locks)
+
+
+def _issue_has_active_session(
+    repo: str,
+    issue_number: int,
+    dev_root: str,
+) -> bool:
+    """Verifica se a issue já tem uma sessão ativa — mecanismo primário de concorrência.
+
+    Decisão baseada no ESTADO DA ISSUE, não em lock por tempo:
+      1. Se não há label crewflow:running → issue não tem sessão ativa (deve ser despachada)
+      2. Se há crewflow:running + PR aberto na branch feat/issue-N → sessão ativa (não redespachar)
+      3. Se há crewflow:running + worktree existente → sessão ativa (não redespachar)
+      4. Se há crewflow:running + backstop lock ativo → presumir ativa (aguardar expirar)
+      5. Sem nenhum sinal → situação ambígua — fail-closed (não redespachar)
+
+    NOTA: a ausência de crewflow:running no label da issue é o único sinal confiável
+    de que a issue NÃO tem sessão ativa. Este método é chamado DEPOIS do scan, que
+    já leu o estado atual da issue da API.
+    """
+    wt_path = _worktree_path(dev_root, repo, issue_number)
+
+    # Sinal 1: worktree existente → sessão ativa
+    if os.path.exists(wt_path):
+        logger.debug(
+            "concorrência: %s#%s — worktree existe em %s → ativa",
+            repo, issue_number, wt_path,
+        )
+        return True
+
+    # Sinal 2: PR aberto na branch da issue → sessão ativa
+    if _pr_exists(repo, issue_number):
+        logger.debug(
+            "concorrência: %s#%s — PR aberto na branch feat/issue-%s → ativa",
+            repo, issue_number, issue_number,
+        )
+        return True
+
+    # Sinal 3: backstop lock ativo → provavelmente dispatch recente
+    short = repo.split("/")[-1]
+    locks = glob.glob(os.path.join(_sessdir(), f"dashboard_esteira-{short}-{issue_number}.jsonl.lock"))
+    if any(not _lock_is_stale(p) for p in locks):
+        logger.debug(
+            "concorrência: %s#%s — backstop lock ativo → presume ativa (anti-duplo-dispatch)",
+            repo, issue_number,
+        )
+        return True
+
+    # Sem sinal confirmando sessão ativa.
+    # Se crewflow:running estava presente (chamador verificou), pode ser sessão morta.
+    # Retorna False para permitir que o detector de morte decida.
+    return False
+
+
+def _is_dead_session(
+    repo: str,
+    issue_number: int,
+    dev_root: str,
+    running_since_secs: float | None,
+    dead_session_timeout: float = DEAD_SESSION_TIMEOUT_SECS,
+) -> bool:
+    """Detecta sessão morta — NÃO é liberador de fila, é detector de falha.
+
+    Uma sessão é considerada MORTA quando TODOS estes sinais estão presentes:
+      - crewflow:running está na issue (chamador verificou)
+      - sem PR aberto na branch feat/issue-N
+      - sem worktree ativo no caminho canônico
+      - sem backstop lock ativo
+      - running há mais de ``dead_session_timeout`` segundos
+
+    Se algum desses sinais estiver ausente ou ambíguo → NÃO é morte confirmada
+    (fail-closed). Melhor notificar o TL do que redespachar e abrir 2 PRs.
+
+    Args:
+        repo:                 ex "owner/repo"
+        issue_number:         número da issue
+        dev_root:             raiz dos clones (cfg["dev_root"])
+        running_since_secs:   seconds desde epoch de quando running foi registrado.
+                              None = desconhecido → fail-closed (retorna False)
+        dead_session_timeout: timeout em segundos (default: DEAD_SESSION_TIMEOUT_SECS)
+    """
+    import time
+
+    # Sem timestamp → não sabemos há quanto tempo está em running → fail-closed
+    if running_since_secs is None:
+        return False
+
+    elapsed = time.time() - running_since_secs
+    if elapsed < dead_session_timeout:
+        logger.debug(
+            "sessão %s#%s: running há %.0fs < timeout %ds → não é morte",
+            repo, issue_number, elapsed, dead_session_timeout,
+        )
+        return False
+
+    # Tempo expirou — verifica sinais de vida
+    wt_path = _worktree_path(dev_root, repo, issue_number)
+    if os.path.exists(wt_path):
+        logger.info(
+            "sessão %s#%s: running há %.0fs mas worktree existe → ainda ativa",
+            repo, issue_number, elapsed,
+        )
+        return False
+
+    if _pr_exists(repo, issue_number):
+        logger.info(
+            "sessão %s#%s: running há %.0fs mas PR aberto existe → ainda ativa",
+            repo, issue_number, elapsed,
+        )
+        return False
+
+    short = repo.split("/")[-1]
+    locks = glob.glob(os.path.join(_sessdir(), f"dashboard_esteira-{short}-{issue_number}.jsonl.lock"))
+    if any(not _lock_is_stale(p) for p in locks):
+        logger.info(
+            "sessão %s#%s: running há %.0fs mas backstop lock ativo → ainda ativa",
+            repo, issue_number, elapsed,
+        )
+        return False
+
+    # Todos os sinais indicam morte
+    logger.warning(
+        "sessão MORTA detectada: %s#%s — running há %.0fs, sem PR, sem worktree, sem lock",
+        repo, issue_number, elapsed,
+    )
+    return True
+
+
+def _recover_dead_session(
+    ctx: object,
+    repo: str,
+    issue_number: int,
+    provider: object,
+    chat_id: str,
+    conn: sqlite3.Connection,
+) -> None:
+    """Recupera issue com sessão morta: volta para crewflow:todo e notifica.
+
+    Operação fail-safe: erro na recuperação é logado mas não propaga.
+    Preferimos não redespachar automaticamente — apenas notificamos o TL
+    para que ele decida. O redespacho ocorre no próximo ciclo quando o
+    TL ou o cron ler o estado limpo (crewflow:todo sem running).
+    """
+    vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
+    issue_url = f"https://github.com/{repo}/issues/{issue_number}"
+
+    try:
+        # Remove crewflow:running da issue via provider
+        # (o provider é o objeto com .set_labels, .get_work_item etc.)
+        _prov = provider  # type: ignore[assignment]
+        item_data = _prov.get_work_item(repo, str(issue_number))  # type: ignore[attr-defined]
+        current_labels = list(item_data.get("labels", []))
+        if "crewflow:running" in current_labels:
+            current_labels.remove("crewflow:running")
+        _prov.set_labels(repo, str(issue_number), current_labels)  # type: ignore[attr-defined]
+
+        # Limpa running_since no cache (import no topo do módulo)
+        clear_running_since(conn, issue_url)
+
+        logger.info(
+            "deployment: sessão morta recuperada — %s#%s voltou para crewflow:todo",
+            repo, issue_number,
+        )
+        ctx.notify(  # type: ignore[attr-defined]
+            f"⚠️ KiroCrew Flow: sessão morta detectada e recuperada.{vm}\n"
+            f"  {repo}#{issue_number} foi encontrado com crewflow:running sem PR/worktree/lock.\n"
+            f"  crewflow:running removido. Issue voltará para crewflow:todo no próximo ciclo.\n"
+            f"  Verifique: {issue_url}"
+        )
+    except Exception as exc:
+        logger.error(
+            "deployment: falha ao recuperar sessão morta %s#%s: %s",
+            repo, issue_number, exc,
+        )
+        ctx.notify(  # type: ignore[attr-defined]
+            f"⚠️ KiroCrew Flow: sessão morta detectada mas NÃO recuperada automaticamente.{vm}\n"
+            f"  {repo}#{issue_number} — ação manual necessária.\n"
+            f"  Erro: {exc}\n"
+            f"  Issue: {issue_url}"
+        )
 
 
 # ── Workspace isolado por task (worktree efêmero) ─────────────────────────
@@ -588,7 +792,6 @@ def run(ctx: object) -> None:
     auto = bool(cfg.get("auto_dispatch", False))
     # max_concurrent_tasks é o nome canônico (Fase 2); max_concurrent mantido para compat.
     max_conc = int(cfg.get("max_concurrent_tasks") or cfg.get("max_concurrent", 2))
-    one_per_repo = bool(cfg.get("one_per_repo", True))
     dev_root: str = cfg.get("dev_root") or os.path.expanduser("~/dev")
     chat_id = cfg.get("notify_chat_id") or ""
     issue_provider_name: str = cfg.get("issue_provider", "github")
@@ -672,10 +875,24 @@ def run(ctx: object) -> None:
         scan_results = scan_candidates(scan_cfg, provider, conn)
     except Exception as exc:
         logger.error("deployment: erro no scan: %s", exc)
+        conn.close()
         from kiro_crew.cron import Skip  # type: ignore[import]
         raise Skip() from exc
-    finally:
-        conn.close()
+
+    # ── Rastreia running_since no cache (detecção de sessão morta) ────────
+    # Para cada issue com crewflow:running: registra quando foi visto pela 1ª vez.
+    # Para issues sem crewflow:running: limpa o timestamp (issue saiu do estado running).
+    from datetime import UTC
+
+    from flow.domain.state import Modifier as _Modifier
+    _now_iso = __import__("datetime").datetime.now(tz=UTC).isoformat()
+    for _r in scan_results:
+        if _Modifier.RUNNING in _r.modifiers:
+            set_running_since(conn, _r.item.key, _now_iso)
+        else:
+            clear_running_since(conn, _r.item.key)
+
+    conn.close()
 
     # ── Separa candidatos de dispatch dos informativos ────────────────────
     # ── Passa todos os resultados pelo executor ────────────────────────────
@@ -692,6 +909,16 @@ def run(ctx: object) -> None:
     blocked_bypass: list[ScanResult] = []                # result com bypass sem justif
     rebranded: list[tuple[ScanResult, object]] = []      # (result, decision)
     merge_prs: list[tuple[str, dict, str | None]] = []   # (repo, issue, state_comment) — merge squash automático
+    dead_session_candidates: list[ScanResult] = []       # issues dev+running sem sinais de vida
+
+    # Conjunto de issues em crewflow:dev + crewflow:running: usadas para calcular
+    # o cap de concorrência por estado (sem depender de locks de arquivo).
+    _running_dev_count = sum(
+        1 for _r in scan_results
+        if _r.current_state is not None
+        and _r.current_state.value == "crewflow:dev"
+        and _Modifier.RUNNING in _r.modifiers
+    )
 
     for result in scan_results:
         # Flags do scan que não precisam do executor
@@ -791,6 +1018,22 @@ def run(ctx: object) -> None:
             issue = _scan_result_to_issue(result)
             dispatch_devs.append((repo, issue, decision))
 
+    # ── Identifica candidatos de sessão morta (dev + running sem sinais de vida) ──
+    # Verificação rápida sem I/O — a decisão final de morte usa _is_dead_session()
+    # mais adiante, com timeout e verificação de sinal. Isso apenas pré-filtra para
+    # que o early-return não pule a detecção de morte.
+    for _r_ds in scan_results:
+        if (
+            _r_ds.current_state is not None
+            and _r_ds.current_state.value == "crewflow:dev"
+            and _Modifier.RUNNING in _r_ds.modifiers
+        ):
+            _repo_ds = _r_ds.item.key.split("/issues/")[0].replace("https://github.com/", "") or (repos[0] if repos else "")
+            _num_str_ds = _r_ds.item.key.split("/issues/")[-1] if "/issues/" in _r_ds.item.key else "0"
+            _num_ds = int(_num_str_ds) if _num_str_ds.isdigit() else 0
+            if _num_ds and not _issue_has_active_session(_repo_ds, _num_ds, dev_root):
+                dead_session_candidates.append(_r_ds)
+
     # ── Resumo do ciclo — sempre emitido, mesmo que tudo seja SKIP ──────────
     _log_cycle_summary(
         ctx=ctx,
@@ -811,7 +1054,7 @@ def run(ctx: object) -> None:
     # Sem nada a fazer?
     if not any([spec_invalid, dispatch_devs, dispatch_reviewers, dispatch_reworks,
                 conflict_resolvers, mark_conflitos,
-                needs_human, blocked_bypass, rebranded, merge_prs]):
+                needs_human, blocked_bypass, rebranded, merge_prs, dead_session_candidates]):
         return
 
     # ── Modo dry-run: imprime relatório e encerra sem executar ────────────
@@ -867,9 +1110,18 @@ def run(ctx: object) -> None:
             logger.error("deployment: erro no rebrand de %s: %s", result.item.key, exc)
 
     # ── Dispatch do executor de dev ───────────────────────────────────────
-    vagas = (max_conc - _active_sessions()) if auto else 0
+    # Concorrência orientada ao estado da issue:
+    # - cap primário: count de issues em crewflow:dev + running no scan (_running_dev_count)
+    # - backstop: _active_sessions() como contagem de dispatches recentes sem label ainda
+    # - anti-duplo-dispatch: _issue_has_active_session() por issue
+    # - detecção de morte: _is_dead_session() para issues travadas
+    _backstop_count = _active_sessions()  # dispatches recentes ainda sem label na API
+    vagas = (max_conc - max(_running_dev_count, _backstop_count)) if auto else 0
     disparadas: list[tuple[str, dict]] = []
     adiadas: list[tuple[str, dict]] = []
+
+    # Reabre o cache para leitura do running_since (detecção de sessão morta)
+    _conn_disp = open_cache(scan_cfg.squad_id)
 
     for repo, issue, _decision in dispatch_devs:
         if not auto:
@@ -878,15 +1130,16 @@ def run(ctx: object) -> None:
         if vagas <= 0:
             adiadas.append((repo, issue))
             continue
-        if one_per_repo and _repo_has_active(repo):
-            adiadas.append((repo, issue))
-            continue
-        if _pr_exists(repo, issue["number"]):
+
+        # Verifica se a issue já tem sessão ativa pelo estado (mecanismo primário)
+        if _issue_has_active_session(repo, issue["number"], dev_root):
             logger.info(
-                "deployment: PR duplicado detectado para %s#%s — pulando dispatch",
+                "deployment: sessão ativa detectada pelo estado para %s#%s — dispatch ignorado",
                 repo, issue["number"],
             )
+            adiadas.append((repo, issue))
             continue
+
         # Verifica headroom de recursos antes de cada dispatch (posture critical = skip)
         if not _resource_headroom_ok(ctx, max_conc):
             logger.warning(
@@ -905,6 +1158,37 @@ def run(ctx: object) -> None:
         except Exception as exc:
             logger.error("deployment: erro ao despachar %s: %s", issue.get("number"), exc)
             adiadas.append((repo, issue))
+
+    _conn_disp.close()
+
+    # ── Detecção e recuperação de sessões mortas (issues crewflow:dev + running sem sinal) ──
+    # Não despacha automaticamente — remove crewflow:running e notifica o TL
+    # para que o próximo ciclo possa redespachar a partir do estado limpo.
+    for result in dead_session_candidates:
+        _repo_dead = result.item.key.split("/issues/")[0].replace("https://github.com/", "") or (repos[0] if repos else "")
+        _num_str = result.item.key.split("/issues/")[-1] if "/issues/" in result.item.key else "0"
+        _num_dead = int(_num_str) if _num_str.isdigit() else 0
+        if not _num_dead:
+            continue
+        # Verifica timeout via running_since no cache
+        _conn_dead = open_cache(scan_cfg.squad_id)
+        try:
+            _rs_iso = get_running_since(_conn_dead, result.item.key)
+        finally:
+            _conn_dead.close()
+        _rs_secs: float | None = None
+        if _rs_iso:
+            try:
+                import datetime as _dt
+                _rs_secs = _dt.datetime.fromisoformat(_rs_iso).timestamp()
+            except Exception:
+                pass
+        if _is_dead_session(_repo_dead, _num_dead, dev_root, _rs_secs):
+            _conn_rec = open_cache(scan_cfg.squad_id)
+            try:
+                _recover_dead_session(ctx, _repo_dead, _num_dead, provider, chat_id, _conn_rec)
+            finally:
+                _conn_rec.close()
 
     # ── Notificação de resultado de dispatch ──────────────────────────────
     vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
@@ -2049,7 +2333,6 @@ def _run_stage(ctx: object, stage: str) -> None:
     repos: list[str] = cfg.get("repos") or []
     auto = bool(cfg.get("auto_dispatch", False))
     max_conc = int(cfg.get("max_concurrent_tasks") or cfg.get("max_concurrent", 2))
-    one_per_repo = bool(cfg.get("one_per_repo", True))
     dev_root: str = cfg.get("dev_root") or os.path.expanduser("~/dev")
     chat_id = cfg.get("notify_chat_id") or ""
     issue_provider_name: str = cfg.get("issue_provider", "github")
@@ -2120,13 +2403,33 @@ def _run_stage(ctx: object, stage: str) -> None:
         scan_results = scan_candidates(scan_cfg, provider, conn)
     except Exception as exc:
         logger.error("deployment[%s]: erro no scan: %s", stage, exc)
+        conn.close()
         from kiro_crew.cron import Skip  # type: ignore[import]
         raise Skip() from exc
-    finally:
-        conn.close()
 
+    # ── Rastreia running_since no cache (detecção de sessão morta) ────────
+    from datetime import UTC
+
+    _now_iso_stage = __import__("datetime").datetime.now(tz=UTC).isoformat()
     from flow.domain.state import Modifier, State
+
+    for _r in scan_results:
+        if Modifier.RUNNING in _r.modifiers:
+            set_running_since(conn, _r.item.key, _now_iso_stage)
+        else:
+            clear_running_since(conn, _r.item.key)
+
+    conn.close()
+
     from flow.executor.executor import ActionKind, decide, resolve_template
+
+    # Cap de concorrência por estado (mecanismo primário)
+    _running_dev_count_stage = sum(
+        1 for _r in scan_results
+        if _r.current_state is not None
+        and _r.current_state.value == "crewflow:dev"
+        and Modifier.RUNNING in _r.modifiers
+    )
 
     # Filtra pelo conjunto de ações deste estágio
     allowed_actions = _STAGE_ACTIONS[stage]
@@ -2139,6 +2442,7 @@ def _run_stage(ctx: object, stage: str) -> None:
     blocked_bypass: list = []
     rebranded: list = []
     merge_prs: list = []
+    dead_session_candidates_stage: list = []  # issues dev+running sem sinais de vida
 
     for result in scan_results:
         if result.spec_valid is False:
@@ -2220,6 +2524,20 @@ def _run_stage(ctx: object, stage: str) -> None:
             issue = _scan_result_to_issue(result)
             dispatch_reworks.append((repo, issue, state_comment))
 
+    # ── Identifica candidatos de sessão morta para o estágio dev ─────────
+    if stage == _STAGE_DEV:
+        for _r_ds in scan_results:
+            if (
+                _r_ds.current_state is not None
+                and _r_ds.current_state.value == "crewflow:dev"
+                and Modifier.RUNNING in _r_ds.modifiers
+            ):
+                _repo_ds = _r_ds.item.key.split("/issues/")[0].replace("https://github.com/", "") or (repos[0] if repos else "")
+                _num_str_ds = _r_ds.item.key.split("/issues/")[-1] if "/issues/" in _r_ds.item.key else "0"
+                _num_ds = int(_num_str_ds) if _num_str_ds.isdigit() else 0
+                if _num_ds and not _issue_has_active_session(_repo_ds, _num_ds, dev_root):
+                    dead_session_candidates_stage.append(_r_ds)
+
     _log_cycle_summary(
         ctx=ctx,
         chat_id=chat_id,
@@ -2235,7 +2553,7 @@ def _run_stage(ctx: object, stage: str) -> None:
     )
 
     if not any([spec_invalid, dispatch_devs, dispatch_reviewers, dispatch_reworks,
-                needs_human, blocked_bypass, rebranded, merge_prs]):
+                needs_human, blocked_bypass, rebranded, merge_prs, dead_session_candidates_stage]):
         return
 
     if dry_run:
@@ -2256,9 +2574,13 @@ def _run_stage(ctx: object, stage: str) -> None:
     vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
 
     if stage == _STAGE_DEV:
-        vagas = (max_conc - _active_sessions()) if auto else 0
+        _backstop_count_stage = _active_sessions()
+        vagas = (max_conc - max(_running_dev_count_stage, _backstop_count_stage)) if auto else 0
         disparadas: list = []
         adiadas: list = []
+
+        # Reabre o cache para leitura do running_since (detecção de sessão morta)
+        _conn_stage_disp = open_cache(scan_cfg.squad_id)
 
         for repo, issue, _decision in dispatch_devs:
             if not auto:
@@ -2267,11 +2589,16 @@ def _run_stage(ctx: object, stage: str) -> None:
             if vagas <= 0:
                 adiadas.append((repo, issue))
                 continue
-            if one_per_repo and _repo_has_active(repo):
+
+            # Mecanismo primário: verifica estado da issue (não lock por tempo)
+            if _issue_has_active_session(repo, issue["number"], dev_root):
+                logger.info(
+                    "deployment[dev]: sessão ativa detectada pelo estado para %s#%s — dispatch ignorado",
+                    repo, issue["number"],
+                )
                 adiadas.append((repo, issue))
                 continue
-            if _pr_exists(repo, issue["number"]):
-                continue
+
             if not _resource_headroom_ok(ctx, max_conc):
                 adiadas.append((repo, issue))
                 continue
@@ -2284,6 +2611,34 @@ def _run_stage(ctx: object, stage: str) -> None:
             except Exception as exc:
                 logger.error("deployment[dev]: erro ao despachar %s: %s", issue.get("number"), exc)
                 adiadas.append((repo, issue))
+
+        _conn_stage_disp.close()
+
+        # ── Detecção e recuperação de sessões mortas no estágio dev ─────────
+        for result in dead_session_candidates_stage:
+            _repo_dead_s = result.item.key.split("/issues/")[0].replace("https://github.com/", "") or (repos[0] if repos else "")
+            _num_str_s = result.item.key.split("/issues/")[-1] if "/issues/" in result.item.key else "0"
+            _num_dead_s = int(_num_str_s) if _num_str_s.isdigit() else 0
+            if not _num_dead_s:
+                continue
+            _conn_dead_s = open_cache(scan_cfg.squad_id)
+            try:
+                _rs_iso_s = get_running_since(_conn_dead_s, result.item.key)
+            finally:
+                _conn_dead_s.close()
+            _rs_secs_s: float | None = None
+            if _rs_iso_s:
+                try:
+                    import datetime as _dt
+                    _rs_secs_s = _dt.datetime.fromisoformat(_rs_iso_s).timestamp()
+                except Exception:
+                    pass
+            if _is_dead_session(_repo_dead_s, _num_dead_s, dev_root, _rs_secs_s):
+                _conn_rec_s = open_cache(scan_cfg.squad_id)
+                try:
+                    _recover_dead_session(ctx, _repo_dead_s, _num_dead_s, provider, chat_id, _conn_rec_s)
+                finally:
+                    _conn_rec_s.close()
 
         if auto and disparadas:
             linhas = "\n".join(f"  - {r}#{i['number']}: {i['title']}" for r, i in disparadas)

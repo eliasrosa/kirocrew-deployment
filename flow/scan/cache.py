@@ -14,10 +14,15 @@ from pathlib import Path
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS issue_cache (
-    key         TEXT PRIMARY KEY,
-    labels_hash TEXT NOT NULL,
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    key          TEXT PRIMARY KEY,
+    labels_hash  TEXT NOT NULL,
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    running_since TEXT NULL  -- ISO timestamp: quando crewflow:running foi visto pela 1ª vez
 );
+"""
+
+_MIGRATE_RUNNING_SINCE = """
+ALTER TABLE issue_cache ADD COLUMN running_since TEXT NULL;
 """
 
 _DEFAULT_DATA_DIR = Path.home() / ".kiro" / "crew" / "kirocrew-flow"
@@ -35,6 +40,13 @@ def open_cache(squad_id: str, data_dir: Path | None = None) -> sqlite3.Connectio
     conn = sqlite3.connect(str(path))
     conn.execute(_SCHEMA)
     conn.commit()
+    # Migração incremental: adiciona coluna running_since se não existir
+    try:
+        conn.execute(_MIGRATE_RUNNING_SINCE)
+        conn.commit()
+    except Exception:
+        # Coluna já existe — ignorar erro de coluna duplicada
+        pass
     return conn
 
 
@@ -92,3 +104,52 @@ def prune_done(conn: sqlite3.Connection, active_keys: set[str]) -> int:
     )
     conn.commit()
     return cursor.rowcount
+
+
+# ---------------------------------------------------------------------------
+# Rastreamento de running_since (para detecção de sessão morta)
+# ---------------------------------------------------------------------------
+
+def get_running_since(conn: sqlite3.Connection, key: str) -> str | None:
+    """Retorna o ISO timestamp de quando crewflow:running foi observado pela 1ª vez,
+    ou None se a issue não está com running registrado ou a coluna não existe.
+    """
+    try:
+        row = conn.execute(
+            "SELECT running_since FROM issue_cache WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def set_running_since(conn: sqlite3.Connection, key: str, iso_ts: str) -> None:
+    """Registra o timestamp em que crewflow:running foi observado pela 1ª vez.
+
+    Só grava se a issue já existe no cache (via set_hash).
+    Silencioso se a coluna ainda não existir (banco antigo não migrado).
+    """
+    try:
+        conn.execute(
+            "UPDATE issue_cache SET running_since = ? WHERE key = ? AND running_since IS NULL",
+            (iso_ts, key),
+        )
+        conn.commit()
+    except Exception:
+        # Tabela/coluna não existe (banco em testes com conexão crua) — ignorar
+        pass
+
+
+def clear_running_since(conn: sqlite3.Connection, key: str) -> None:
+    """Limpa o running_since (issue não tem mais crewflow:running).
+
+    Silencioso se a coluna ainda não existir.
+    """
+    try:
+        conn.execute(
+            "UPDATE issue_cache SET running_since = NULL WHERE key = ?", (key,)
+        )
+        conn.commit()
+    except Exception:
+        # Tabela/coluna não existe (banco em testes com conexão crua) — ignorar
+        pass

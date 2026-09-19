@@ -147,10 +147,20 @@ novo push, a label é removida e a próxima varredura dispara nova análise.
 ## Travas de segurança
 
 - `auto_dispatch=false` por padrão (só avisa até você confiar).
-- `max_concurrent` (default 2) e **1 sessão por repo**.
+- `max_concurrent` (default 2) — cap por número de issues em `crewflow:dev + running` no scan.
 - `max_turns_per_task` — teto duro por sessão.
 - Worktree isolado + ordem de nunca tocar outros worktrees/branches.
 - **Nenhum deploy automatizado** — trava de produto, não de config.
 - Merge squash automático é **opt-in** por squad config (`auto_merge_on_approve: true`); default é merge manual.
+
+## Concorrência orientada ao estado da issue
+
+A partir da Fase 2, **a issue é a fonte da verdade de concorrência** — não lock por tempo:
+
+- **Mecanismo primário:** `_issue_has_active_session()` verifica estado real (worktree + PR + backstop curto)
+- **Cap:** contagem de issues em `crewflow:dev + crewflow:running` no scan (não locks de arquivo)
+- **Backstop curto (2min):** lock de arquivo só para anti-duplo-dispatch enquanto o label ainda não chegou na API
+- **Detector de sessão morta:** `_is_dead_session()` — running há >40min sem PR, sem worktree e sem backstop → sessão morta
+- **Recuperação fail-closed:** sessão morta remove `crewflow:running`, notifica TL, e espera redespacho humano — nunca redespacha sozinho se houver ambiguidade
 
 > Depende do Kiro Crew rodando — é uma receita/plugin, não um app standalone.
