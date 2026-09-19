@@ -2331,3 +2331,242 @@ class TestCheckInstalledVersion:
             _run_stage(ctx, "dev")
 
         mock_check.assert_called_once_with(ctx)
+
+
+# ---------------------------------------------------------------------------
+# Issue #122 — cobertura total de ActionKind em _STAGE_ACTIONS
+# ---------------------------------------------------------------------------
+
+class TestStageActionsCobertura:
+    """Garante que nenhuma ActionKind emitida pelo executor fica órfã de _STAGE_ACTIONS.
+
+    Critério de aceite:
+    - Toda ActionKind (exceto SKIP e ações administrativas sem estágio) aparece em
+      ao menos um estágio de _STAGE_ACTIONS.
+    - SKIP não precisa de estágio: é silêncio, não uma ação de dispatch.
+    - NOTIFY_HUMAN, BLOCK e REBRAND são executados pelo run() monolítico e por
+      _run_stage (via o fluxo de categorização), mas não têm cron dedicado —
+      são ações transversais tratadas em qualquer estágio. Excetuados do guard.
+
+    Se uma nova ActionKind for adicionada ao executor sem ser mapeada aqui, este
+    teste QUEBRA — é o guard automático exigido pelo critério de aceite da issue.
+    """
+
+    # ActionKinds que são transversais (processadas em qualquer estágio quando
+    # encontradas, mas sem cron dedicado). Precisam de justificativa explícita.
+    _TRANSVERSAL = frozenset({
+        "skip",           # silêncio — sem ação
+        "notify_human",   # transversal: notifica humano em qualquer estágio
+        "block",          # transversal: marca crewflow:blocked
+        "rebrand",        # transversal: troca de template (GATE 0 hotfix)
+    })
+
+    def test_toda_action_kind_tem_estagio_ou_e_transversal(self) -> None:
+        """Nenhuma ActionKind fica órfã de _STAGE_ACTIONS (exceto as transversais)."""
+        from deployment.deployment import _STAGE_ACTIONS
+        from flow.executor.executor import ActionKind
+
+        todas = frozenset(a.value for a in ActionKind)
+        mapeadas = frozenset().union(*_STAGE_ACTIONS.values())
+        orfas = todas - mapeadas - self._TRANSVERSAL
+
+        assert not orfas, (
+            f"ActionKind(s) órfã(s) de _STAGE_ACTIONS: {sorted(orfas)}\n"
+            "Adicione-as ao estágio correto em _STAGE_ACTIONS no deployment.py.\n"
+            "Se for transversal (sem cron dedicado), adicione ao conjunto _TRANSVERSAL "
+            "neste teste com justificativa."
+        )
+
+    def test_mark_conflito_no_estagio_reviewer(self) -> None:
+        """mark_conflito deve estar em _STAGE_REVIEWER (detectado ao escanear review)."""
+        from deployment.deployment import _STAGE_ACTIONS, _STAGE_REVIEWER
+
+        assert "mark_conflito" in _STAGE_ACTIONS[_STAGE_REVIEWER], (
+            "mark_conflito deve estar em _STAGE_REVIEWER — "
+            "é detectado quando pr_mergeable == CONFLICTING durante o scan de review."
+        )
+
+    def test_dispatch_conflict_resolver_no_estagio_conflito(self) -> None:
+        """dispatch_conflict_resolver deve estar em _STAGE_CONFLITO."""
+        from deployment.deployment import _STAGE_ACTIONS, _STAGE_CONFLITO
+
+        assert "dispatch_conflict_resolver" in _STAGE_ACTIONS[_STAGE_CONFLITO], (
+            "dispatch_conflict_resolver deve estar em _STAGE_CONFLITO — "
+            "despachado quando crewflow:conflito já foi aplicado na issue."
+        )
+
+    def test_dispatch_rework_no_estagio_conflito(self) -> None:
+        """dispatch_rework deve estar em _STAGE_CONFLITO (re-trabalho pós-review)."""
+        from deployment.deployment import _STAGE_ACTIONS, _STAGE_CONFLITO
+
+        assert "dispatch_rework" in _STAGE_ACTIONS[_STAGE_CONFLITO], (
+            "dispatch_rework deve estar em _STAGE_CONFLITO."
+        )
+
+    def test_estagios_sem_overlap(self) -> None:
+        """Uma mesma ActionKind não deve aparecer em dois estágios diferentes."""
+        from deployment.deployment import _STAGE_ACTIONS
+
+        seen: dict[str, str] = {}
+        for stage, actions in _STAGE_ACTIONS.items():
+            for action in actions:
+                assert action not in seen, (
+                    f"ActionKind '{action}' aparece em dois estágios: "
+                    f"'{seen[action]}' e '{stage}'. "
+                    "Cada ação deve pertencer a exatamente um estágio."
+                )
+                seen[action] = stage
+
+
+class TestRunStageMarkConflito:
+    """_run_stage no estágio reviewer executa mark_conflito (aplica crewflow:conflito)."""
+
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "secret"
+        ctx.job.id = "test-job"
+        return ctx
+
+    def _make_conflicting_pr_scan_result(self) -> object:
+        """ScanResult em crewflow:review com PR em estado CONFLICTING."""
+        from flow.domain.gates import WorkItem
+        from flow.domain.state import State
+        from flow.scan.scanner import ScanResult
+
+        return ScanResult(
+            item=WorkItem(
+                key="https://github.com/owner/repo/issues/99",
+                title="[owner/repo] Feature Y",
+                labels=frozenset(["crewflow:review", "crewflow:feature"]),
+            ),
+            current_state=State.REVIEW,
+            modifiers=frozenset(),
+            dispatch_candidate=False,
+            spec_valid=None,
+            changed=True,
+            reason="PR com conflito de merge",
+        )
+
+    def test_mark_conflito_aplica_label_no_estagio_reviewer(self) -> None:
+        """_run_stage(reviewer) aplica crewflow:conflito quando PR está CONFLICTING."""
+        from deployment.deployment import _run_stage
+
+        ctx = self._make_ctx()
+        result = self._make_conflicting_pr_scan_result()
+
+        # Simula get_pr_for_issue retornando PR CONFLICTING
+        fake_pr = {"number": 50, "headRefOid": "abc123", "mergeable": "CONFLICTING"}
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value={
+                           "repos": ["owner/repo"],
+                           "auto_dispatch": True,
+                           "max_concurrent": 2,
+                           "notify_chat_id": "",
+                           "squad_id": "test",
+                           "issue_provider": "github",
+                           "dev_root": "/tmp/dev",
+                           "agent": "kirocrew",
+                       }),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider = mock.MagicMock()
+            mock_provider.get_state_comment.return_value = None
+            mock_provider.get_pr_for_issue.return_value = fake_pr
+            mock_provider_for.return_value = mock_provider
+
+            _run_stage(ctx, "reviewer")
+
+        # set_labels deve ter sido chamado com crewflow:conflito
+        mock_provider.set_labels.assert_called_once()
+        call_args = mock_provider.set_labels.call_args
+        labels_set = call_args[0][2] if len(call_args[0]) >= 3 else call_args[1].get("labels", [])
+        assert "crewflow:conflito" in labels_set, (
+            f"crewflow:conflito não foi adicionado. Labels: {labels_set}"
+        )
+
+
+class TestRunStageConflictResolver:
+    """_run_stage no estágio conflito despacha sessão de resolução de conflito."""
+
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "secret"
+        ctx.job.id = "test-job"
+        return ctx
+
+    def _make_conflito_scan_result(self) -> object:
+        """ScanResult em crewflow:review com crewflow:conflito aplicado."""
+        from flow.domain.gates import WorkItem
+        from flow.domain.state import Modifier, State
+        from flow.scan.scanner import ScanResult
+
+        return ScanResult(
+            item=WorkItem(
+                key="https://github.com/owner/repo/issues/99",
+                title="[owner/repo] Feature Y",
+                labels=frozenset(["crewflow:review", "crewflow:conflito", "crewflow:feature"]),
+            ),
+            current_state=State.REVIEW,
+            modifiers=frozenset([Modifier.CONFLITO]),
+            dispatch_candidate=False,
+            spec_valid=None,
+            changed=True,
+            reason="PR com crewflow:conflito",
+        )
+
+    def test_dispatch_conflict_resolver_no_estagio_conflito(self) -> None:
+        """_run_stage(conflito) despacha sessão de resolução quando crewflow:conflito presente."""
+        from deployment.deployment import _run_stage
+
+        ctx = self._make_ctx()
+        result = self._make_conflito_scan_result()
+
+        fake_pr = {"number": 50, "headRefOid": "abc123", "mergeable": "CONFLICTING"}
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value={
+                           "repos": ["owner/repo"],
+                           "auto_dispatch": True,
+                           "max_concurrent": 2,
+                           "notify_chat_id": "",
+                           "squad_id": "test",
+                           "issue_provider": "github",
+                           "dev_root": "/tmp/dev",
+                           "agent": "kirocrew",
+                       }),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment.provider_for") as mock_provider_for,
+            mock.patch("deployment.deployment._conflict_resolver_has_active", return_value=False),
+            mock.patch("deployment.deployment._dispatch_conflict_resolver") as mock_dispatch_cr,
+            mock.patch("subprocess.run") as mock_sub,
+        ):
+            mock_cache.return_value.__enter__ = mock.MagicMock(
+                return_value=sqlite3.connect(":memory:"))
+            mock_cache.return_value.__exit__ = mock.MagicMock(return_value=False)
+            mock_provider = mock.MagicMock()
+            mock_provider.get_state_comment.return_value = None
+            mock_provider.get_pr_for_issue.return_value = fake_pr
+            mock_provider_for.return_value = mock_provider
+            # gh pr list retorna o PR existente
+            mock_sub.return_value = mock.MagicMock(
+                returncode=0, stdout='[{"number": 50}]', stderr=""
+            )
+
+            _run_stage(ctx, "conflito")
+
+        mock_dispatch_cr.assert_called_once()
+        call_args = mock_dispatch_cr.call_args[0]
+        assert call_args[1] == "owner/repo"  # repo
+        assert call_args[2]["number"] == 99   # issue["number"]
+        assert call_args[3] == 50             # pr_number
