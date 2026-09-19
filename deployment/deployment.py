@@ -1544,7 +1544,7 @@ def _reviewer_has_active(repo: str, issue_number: int) -> bool:
     return any(not _lock_is_stale(p) for p in locks)
 
 
-def _reviewer_prompt(repo: str, pr_number: int, issue_number: int) -> str:
+def _reviewer_prompt(repo: str, pr_number: int, issue_number: int, head_sha: str = "") -> str:
     """Carrega e renderiza o template MD do estágio 'reviewer'.
 
     Usa ``flow/prompts/reviewer.md`` como fonte primária. Em caso de arquivo
@@ -1553,6 +1553,13 @@ def _reviewer_prompt(repo: str, pr_number: int, issue_number: int) -> str:
     A fonte única de verdade para o formato dos comentários de review continua
     sendo ``flow/audit/state_comment.py`` — o template referencia os exemplares
     produzidos por esses helpers, não strings hardcoded.
+
+    Args:
+        head_sha: headRefOid atual do PR, lido pelo driving adapter antes do
+                  dispatch. Injetado no prompt para que o reviewer use o SHA
+                  correto no ReviewerResult sem depender de re-buscar o diff
+                  do contexto do dispatch, que pode estar desatualizado.
+                  String vazia ("") quando não foi possível obter o SHA.
     """
     from flow.audit.state_comment import ReviewerResult
 
@@ -1576,6 +1583,7 @@ def _reviewer_prompt(repo: str, pr_number: int, issue_number: int) -> str:
         "REPO: {{repo}}\n"
         "PR: #{{pr_number}}\n"
         "ISSUE: #{{issue_number}}\n"
+        "HEAD SHA (no momento do dispatch): {{head_sha}}\n"
         "SESSION TITLE: review: {{repo_short}} PR #{{pr_number}} (issue #{{issue_number}})\n"
         "------------ CONTEXT TASK ----------------\n"
         "Você é um agente de code review ONE-SHOT. Tarefa ÚNICA, sem loop, sem watchdog.\n\n"
@@ -1584,11 +1592,15 @@ def _reviewer_prompt(repo: str, pr_number: int, issue_number: int) -> str:
         "1. Leia a issue para ter contexto, incluindo os comentários:\n"
         "   gh issue view {{issue_number}} --repo {{repo}}\n"
         "   gh issue view {{issue_number}} --repo {{repo}} --comments\n"
-        "2. Leia o diff do PR e os comentários do PR:\n"
+        "2. Leia o diff do PR ancorado no HEAD atual e os comentários do PR:\n"
+        "   IMPORTANTE: o SHA do HEAD no momento do dispatch está fixado acima em \"HEAD SHA\".\n"
+        "   Registre-o como o SHA desta revisão no ReviewerResult (passo 9). NÃO use SHA de contexto anterior.\n"
         "   gh pr diff {{pr_number}} --repo {{repo}}\n"
         "   gh pr view {{pr_number}} --repo {{repo}} --comments\n"
-        "   Fixe o SHA atual do HEAD do PR (use este valor no ReviewerResult do passo 9):\n"
+        "   Confirme que o headRefOid atual bate com {{head_sha}}:\n"
         "   gh pr view {{pr_number}} --repo {{repo}} --json headRefOid\n"
+        "   Se o SHA retornado for diferente de {{head_sha}}, use o SHA retornado (a PR pode ter avançado)\n"
+        "   e anote no ReviewerResult.\n"
         "3. Leia os steerings do repo (.kiro/steering/*.md) para entender convenções.\n"
         "4. Verifique o status da pipeline de CI do PR:\n"
         "   gh pr checks {{pr_number}} --repo {{repo}} --json name,state,conclusion\n"
@@ -1619,8 +1631,9 @@ def _reviewer_prompt(repo: str, pr_number: int, issue_number: int) -> str:
         "   - Se tem pedidos de mudança: `approved: false`, `comments: [\"<mudança 1>\", ...]`\n"
         "   - Inclua o motivo de CI vermelho como primeiro item em `comments` se aplicável\n"
         "   Use `upsert_state_comment` para atualizar o bloco <!-- KIRO-FLOW-STATE --> NA ISSUE.\n"
-        "   O ReviewerResult deve incluir o SHA atual do HEAD do PR — use o `headRefOid`\n"
-        "   obtido no passo 2, NUNCA um SHA do contexto do dispatch, que pode estar desatualizado.\n"
+        "   O ReviewerResult DEVE incluir o headRefOid lido no passo 2 como campo `sha`.\n"
+        "   Use o SHA obtido via `gh pr view {{pr_number}} --repo {{repo}} --json headRefOid` no passo 2\n"
+        "   — não {{head_sha}} hardcoded, pois a PR pode ter avançado entre o dispatch e a execução.\n"
         "   IMPORTANTE: o ReviewerResult PERMANECE na issue — é o que o scan lê pra decidir MERGE_PR.\n"
         "10. Se aprovado (zero comentários + CI verde): adicione a label `crewflow:reviewed` à issue #{{issue_number}}.\n"
         "11. Se tem comentários ou CI vermelho: NÃO adicione `crewflow:reviewed` — o TL decide.\n"
@@ -1642,6 +1655,7 @@ def _reviewer_prompt(repo: str, pr_number: int, issue_number: int) -> str:
             repo_short=short,
             pr_number=str(pr_number),
             issue_number=str(issue_number),
+            head_sha=head_sha,
             example_approved=exemplo_aprovado,
             example_changes=exemplo_mudancas,
         )
@@ -2040,9 +2054,27 @@ def _dispatch_reviewer(
     short = repo.split("/")[-1]
     slot = f"reviewer-{short}-{issue_number}"
 
+    # Busca o headRefOid atual do PR antes de gerar o prompt.
+    # Injetado em {{head_sha}} para que o reviewer saiba exatamente qual SHA
+    # revisar — evita que o modelo use o diff do contexto do dispatch (SHA antigo).
+    head_sha = ""
+    try:
+        _sha_res = subprocess.run(
+            ["gh", "pr", "view", str(pr_number), "--repo", repo,
+             "--json", "headRefOid", "--jq", ".headRefOid"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        if _sha_res.returncode == 0:
+            head_sha = _sha_res.stdout.strip()
+    except Exception as exc_sha:
+        logger.warning(
+            "deployment: não foi possível obter headRefOid para %s PR#%s: %s — seguindo sem SHA",
+            repo, pr_number, exc_sha,
+        )
+
     import urllib.request as _u
     body = json.dumps({
-        "message": _reviewer_prompt(repo, pr_number, issue_number),
+        "message": _reviewer_prompt(repo, pr_number, issue_number, head_sha=head_sha),
         "agent": cfg.get("agent") or "kirocrew",
         "slot": slot,
         "memory_mode": "temporary",

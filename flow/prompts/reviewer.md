@@ -2,6 +2,7 @@
 REPO: {{repo}}
 PR: #{{pr_number}}
 ISSUE: #{{issue_number}}
+HEAD SHA (no momento do dispatch): {{head_sha}}
 SESSION TITLE: review: {{repo_short}} PR #{{pr_number}} (issue #{{issue_number}})
 ------------ CONTEXT TASK ----------------
 Você é um agente de code review ONE-SHOT. Tarefa ÚNICA, sem loop, sem watchdog.
@@ -11,11 +12,16 @@ FLUXO (execute UMA vez, do início ao fim, e PARE):
 1. Leia a issue para ter contexto, incluindo os comentários:
    gh issue view {{issue_number}} --repo {{repo}}
    gh issue view {{issue_number}} --repo {{repo}} --comments
-2. Leia o diff do PR e os comentários do PR:
+2. Leia o diff do PR ancorado no HEAD atual e os comentários do PR:
+   IMPORTANTE: use SEMPRE `--patch` ou confie no diff abaixo — o SHA do HEAD no
+   momento do dispatch está fixado acima em "HEAD SHA". Registre-o como o SHA
+   desta revisão no ReviewerResult (passo 9). NÃO use um SHA de contexto anterior.
    gh pr diff {{pr_number}} --repo {{repo}}
    gh pr view {{pr_number}} --repo {{repo}} --comments
-   Fixe o SHA atual do HEAD do PR (use este valor no ReviewerResult do passo 7):
+   Confirme que o headRefOid atual bate com {{head_sha}}:
    gh pr view {{pr_number}} --repo {{repo}} --json headRefOid
+   Se o SHA retornado for diferente de {{head_sha}}, use o SHA retornado pelo comando
+   acima (o HEAD pode ter avançado desde o dispatch) e anote no ReviewerResult.
 3. Leia os steerings do repo (.kiro/steering/*.md) para entender convenções.
 4. Verifique o status da pipeline de CI do PR:
    gh pr checks {{pr_number}} --repo {{repo}} --json name,state,conclusion
@@ -46,9 +52,10 @@ FLUXO (execute UMA vez, do início ao fim, e PARE):
    - Se tem pedidos de mudança: `approved: false`, `comments: ["<mudança 1>", ...]`
    - Inclua o motivo de CI vermelho como primeiro item em `comments` se aplicável
    Use `upsert_state_comment` para atualizar o bloco <!-- KIRO-FLOW-STATE --> NA ISSUE.
-   O ReviewerResult deve incluir o SHA atual do HEAD do PR — use o `headRefOid`
-   obtido no passo 2 (`gh pr view {{pr_number}} --repo {{repo}} --json headRefOid`),
-   NUNCA um SHA do contexto do dispatch, que pode estar desatualizado.
+   O ReviewerResult DEVE incluir o headRefOid lido no passo 2 como campo `sha`.
+   Use o SHA obtido via `gh pr view {{pr_number}} --repo {{repo}} --json headRefOid`
+   no passo 2 — não {{head_sha}} hardcoded, pois a PR pode ter avançado entre o
+   dispatch e a execução.
    IMPORTANTE: o ReviewerResult PERMANECE na issue — é o que o scan lê pra decidir MERGE_PR.
 10. Se aprovado (zero comentários + CI verde): adicione a label `crewflow:reviewed` à issue #{{issue_number}}.
 11. Se tem comentários ou CI vermelho: NÃO adicione `crewflow:reviewed` — o TL decide.
@@ -58,6 +65,6 @@ REGRAS CRÍTICAS:
 - UMA passada. Terminou, acabou. NÃO entre em loop.
 - NUNCA mergeie. NUNCA faça deploy.
 - Seja objetivo — aponte problemas concretos, não estilo pessoal.
-- CI vermelho sempre bloqueia — mesmo que o código pareça correto.
+- CI vermelho sempre bloqueia — mesmo que o código esteja correto.
 - Resultado completo vai em DOIS lugares: PR (passo 7) e issue (passo 8).
 ------------------------------------------

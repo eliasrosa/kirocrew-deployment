@@ -237,6 +237,7 @@ class TestRealTemplates:
             repo_short="myrepo",
             pr_number="5",
             issue_number="42",
+            head_sha="abc1234def5678",
             example_approved="     ## 🤖 KiroCrew Review\n     **Resultado:** ✅ Aprovado",
             example_changes=(
                 "     ## 🤖 KiroCrew Review\n"
@@ -256,6 +257,7 @@ class TestRealTemplates:
             repo_short="myrepo",
             pr_number="10",
             issue_number="20",
+            head_sha="0000000",
             example_approved="",
             example_changes="",
         )
@@ -269,6 +271,7 @@ class TestRealTemplates:
             repo_short="myrepo",
             pr_number="5",
             issue_number="42",
+            head_sha="abc1234",
             example_approved="",
             example_changes="",
         )
@@ -283,6 +286,7 @@ class TestRealTemplates:
             repo_short="myrepo",
             pr_number="5",
             issue_number="42",
+            head_sha="abc1234",
             example_approved="",
             example_changes="",
         )
@@ -297,6 +301,7 @@ class TestRealTemplates:
             repo_short="myrepo",
             pr_number="5",
             issue_number="42",
+            head_sha="abc1234",
             example_approved="",
             example_changes="",
         )
@@ -310,6 +315,7 @@ class TestRealTemplates:
             repo_short="myrepo",
             pr_number="5",
             issue_number="42",
+            head_sha="abc1234",
             example_approved="",
             example_changes="",
         )
@@ -327,9 +333,39 @@ class TestRealTemplates:
             repo_short="myrepo",
             pr_number="5",
             issue_number="42",
+            head_sha="abc1234",
             example_approved="",
             example_changes="",
         )
         # A decisão exige as três condições
         assert "CI verde" in result
         assert "crewflow:reviewed" in result
+
+    def test_reviewer_template_contem_head_sha_injetado(self) -> None:
+        """O prompt deve incluir o SHA injetado para que o reviewer saiba qual HEAD revisar."""
+        result = render_prompt(
+            "reviewer",
+            repo="owner/myrepo",
+            repo_short="myrepo",
+            pr_number="5",
+            issue_number="42",
+            head_sha="deadbeef1234",
+            example_approved="",
+            example_changes="",
+        )
+        assert "deadbeef1234" in result
+
+    def test_reviewer_template_instrui_confirmar_sha_atual(self) -> None:
+        """O reviewer deve confirmar o SHA atual via gh pr view --json headRefOid."""
+        result = render_prompt(
+            "reviewer",
+            repo="owner/myrepo",
+            repo_short="myrepo",
+            pr_number="5",
+            issue_number="42",
+            head_sha="abc1234",
+            example_approved="",
+            example_changes="",
+        )
+        assert "headRefOid" in result
+        assert "gh pr view 5 --repo owner/myrepo --json headRefOid" in result
