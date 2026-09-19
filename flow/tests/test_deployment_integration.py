@@ -410,24 +410,51 @@ class TestRepoHasActiveStaleDetection:
 # ---------------------------------------------------------------------------
 
 class TestPrExists:
-    """_pr_exists deve chamar gh pr list e retornar True somente quando há PR aberto."""
+    """_pr_exists deve detectar PR aberta da issue independente do nome da branch."""
 
-    def test_retorna_true_quando_pr_existe(self) -> None:
+    def test_retorna_true_quando_pr_existe_branch_canonica(self) -> None:
+        """Detecta PR pelo nome canônico feat/issue-N (1ª busca)."""
         from deployment.deployment import _pr_exists
 
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(
-                returncode=0,
-                stdout='[{"number": 99}]',
-                stderr="",
-            )
+        def _side_effect(cmd, **kwargs):
+            # 1ª chamada: busca por --head feat/issue-42 → encontra
+            if "--head" in cmd:
+                return mock.MagicMock(returncode=0, stdout='[{"number": 99}]', stderr="")
+            return mock.MagicMock(returncode=0, stdout="[]", stderr="")
+
+        with mock.patch("subprocess.run", side_effect=_side_effect) as mock_run:
             assert _pr_exists("owner/repo", 42) is True
-        mock_run.assert_called_once()
-        args = mock_run.call_args[0][0]
+
+        # A 1ª busca (branch canônica) já retornou True — não deve ter feito 2ª busca
+        assert mock_run.call_count == 1
+        args = mock_run.call_args_list[0][0][0]
         assert "--head" in args
         assert "feat/issue-42" in args
 
-    def test_retorna_false_quando_sem_pr(self) -> None:
+    def test_retorna_true_quando_pr_existe_branch_alternativa(self) -> None:
+        """Detecta PR com branch de nome alternativo via busca por 'Closes #N in:body'."""
+        from deployment.deployment import _pr_exists
+
+        call_count = 0
+
+        def _side_effect(cmd, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if "--head" in cmd:
+                # 1ª busca (branch canônica): não encontra
+                return mock.MagicMock(returncode=0, stdout="[]", stderr="")
+            if "--search" in cmd:
+                # 2ª busca (corpo da PR): encontra
+                return mock.MagicMock(returncode=0, stdout='[{"number": 105}]', stderr="")
+            return mock.MagicMock(returncode=0, stdout="[]", stderr="")
+
+        with mock.patch("subprocess.run", side_effect=_side_effect):
+            assert _pr_exists("owner/repo", 91) is True
+
+        assert call_count == 2  # fez as duas buscas
+
+    def test_retorna_false_quando_sem_pr_em_nenhuma_busca(self) -> None:
+        """Retorna False quando nenhuma busca encontra PR aberta."""
         from deployment.deployment import _pr_exists
 
         with mock.patch("subprocess.run") as mock_run:
@@ -436,7 +463,31 @@ class TestPrExists:
             )
             assert _pr_exists("owner/repo", 42) is False
 
-    def test_retorna_false_em_erro_de_cli(self) -> None:
+        assert mock_run.call_count == 2  # fez as duas buscas
+
+    def test_segunda_busca_usa_closes_n_in_body(self) -> None:
+        """A busca por branch alternativa usa a query correta."""
+        from deployment.deployment import _pr_exists
+
+        calls: list = []
+
+        def _side_effect(cmd, **kwargs):
+            calls.append(cmd)
+            return mock.MagicMock(returncode=0, stdout="[]", stderr="")
+
+        with mock.patch("subprocess.run", side_effect=_side_effect):
+            _pr_exists("owner/repo", 55)
+
+        assert len(calls) == 2
+        search_cmd = calls[1]
+        assert "--search" in search_cmd
+        idx = search_cmd.index("--search")
+        query = search_cmd[idx + 1]
+        assert "Closes #55" in query
+        assert "in:body" in query
+
+    def test_retorna_false_em_erro_de_cli_em_ambas_buscas(self) -> None:
+        """Falha em ambas as buscas resulta em False (fail-safe)."""
         from deployment.deployment import _pr_exists
 
         with mock.patch("subprocess.run") as mock_run:
@@ -446,6 +497,7 @@ class TestPrExists:
             assert _pr_exists("owner/repo", 42) is False
 
     def test_retorna_false_em_excecao(self) -> None:
+        """Exceção de subprocess resulta em False (fail-safe)."""
         from deployment.deployment import _pr_exists
 
         with mock.patch("subprocess.run", side_effect=OSError("gh not found")):
