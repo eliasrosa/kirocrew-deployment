@@ -15,6 +15,7 @@ workflow_params:
   review_position: before_qa
   deploy_hml_mode: manual
   allow_hml_bypass: true
+  auto_merge_on_approve: true  # opt-in: reviewer aprova sem comentários → merge squash automático
 
 routing:
   - match: {labels: ["crewflow:hotfix"]}
