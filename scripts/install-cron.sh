@@ -75,6 +75,32 @@ else
     echo "       dev_root: /caminho/para/seus/clones"
 fi
 
+# 4. Grava hash de versão para detecção de script desatualizado
+# deployment.py verifica este arquivo no startup e avisa quando diverge do repo.
+VERSION_FILE="$CRONS_DIR/deployment.version"
+python3 - <<PYEOF
+import hashlib, json, os
+
+repo_root = "$REPO_ROOT"
+crons_dir = "$CRONS_DIR"
+
+# Hash do deployment.py do REPO (antes do patch de sys.path)
+src = os.path.join(repo_root, "deployment", "deployment.py")
+with open(src, "rb") as f:
+    repo_hash = hashlib.sha256(f.read()).hexdigest()
+
+version_info = {
+    "repo_root": repo_root,
+    "repo_deployment_sha256": repo_hash,
+}
+
+version_path = os.path.join(crons_dir, "deployment.version")
+with open(version_path, "w") as f:
+    json.dump(version_info, f, indent=2)
+
+print(f"  ✅ deployment.version gravado (sha256: {repo_hash[:12]}...)")
+PYEOF
+
 echo ""
 echo "=== Instalação completa ==="
 echo ""

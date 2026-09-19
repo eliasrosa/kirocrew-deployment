@@ -6,6 +6,7 @@ Testa a integração entre deployment → scan → domain.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -1953,3 +1954,165 @@ class TestParallelDispatchIsolation:
             run(ctx)
 
         assert mock_dispatch.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Testes para _check_installed_version (issue #116)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckInstalledVersion:
+    """Testa a detecção de script instalado desatualizado.
+
+    A função _check_installed_version lê deployment.version, compara o hash
+    SHA-256 do deployment.py do repo com o hash registrado na instalação,
+    e loga/notifica quando divergir.
+    """
+
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        ctx.notify = mock.MagicMock()
+        return ctx
+
+    def test_sem_version_file_nao_notifica(self, tmp_path: Path) -> None:
+        """Sem deployment.version não há notificação — instalação antiga é silenciosa."""
+        from deployment.deployment import _check_installed_version
+
+        ctx = self._make_ctx()
+        with mock.patch("deployment.deployment._HERE", str(tmp_path)):
+            _check_installed_version(ctx)
+
+        ctx.notify.assert_not_called()
+
+    def test_hash_bate_nao_notifica(self, tmp_path: Path) -> None:
+        """Hash do repo igual ao registrado → sem notificação."""
+        import hashlib
+
+        from deployment.deployment import _check_installed_version
+
+        # Cria um "repo" com um deployment.py fake
+        fake_repo = tmp_path / "repo"
+        (fake_repo / "deployment").mkdir(parents=True)
+        fake_script = fake_repo / "deployment" / "deployment.py"
+        fake_script.write_bytes(b"# fake deployment\n")
+        sha = hashlib.sha256(fake_script.read_bytes()).hexdigest()
+
+        # Grava deployment.version com o hash correto
+        version_info = {"repo_root": str(fake_repo), "repo_deployment_sha256": sha}
+        version_file = tmp_path / "crons" / "deployment.version"
+        version_file.parent.mkdir(parents=True)
+        version_file.write_text(json.dumps(version_info))
+
+        ctx = self._make_ctx()
+        with mock.patch("deployment.deployment._HERE", str(version_file.parent)):
+            _check_installed_version(ctx)
+
+        ctx.notify.assert_not_called()
+
+    def test_hash_diferente_loga_warning_e_notifica(self, tmp_path: Path) -> None:
+        """Hash do repo diferente do registrado → notifica com instrução de reinstalação."""
+        from deployment.deployment import _check_installed_version
+
+        # Cria repo com deployment.py diferente do registrado
+        fake_repo = tmp_path / "repo"
+        (fake_repo / "deployment").mkdir(parents=True)
+        fake_script = fake_repo / "deployment" / "deployment.py"
+        fake_script.write_bytes(b"# NOVA versao\n")
+
+        # Hash registrado é de outro conteúdo (versão antiga)
+        old_sha = "aaabbbccc" + "0" * 55  # 64 chars
+
+        version_info = {
+            "repo_root": str(fake_repo),
+            "repo_deployment_sha256": old_sha,
+        }
+        version_file = tmp_path / "crons" / "deployment.version"
+        version_file.parent.mkdir(parents=True)
+        version_file.write_text(json.dumps(version_info))
+
+        ctx = self._make_ctx()
+        with mock.patch("deployment.deployment._HERE", str(version_file.parent)):
+            _check_installed_version(ctx)
+
+        ctx.notify.assert_called_once()
+        msg = ctx.notify.call_args[0][0]
+        assert "DESATUALIZADO" in msg
+        assert "install-cron.sh" in msg
+
+    def test_version_file_corrompido_nao_aborta(self, tmp_path: Path) -> None:
+        """version file inválido não aborta o ciclo — apenas loga warning."""
+        from deployment.deployment import _check_installed_version
+
+        version_file = tmp_path / "deployment.version"
+        version_file.write_text("json inválido {{{{")
+
+        ctx = self._make_ctx()
+        with mock.patch("deployment.deployment._HERE", str(tmp_path)):
+            _check_installed_version(ctx)  # não deve levantar
+
+        ctx.notify.assert_not_called()
+
+    def test_repo_deployment_ausente_nao_notifica(self, tmp_path: Path) -> None:
+        """Se deployment.py do repo não existir (repo movido), não bloqueia."""
+        from deployment.deployment import _check_installed_version
+
+        fake_repo = tmp_path / "repo_que_nao_existe"
+        version_info = {
+            "repo_root": str(fake_repo),
+            "repo_deployment_sha256": "abc123",
+        }
+        version_file = tmp_path / "deployment.version"
+        version_file.write_text(json.dumps(version_info))
+
+        ctx = self._make_ctx()
+        with mock.patch("deployment.deployment._HERE", str(tmp_path)):
+            _check_installed_version(ctx)
+
+        ctx.notify.assert_not_called()
+
+    def test_ctx_none_nao_levanta(self, tmp_path: Path) -> None:
+        """_check_installed_version(ctx=None) não levanta mesmo com hash divergente."""
+        from deployment.deployment import _check_installed_version
+
+        fake_repo = tmp_path / "repo"
+        (fake_repo / "deployment").mkdir(parents=True)
+        fake_script = fake_repo / "deployment" / "deployment.py"
+        fake_script.write_bytes(b"# new\n")
+
+        version_info = {
+            "repo_root": str(fake_repo),
+            "repo_deployment_sha256": "0" * 64,
+        }
+        version_file = tmp_path / "deployment.version"
+        version_file.write_text(json.dumps(version_info))
+
+        with mock.patch("deployment.deployment._HERE", str(tmp_path)):
+            _check_installed_version(None)  # não deve levantar
+
+    def test_run_chama_check_installed_version(self) -> None:
+        """run() deve chamar _check_installed_version antes do scan."""
+        from deployment.deployment import run
+
+        ctx = self._make_ctx()
+        with (
+            mock.patch("deployment.deployment._check_installed_version") as mock_check,
+            mock.patch("deployment.deployment._load_config", side_effect=RuntimeError("stop")),
+            pytest.raises(RuntimeError, match="stop"),
+        ):
+            run(ctx)
+
+        mock_check.assert_called_once_with(ctx)
+
+    def test_run_stage_chama_check_installed_version(self) -> None:
+        """_run_stage() deve chamar _check_installed_version antes do scan."""
+        from deployment.deployment import _run_stage
+
+        ctx = self._make_ctx()
+        with (
+            mock.patch("deployment.deployment._check_installed_version") as mock_check,
+            mock.patch("deployment.deployment._load_config", side_effect=RuntimeError("stop")),
+            pytest.raises(RuntimeError, match="stop"),
+        ):
+            _run_stage(ctx, "dev")
+
+        mock_check.assert_called_once_with(ctx)

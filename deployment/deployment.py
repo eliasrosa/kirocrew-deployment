@@ -64,6 +64,100 @@ if _REPO_ROOT not in sys.path:
 
 from datetime import UTC  # noqa: E402
 
+# ── Detecção de script instalado desatualizado ────────────────────────────
+
+def _check_installed_version(ctx: object | None = None) -> None:
+    """Avisa quando o script instalado diverge da versão no repositório.
+
+    Compara o hash SHA-256 do arquivo do repo (deployment/deployment.py) com
+    o hash registrado em deployment.version no momento da última instalação
+    via scripts/install-cron.sh.
+
+    Quando divergir: loga um warning claro e — se ctx disponível —
+    envia notificação pedindo reinstalação. Nunca aborta o ciclo (fail-open
+    para a verificação de versão, fail-closed só para PromptRenderError).
+
+    O arquivo deployment.version é criado pelo install-cron.sh e contém:
+        {
+          "repo_root": "/caminho/para/o/repo",
+          "repo_deployment_sha256": "<sha256 de deployment.py no repo>"
+        }
+
+    Se o arquivo não existir (instalação antiga antes desta feature), apenas
+    loga um aviso de que a verificação não está disponível — não bloqueia.
+    """
+    import hashlib
+
+    version_file = os.path.join(_HERE, "deployment.version")
+    if not os.path.exists(version_file):
+        logger.debug(
+            "deployment: deployment.version não encontrado — "
+            "reinstale com scripts/install-cron.sh para habilitar verificação de versão"
+        )
+        return
+
+    try:
+        with open(version_file) as f:
+            version_info = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "deployment: não foi possível ler deployment.version: %s — "
+            "execute scripts/install-cron.sh para corrigir",
+            exc,
+        )
+        return
+
+    repo_root = version_info.get("repo_root") or ""
+    expected_sha = version_info.get("repo_deployment_sha256") or ""
+
+    if not repo_root or not expected_sha:
+        logger.warning(
+            "deployment: deployment.version incompleto — "
+            "reinstale com scripts/install-cron.sh"
+        )
+        return
+
+    repo_deployment = os.path.join(repo_root, "deployment", "deployment.py")
+    if not os.path.exists(repo_deployment):
+        logger.debug(
+            "deployment: deployment.py do repo não encontrado em %s — "
+            "verificação de versão pulada (repo movido?)",
+            repo_deployment,
+        )
+        return
+
+    try:
+        with open(repo_deployment, "rb") as f:
+            current_sha = hashlib.sha256(f.read()).hexdigest()
+    except OSError as exc:
+        logger.warning(
+            "deployment: não foi possível ler deployment.py do repo (%s): %s — "
+            "verificação de versão pulada",
+            repo_deployment, exc,
+        )
+        return
+
+    if current_sha == expected_sha:
+        logger.debug("deployment: versão do script instalado OK (sha256 bate)")
+        return
+
+    msg = (
+        "⚠️ KiroCrew Flow: script instalado DESATUALIZADO.\n"
+        "  O deployment.py no repositório foi modificado após a última instalação.\n"
+        f"  Hash instalado: {expected_sha[:12]}...\n"
+        f"  Hash no repo:   {current_sha[:12]}...\n"
+        "  Execute: ./scripts/install-cron.sh\n"
+        f"  Repo: {repo_root}"
+    )
+    logger.warning(msg)
+
+    if ctx is not None:
+        try:
+            ctx.notify(msg)  # type: ignore[attr-defined]
+        except Exception as exc_notify:
+            logger.debug("deployment: falha ao notificar versão desatualizada: %s", exc_notify)
+
+
 from flow.audit.state_comment import (  # noqa: E402
     render_pr_review_comment,
 )
@@ -843,6 +937,7 @@ def _log_cycle_summary(
 
 
 def run(ctx: object) -> None:
+    _check_installed_version(ctx)
     cfg = _load_config()
     repos: list[str] = cfg.get("repos") or []
     auto = bool(cfg.get("auto_dispatch", False))
@@ -2408,6 +2503,7 @@ def _run_stage(ctx: object, stage: str) -> None:
         ctx:   contexto do cron do Kiro Crew
         stage: um dos valores _STAGE_* (dev/reviewer/merge/conflito)
     """
+    _check_installed_version(ctx)
     cfg = _load_config()
 
     # Substituição de agente por modelo do estágio

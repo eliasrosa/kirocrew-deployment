@@ -184,6 +184,20 @@ uma variável que o motor não fornece, o dispatch **falha explicitamente** (fai
 em vez de mandar o prompt quebrado. Em caso de arquivo ausente, o motor usa o fallback
 embutido em `deployment.py`.
 
+> ⚠️ **Regra crítica — reinstale o cron após qualquer mudança em prompts ou deployment.py**
+>
+> Os templates (`flow/prompts/*.md`) são lidos em runtime, mas `deployment.py` é **copiado**
+> para `~/.kiro/crew/crons/` na instalação. Um PR que adiciona `{{nova_var}}` a um template
+> sem reinstalar o cron causa `PromptRenderError` em **todas** as issues do estágio afetado.
+>
+> ```bash
+> ./scripts/install-cron.sh
+> ```
+>
+> O CI detecta o descompasso **antes do merge** via `flow/tests/test_template_code_parity.py`.
+> O cron detecta **em runtime** via `deployment.version` e notifica quando o script instalado
+> diverge do repo.
+
 ### Comportamento do reviewer (`reviewer.md`)
 
 O agente reviewer valida o PR como **gate único** antes do approve:

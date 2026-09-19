@@ -285,8 +285,35 @@ cada placeholder pelo valor correspondente passado como keyword argument.
 - **Template ausente/ilegível** → usa o **fallback embutido** definido em `deployment.py`
   — mesmo conteúdo que o MD versiona, nunca silencioso.
 
+### ⚠️ Regra crítica: mudança em template/prompt EXIGE reinstalar o cron
+
+Os templates (`flow/prompts/*.md`) são lidos em runtime pelo repo, mas o código
+que passa as variáveis (`deployment/deployment.py`) é **copiado para `~/.kiro/crew/crons/`**
+via `scripts/install-cron.sh`. Qualquer PR que toque `deployment/deployment.py`
+**OU** `flow/prompts/*.md` DEVE ser seguido de reinstalação do cron:
+
+```bash
+./scripts/install-cron.sh
+```
+
+**Por quê:** se o template novo exigir uma variável (`{{nova_var}}`) que o código
+instalado não passa, o dispatch aborta com `PromptRenderError` para TODAS as issues
+do estágio afetado — até a reinstalação. Foi o que causou a issue #116.
+
+**Detecção automática:** `deployment.py` verifica na inicialização de cada ciclo
+se o script instalado bate com a versão do repo (via `deployment.version`).
+Se divergir, notifica com instrução de reinstalação. Isso não substitui a reinstalação
+manual — apenas avisa; o cron continua rodando com o script antigo.
+
+**CI de paridade:** o teste `flow/tests/test_template_code_parity.py` garante que
+todo `{{placeholder}}` nos templates tem o `kwarg` correspondente no dispatch.
+Quebra o CI se um placeholder for adicionado sem atualizar o código — detecta o
+problema ANTES do merge.
+
 ### Adicionar um novo estágio
 
 1. Crie `flow/prompts/<estágio>.md` com os placeholders `{{variavel}}`.
 2. Chame `render_prompt("<estágio>", fallback=..., **vars)` no `deployment.py`.
 3. Adicione testes smoke em `flow/tests/test_prompts_loader.py` (classe `TestRealTemplates`).
+4. O teste `test_template_code_parity.py` valida automaticamente a paridade — se quebrar, o `kwarg` está faltando no dispatch.
+5. Após o merge, **reinstale o cron**: `./scripts/install-cron.sh`.
