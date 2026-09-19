@@ -259,6 +259,56 @@ def _sessdir() -> str:
 # crewflow:running na API.
 _DISPATCH_BACKSTOP_SECS = 120  # 2 minutos: tempo mínimo para o label aparecer na API
 
+
+def _try_acquire_dispatch_lock(repo: str, issue_number: int) -> tuple[bool, str]:
+    """Tenta adquirir o backstop lock de forma atômica (O_CREAT|O_EXCL).
+
+    Cria o arquivo de lock ANTES do POST /api/chat.  Se o arquivo já existe e
+    ainda está dentro do período de backstop (_DISPATCH_BACKSTOP_SECS), a
+    aquisição falha — sinal de que outro ciclo já fez o dispatch desta issue.
+
+    Returns:
+        (True, lock_path)  — lock adquirido; caller deve prosseguir com o dispatch.
+        (False, lock_path) — lock já existia e ainda está válido; dispatch abortado.
+
+    A criação com O_CREAT|O_EXCL é atômica no kernel: dois processos concorrentes
+    nunca obtêm True ao mesmo tempo para o mesmo arquivo.
+    """
+    short = repo.split("/")[-1]
+    lock_path = os.path.join(
+        _sessdir(), f"dashboard_esteira-{short}-{issue_number}.jsonl.lock"
+    )
+
+    # Lock pré-existente ainda válido → outro dispatch ganhou a corrida
+    if os.path.exists(lock_path) and not _lock_is_stale(lock_path):
+        return False, lock_path
+
+    # Lock stale (expirado): remove para liberar o nome antes da criação atômica.
+    # Perda de atomicidade aqui é aceitável: dois processos concorrentes neste
+    # caminho só chegam depois que o backstop de 2min expirou — cenário normal
+    # de reboot/crash, não de dispatch duplicado.
+    if os.path.exists(lock_path):
+        import contextlib
+        with contextlib.suppress(OSError):
+            os.remove(lock_path)  # outro processo pode ter removido concorrentemente
+
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        os.close(fd)
+        return True, lock_path
+    except FileExistsError:
+        # Race: outro processo criou o arquivo entre o exists() e o open()
+        return False, lock_path
+    except OSError:
+        # Diretório não existe ou erro inesperado: fail-open para não bloquear
+        # dispatch legítimo por problema de filesystem.
+        logger.warning(
+            "deployment: não foi possível criar lock atômico para %s#%s — "
+            "prosseguindo sem backstop (diretório de sessões inacessível?)",
+            repo, issue_number,
+        )
+        return True, lock_path
+
 # Timeout de morte de sessão: quanto tempo uma issue pode ficar em
 # crewflow:running sem sinais de vida antes de ser considerada morta.
 # Deve ser maior que o tempo máximo de uma sessão legítima (~30min).
@@ -772,8 +822,26 @@ def _dispatch(
     cfg: dict,
     prompt_extra: str = "",
 ) -> None:
-    """Fire-and-forget POST /api/chat (loopback interno)."""
+    """Fire-and-forget POST /api/chat (loopback interno).
+
+    Adquire o backstop lock de forma ATÔMICA (O_CREAT|O_EXCL) ANTES de fazer
+    o POST /api/chat.  Dois ciclos concorrentes que chegarem aqui ao mesmo
+    tempo para a mesma issue: apenas o primeiro obtém o lock e prossegue; o
+    segundo aborta silenciosamente.  Isso fecha a janela de race entre o
+    POST e o momento em que a sessão spawnada deixa rastro (worktree, label).
+    """
     import urllib.request as _u
+
+    # ── Reserva atômica: ANTES do POST ───────────────────────────────────
+    acquired, _lock_path = _try_acquire_dispatch_lock(repo, issue["number"])
+    if not acquired:
+        logger.info(
+            "deployment: _dispatch abortado — backstop lock já existe para %s#%s "
+            "(outro ciclo despachou primeiro)",
+            repo, issue["number"],
+        )
+        return
+
     slot = f"esteira-{repo.split('/')[-1]}-{issue['number']}"
     try:
         message = _dispatch_prompt(repo, issue, cfg, prompt_extra=prompt_extra)

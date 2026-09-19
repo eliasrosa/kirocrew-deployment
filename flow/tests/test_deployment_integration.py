@@ -579,6 +579,217 @@ class TestDispatchGuardPrDuplicado:
 
 
 # ---------------------------------------------------------------------------
+# Issue #120 — _try_acquire_dispatch_lock: lock atômico antes do POST /api/chat
+# ---------------------------------------------------------------------------
+
+class TestTryAcquireDispatchLock:
+    """_try_acquire_dispatch_lock cria o backstop lock de forma atômica (O_CREAT|O_EXCL)."""
+
+    def test_adquire_quando_sem_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Sem lock prévio: adquire e cria o arquivo."""
+        from deployment.deployment import _try_acquire_dispatch_lock
+
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+        acquired, lock_path = _try_acquire_dispatch_lock("owner/myrepo", 42)
+
+        assert acquired is True
+        assert Path(lock_path).exists()
+
+    def test_falha_quando_lock_recente_existe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Lock recente já existente: adquisição falha (outro ciclo ganhou a corrida)."""
+        from deployment.deployment import _try_acquire_dispatch_lock
+
+        lock = tmp_path / "dashboard_esteira-myrepo-42.jsonl.lock"
+        lock.touch()
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+
+        acquired, _lock_path = _try_acquire_dispatch_lock("owner/myrepo", 42)
+
+        assert acquired is False
+
+    def test_adquire_quando_lock_obsoleto(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Lock stale (expirado): adquisição bem-sucedida (sessão antiga encerrou)."""
+        import os as _os
+        import time
+
+        from deployment.deployment import _try_acquire_dispatch_lock
+
+        lock = tmp_path / "dashboard_esteira-myrepo-42.jsonl.lock"
+        lock.touch()
+        # Define mtime como 3h atrás (backstop = 2min)
+        old_ts = time.time() - 3 * 3600
+        _os.utime(str(lock), (old_ts, old_ts))
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+
+        acquired, _lock_path = _try_acquire_dispatch_lock("owner/myrepo", 42)
+
+        assert acquired is True
+
+    def test_race_dois_dispatches_mesma_issue_apenas_um_passa(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Dois chamadores concorrentes: apenas o primeiro adquire o lock."""
+        import threading
+
+        from deployment.deployment import _try_acquire_dispatch_lock
+
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+
+        resultados: list[bool] = []
+
+        def dispatch_attempt() -> None:
+            acquired, _ = _try_acquire_dispatch_lock("owner/myrepo", 99)
+            resultados.append(acquired)
+
+        t1 = threading.Thread(target=dispatch_attempt)
+        t2 = threading.Thread(target=dispatch_attempt)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # Exatamente 1 deve ter adquirido o lock
+        assert resultados.count(True) == 1
+        assert resultados.count(False) == 1
+
+    def test_nomes_de_repo_diferentes_nao_conflitam(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Issues de repos diferentes geram locks distintos — sem colisão."""
+        from deployment.deployment import _try_acquire_dispatch_lock
+
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+
+        acquired_a, _ = _try_acquire_dispatch_lock("owner/repo-a", 10)
+        acquired_b, _ = _try_acquire_dispatch_lock("owner/repo-b", 10)
+
+        assert acquired_a is True
+        assert acquired_b is True
+
+    def test_numeros_diferentes_na_mesma_repo_nao_conflitam(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Issues diferentes no mesmo repo não bloqueiam uma à outra."""
+        from deployment.deployment import _try_acquire_dispatch_lock
+
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+
+        acquired_1, _ = _try_acquire_dispatch_lock("owner/myrepo", 1)
+        acquired_2, _ = _try_acquire_dispatch_lock("owner/myrepo", 2)
+
+        assert acquired_1 is True
+        assert acquired_2 is True
+
+
+class TestDispatchAcquiresLockBeforePost:
+    """_dispatch deve criar o backstop lock ANTES de chamar POST /api/chat.
+
+    Critério de aceite da issue #120: o lock deve existir quando o POST é feito,
+    e um segundo _dispatch para a mesma issue deve ser abortado pelo lock.
+    """
+
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "secret"
+        ctx.job.id = "test-job"
+        return ctx
+
+    def test_lock_criado_antes_do_post(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """O backstop lock deve existir quando o POST /api/chat é chamado."""
+        import sys
+        import types
+
+        from deployment.deployment import _dispatch
+
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+
+        lock_existed_at_post_time: list[bool] = []
+
+        # Cria um módulo fake para kiro_crew.loopback_http
+        def fake_loopback_urlopen(req, timeout=3):  # type: ignore[no-untyped-def]
+            lock = tmp_path / "dashboard_esteira-myrepo-42.jsonl.lock"
+            lock_existed_at_post_time.append(lock.exists())
+            resp = mock.MagicMock()
+            resp.__enter__ = mock.MagicMock(return_value=resp)
+            resp.__exit__ = mock.MagicMock(return_value=False)
+            resp.read = mock.MagicMock(return_value=b"")
+            return resp
+
+        fake_loopback_mod = types.ModuleType("kiro_crew.loopback_http")
+        fake_loopback_mod.loopback_urlopen = fake_loopback_urlopen  # type: ignore[attr-defined]
+        fake_kiro_crew = types.ModuleType("kiro_crew")
+
+        monkeypatch.setitem(sys.modules, "kiro_crew", fake_kiro_crew)
+        monkeypatch.setitem(sys.modules, "kiro_crew.loopback_http", fake_loopback_mod)
+
+        cfg = {
+            "dev_root": str(tmp_path),
+            "agent": "kirocrew",
+            "notify_chat_id": "",
+            "vault_root": "",
+        }
+        issue = {"number": 42, "title": "Test issue", "url": "https://github.com/owner/myrepo/issues/42"}
+
+        with mock.patch("deployment.deployment._dispatch_prompt", return_value="msg"):
+            _dispatch(self._make_ctx(), "owner/myrepo", issue, cfg)
+
+        # O lock deve ter existido quando o POST foi feito
+        assert lock_existed_at_post_time, "loopback_urlopen nunca foi chamado"
+        assert lock_existed_at_post_time[0] is True, (
+            "O lock NÃO existia quando o POST foi feito — race condition!"
+        )
+
+    def test_segundo_dispatch_abortado_pelo_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Segundo _dispatch para a mesma issue é abortado pelo lock do primeiro."""
+        import contextlib
+
+        from deployment.deployment import _dispatch
+
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+
+        post_count = 0
+
+        def fake_dispatch_prompt(*a: object, **kw: object) -> str:  # type: ignore[no-untyped-def]
+            nonlocal post_count
+            post_count += 1
+            return "msg"
+
+        cfg = {
+            "dev_root": str(tmp_path),
+            "agent": "kirocrew",
+            "notify_chat_id": "",
+            "vault_root": "",
+        }
+        issue = {"number": 99, "title": "Test race", "url": "https://github.com/owner/myrepo/issues/99"}
+
+        with mock.patch("deployment.deployment._dispatch_prompt", side_effect=fake_dispatch_prompt):
+            # Primeiro dispatch: cria o lock e prossegue até _dispatch_prompt
+            with contextlib.suppress(Exception):
+                _dispatch(self._make_ctx(), "owner/myrepo", issue, cfg)
+
+            # Segundo dispatch: lock já existe → deve abortar antes de chamar _dispatch_prompt
+            with contextlib.suppress(Exception):
+                _dispatch(self._make_ctx(), "owner/myrepo", issue, cfg)
+
+        # _dispatch_prompt só é chamado se o lock foi adquirido
+        assert post_count == 1, (
+            f"_dispatch_prompt foi chamado {post_count} vezes — "
+            "o segundo dispatch não foi bloqueado pelo lock!"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Issue #70 — dispatch automático da sessão one-shot do reviewer
 # ---------------------------------------------------------------------------
 
