@@ -249,7 +249,7 @@ class TestNotifyHumanAddsChangesRequested:
             labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
             modifiers={Modifier.REVIEWED},
         )
-        d = decide(r, state_comment=state_comment)
+        d = decide(r, state_comment=state_comment, auto_merge_on_approve=True)
         assert d.action is ActionKind.MERGE_PR
         assert "crewflow:changes-requested" not in d.add_labels
 

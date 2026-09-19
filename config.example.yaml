@@ -32,6 +32,11 @@ workflow_params:
   merge_mode: manual               # manual | auto (futuro)
   review_position: before_qa       # before_qa (Versão C) | after_qa (A) | parallel_qa (B)
   deploy_hml_mode: manual          # manual | auto (futuro)
+  # auto_merge_on_approve: controla se o motor faz merge squash automático após o
+  # reviewer aprovar sem comentários (CI verde + zero comentários + sem blockers).
+  #   false (default) — para em crewflow:reviewed aguardando merge manual (mais seguro)
+  #   true            — merge squash automático + delete branch + crewflow:done
+  auto_merge_on_approve: false
 
 # Limites de segurança
 max_concurrent_tasks: 2  # máx de tasks em paralelo ao mesmo tempo (global; alias: max_concurrent)

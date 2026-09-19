@@ -345,7 +345,7 @@ class TestGate2AutoMerge:
             labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
             modifiers={Modifier.REVIEWED},
         )
-        d = decide(r, state_comment=state_comment)
+        d = decide(r, state_comment=state_comment, auto_merge_on_approve=True)
         assert d.action is ActionKind.MERGE_PR
         assert "crewflow:done" in d.add_labels
         assert "crewflow:review" in d.remove_labels
@@ -400,7 +400,7 @@ class TestGate2AutoMerge:
             labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
             modifiers={Modifier.REVIEWED},
         )
-        d = decide(r, state_comment=state_comment)
+        d = decide(r, state_comment=state_comment, auto_merge_on_approve=True)
         assert d.action is ActionKind.MERGE_PR
         assert set(d.add_labels) == {"crewflow:done"}
         assert "crewflow:review" in d.remove_labels
@@ -441,7 +441,7 @@ class TestGate2AutoMerge:
             modifiers={Modifier.REVIEWED},
         )
         # Mesmo prefixo de 8 chars — SHA completo do PR pode ser maior
-        d = decide(r, state_comment=state_comment, pr_head_sha="abc12345xyz")
+        d = decide(r, state_comment=state_comment, pr_head_sha="abc12345xyz", auto_merge_on_approve=True)
         assert d.action is ActionKind.MERGE_PR
 
     def test_sha_ausente_no_reviewer_nao_bloqueia(self) -> None:
@@ -462,7 +462,7 @@ class TestGate2AutoMerge:
             labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
             modifiers={Modifier.REVIEWED},
         )
-        d = decide(r, state_comment=state_comment, pr_head_sha="newsha123")
+        d = decide(r, state_comment=state_comment, pr_head_sha="newsha123", auto_merge_on_approve=True)
         assert d.action is ActionKind.MERGE_PR  # sem SHA do reviewer → não bloqueia
 
     def test_pr_head_sha_ausente_nao_bloqueia(self) -> None:
@@ -473,5 +473,131 @@ class TestGate2AutoMerge:
             labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
             modifiers={Modifier.REVIEWED},
         )
-        d = decide(r, state_comment=state_comment, pr_head_sha=None)
+        d = decide(r, state_comment=state_comment, pr_head_sha=None, auto_merge_on_approve=True)
         assert d.action is ActionKind.MERGE_PR  # sem SHA do PR → não bloqueia
+
+
+# ---------------------------------------------------------------------------
+# decide() — auto_merge_on_approve flag (issue #91)
+# ---------------------------------------------------------------------------
+
+class TestAutoMergeOnApprove:
+    """Testa o comportamento da flag auto_merge_on_approve."""
+
+    def _make_review_result(
+        self,
+        approved: bool = True,
+        comments: list[str] | None = None,
+    ) -> str:
+        from flow.audit.state_comment import StateComment, render
+        sc = StateComment(
+            workflow="feature (v1)",
+            current_node="review",
+            status="reviewed",
+            repo="kirocrew-flow",
+        )
+        sc.set_reviewer_result(approved=approved, comments=comments or [], sha="abc123")
+        return render(sc)
+
+    def _result_review(self) -> ScanResult:
+        return _result(
+            state=State.REVIEW,
+            labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
+            modifiers={Modifier.REVIEWED},
+        )
+
+    def _squad(self, auto_merge: bool) -> object:
+        from flow.config.squad import _parse_squad
+        return _parse_squad({
+            "id": "test",
+            "issue_provider": "github",
+            "repos": ["owner/repo"],
+            "workflow_params": {"auto_merge_on_approve": auto_merge},
+        })
+
+    # ── flag explícita no parâmetro ────────────────────────────────────────
+
+    def test_explicito_true_emite_merge_pr(self) -> None:
+        """auto_merge_on_approve=True explícito → MERGE_PR."""
+        state_comment = self._make_review_result(approved=True, comments=[])
+        r = self._result_review()
+        d = decide(r, state_comment=state_comment, auto_merge_on_approve=True)
+        assert d.action is ActionKind.MERGE_PR
+
+    def test_explicito_false_emite_skip(self) -> None:
+        """auto_merge_on_approve=False explícito → SKIP (merge manual)."""
+        state_comment = self._make_review_result(approved=True, comments=[])
+        r = self._result_review()
+        d = decide(r, state_comment=state_comment, auto_merge_on_approve=False)
+        assert d.action is ActionKind.SKIP
+        assert "merge manual" in d.reason
+        assert "auto_merge_on_approve=false" in d.reason
+
+    # ── flag lida da squad config ──────────────────────────────────────────
+
+    def test_squad_auto_merge_true_emite_merge_pr(self) -> None:
+        """squad.workflow_params.auto_merge_on_approve=True → MERGE_PR."""
+        state_comment = self._make_review_result(approved=True, comments=[])
+        r = self._result_review()
+        squad = self._squad(auto_merge=True)
+        d = decide(r, state_comment=state_comment, squad=squad)
+        assert d.action is ActionKind.MERGE_PR
+
+    def test_squad_auto_merge_false_emite_skip(self) -> None:
+        """squad.workflow_params.auto_merge_on_approve=False → SKIP (merge manual)."""
+        state_comment = self._make_review_result(approved=True, comments=[])
+        r = self._result_review()
+        squad = self._squad(auto_merge=False)
+        d = decide(r, state_comment=state_comment, squad=squad)
+        assert d.action is ActionKind.SKIP
+
+    def test_default_sem_squad_e_false(self) -> None:
+        """Sem squad e sem parâmetro → default False → SKIP."""
+        state_comment = self._make_review_result(approved=True, comments=[])
+        r = self._result_review()
+        d = decide(r, state_comment=state_comment)
+        assert d.action is ActionKind.SKIP
+
+    # ── flag explícita tem prioridade sobre squad config ──────────────────
+
+    def test_parametro_explicito_sobrescreve_squad(self) -> None:
+        """auto_merge_on_approve=True explícito sobrescreve squad=False."""
+        state_comment = self._make_review_result(approved=True, comments=[])
+        r = self._result_review()
+        squad = self._squad(auto_merge=False)
+        d = decide(r, state_comment=state_comment, squad=squad, auto_merge_on_approve=True)
+        assert d.action is ActionKind.MERGE_PR
+
+    def test_parametro_false_sobrescreve_squad_true(self) -> None:
+        """auto_merge_on_approve=False explícito sobrescreve squad=True."""
+        state_comment = self._make_review_result(approved=True, comments=[])
+        r = self._result_review()
+        squad = self._squad(auto_merge=True)
+        d = decide(r, state_comment=state_comment, squad=squad, auto_merge_on_approve=False)
+        assert d.action is ActionKind.SKIP
+
+    # ── comportamento não afeta fluxos com comentários ────────────────────
+
+    def test_com_comentarios_notifica_tl_independente_da_flag(self) -> None:
+        """Reviewer com comentários → NOTIFY_HUMAN TL independente da flag."""
+        state_comment = self._make_review_result(approved=True, comments=["Falta cobertura"])
+        r = self._result_review()
+        # Com flag on — ainda notifica TL (não merge)
+        d_on = decide(r, state_comment=state_comment, auto_merge_on_approve=True)
+        assert d_on.action is ActionKind.NOTIFY_HUMAN
+        assert d_on.notify_role is HumanRole.TL
+        # Com flag off — mesmo comportamento
+        d_off = decide(r, state_comment=state_comment, auto_merge_on_approve=False)
+        assert d_off.action is ActionKind.NOTIFY_HUMAN
+
+    # ── merge_pr adiciona labels corretas quando flag on ──────────────────
+
+    def test_merge_pr_labels_com_flag_on(self) -> None:
+        """Com flag on, MERGE_PR tem as labels corretas."""
+        state_comment = self._make_review_result(approved=True, comments=[])
+        r = self._result_review()
+        d = decide(r, state_comment=state_comment, auto_merge_on_approve=True)
+        assert d.action is ActionKind.MERGE_PR
+        assert "crewflow:done" in d.add_labels
+        assert "crewflow:review" in d.remove_labels
+        assert "crewflow:reviewed" in d.remove_labels

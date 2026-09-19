@@ -311,7 +311,7 @@ class TestAutoMergeIntegration:
 
         with (
             mock.patch("deployment.deployment._load_config",
-                       return_value=_minimal_config(auto=True)),
+                       return_value={**_minimal_config(auto=True), "workflow_params": {"auto_merge_on_approve": True}}),
             mock.patch("deployment.deployment.scan_candidates",
                        return_value=[result]),
             mock.patch("deployment.deployment.open_cache") as mock_cache,

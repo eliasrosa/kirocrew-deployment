@@ -389,7 +389,7 @@ class TestRunMerge:
         )
 
     def test_executa_merge_quando_reviewer_aprovado(self) -> None:
-        """run_merge executa _execute_auto_merges para PR aprovado."""
+        """run_merge executa _execute_auto_merges para PR aprovado com auto_merge_on_approve=true."""
         ctx = _make_ctx()
         result = self._make_merge_result()
 
@@ -400,10 +400,13 @@ class TestRunMerge:
             "number": 99, "headRefName": "feat/issue-42",
             "headRefOid": "abc123", "body": "Closes #42",
         }
+        cfg_with_auto_merge = _base_config(
+            workflow_params={"auto_merge_on_approve": True}
+        )
 
         with (
             mock.patch("deployment.deployment._load_config",
-                       return_value=_base_config()),
+                       return_value=cfg_with_auto_merge),
             mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
             mock.patch("deployment.deployment.open_cache") as mock_cache,
             mock.patch("deployment.deployment.provider_for") as mock_pf,

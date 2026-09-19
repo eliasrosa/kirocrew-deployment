@@ -42,6 +42,7 @@ class WorkflowParams:
     review_position: str = "before_qa"  # Versão C: before_qa | after_qa | parallel_qa
     deploy_hml_mode: str = "manual"   # "manual" | "auto" (futuro)
     allow_hml_bypass: bool = True     # hotfix pode ir direto pra PRD
+    auto_merge_on_approve: bool = False  # merge automático após approve (opt-in)
 
 
 @dataclass(slots=True)
@@ -136,6 +137,7 @@ def _parse_squad(raw: dict[str, Any], source: str = "<dict>") -> SquadConfig:
         review_position=raw_params.get("review_position", "before_qa"),
         deploy_hml_mode=raw_params.get("deploy_hml_mode", "manual"),
         allow_hml_bypass=bool(raw_params.get("allow_hml_bypass", True)),
+        auto_merge_on_approve=bool(raw_params.get("auto_merge_on_approve", False)),
     )
 
     # routing

@@ -12,7 +12,7 @@ o estado de cada task vive em **labels `crewflow:*`** na própria issue, e o pol
 
 1. **A issue É o estado.** Label = estado atual, comentário = histórico auditável.
 2. **Zero-token no polling.** O scan é Python puro — token só gasto quando há trabalho real.
-3. **Merge é SEMPRE manual.** A automação abre o PR e para. Nenhum merge, nenhum deploy automatizado.
+3. **Merge é manual por padrão.** A automação abre o PR e para. Nenhum deploy automatizado. Auto-merge é opt-in por squad config (`auto_merge_on_approve: true`).
 4. **Gates humanos são invioláveis.** Aprovação de spec, review e QA são sempre de pessoas.
 5. **Exceções são auditáveis.** O bypass do HML (hotfix direto pra PRD) exige justificativa e é rastreado.
 
@@ -193,7 +193,7 @@ O agente reviewer valida o PR como **gate único** antes do approve:
 3. **Analisa o código** — corretude, testes, estilo e convenções do steering do repo.
 4. **Decide com as três condições**: CI verde + zero comentários não resolvidos no PR + sem blockers técnicos.
 5. **Posta o resultado completo nos DOIS lugares** — PR e issue — com: o que foi feito, o resultado, o link e todas as informações.
-6. **Aplica `crewflow:reviewed`** somente quando as três condições são satisfeitas (habilitando o merge automático).
+6. **Aplica `crewflow:reviewed`** somente quando as três condições são satisfeitas. Com `auto_merge_on_approve: true` no squad config, o motor faz merge squash automático; sem a flag (default), para em `crewflow:reviewed` aguardando merge manual.
 
 ## Desenvolvimento
 

@@ -38,6 +38,10 @@ workflow_params:
   deploy_hml_mode: manual
   # allow_hml_bypass: hotfix pode ir direto pra PRD (exige justificativa)
   allow_hml_bypass: true
+  # auto_merge_on_approve: merge squash automático após reviewer aprovar sem comentários.
+  #   false (default) — para em crewflow:reviewed aguardando merge manual (mais seguro para POC)
+  #   true            — merge squash automático + delete branch + crewflow:done
+  auto_merge_on_approve: false
 
 # Regras de routing: issue com estas labels → usa este workflow
 # Avaliadas em ordem; a primeira que casar é usada.

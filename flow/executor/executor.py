@@ -121,6 +121,7 @@ def decide(
     pr_head_sha: str | None = None,
     max_review_iterations: int | None = None,
     pr_mergeable: str | None = None,
+    auto_merge_on_approve: bool | None = None,
 ) -> ExecutorDecision:
     """Decide o que fazer com a issue.
 
@@ -144,6 +145,11 @@ def decide(
                                que o driving adapter aplique crewflow:conflito na issue.
                                Deve ser obtido via get_pr_for_issue() — o executor não
                                faz I/O.
+        auto_merge_on_approve: Quando True (ou None com squad.workflow_params.auto_merge_on_approve=True),
+                               reviewer aprovado sem comentários → MERGE_PR automático.
+                               Quando False, para em SKIP mantendo crewflow:reviewed para
+                               merge manual. None usa a configuração da squad (se disponível)
+                               ou False como default seguro.
 
     Returns:
         ExecutorDecision com a ação e os metadados para o executor de I/O.
@@ -156,6 +162,15 @@ def decide(
     item = r.item
     current_state = r.current_state
     modifiers = r.modifiers
+
+    # Resolve a flag de auto-merge: parâmetro explícito > squad config > False (default seguro).
+    if auto_merge_on_approve is None:
+        if squad is not None:
+            from flow.config.squad import SquadConfig
+            _sq: SquadConfig = squad  # type: ignore[assignment]
+            auto_merge_on_approve = _sq.workflow_params.auto_merge_on_approve
+        else:
+            auto_merge_on_approve = False
 
     # Nada a fazer se não há estado ou não é candidato
     if current_state is None:
@@ -283,6 +298,16 @@ def decide(
             )
 
         if reviewer_result.is_auto_mergeable:
+            if not auto_merge_on_approve:
+                # Flag desativada: fica em crewflow:reviewed aguardando merge manual.
+                return ExecutorDecision(
+                    action=ActionKind.SKIP,
+                    reason=(
+                        "reviewer aprovado sem comentários — aguardando merge manual "
+                        "(auto_merge_on_approve=false). "
+                        "Ative a flag no squad config para merge automático."
+                    ),
+                )
             return ExecutorDecision(
                 action=ActionKind.MERGE_PR,
                 reason="reviewer aprovado sem pedidos de mudança — merge squash automático",

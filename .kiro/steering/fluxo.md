@@ -11,9 +11,11 @@ zero-token observa issues por label `crewflow:*` e, quando uma task está
 priorizada, dispara uma **sessão de execução one-shot** que implementa e **abre o
 PR** — uma passada, sem loop.
 
-> **Regra inviolável: a automação NUNCA mergeia e NUNCA faz deploy.** Ela entrega
-> o PR no estado `crewflow:review` e encerra. Merge e deploy são sempre manuais.
-> Auto-merge opcional por squad está no radar (futuro), não na Fase 1.
+> **Regra inviolável: a automação NUNCA faz deploy.** Ela entrega o PR no estado
+> `crewflow:review` e encerra (ou faz merge squash se `auto_merge_on_approve: true`
+> estiver configurado no squad config). Deploy é sempre manual.
+> Merge é **manual por padrão** (`auto_merge_on_approve: false`). Ative por squad
+> config para habilitar merge squash automático após approve sem comentários.
 
 ## Fluxograma — Versão C (oficial: review ANTES do QA, sequencial)
 
@@ -148,6 +150,7 @@ novo push, a label é removida e a próxima varredura dispara nova análise.
 - `max_concurrent` (default 2) e **1 sessão por repo**.
 - `max_turns_per_task` — teto duro por sessão.
 - Worktree isolado + ordem de nunca tocar outros worktrees/branches.
-- **Nenhum merge e nenhum deploy automatizados** — trava de produto, não de config.
+- **Nenhum deploy automatizado** — trava de produto, não de config.
+- Merge squash automático é **opt-in** por squad config (`auto_merge_on_approve: true`); default é merge manual.
 
 > Depende do Kiro Crew rodando — é uma receita/plugin, não um app standalone.
