@@ -168,6 +168,51 @@ def is_dispatchable(state: State | None, modifiers: frozenset[Modifier]) -> bool
 
 
 # ---------------------------------------------------------------------------
+# Transição atômica de estado
+# ---------------------------------------------------------------------------
+
+#: Conjunto de todos os valores de estado para filtragem rápida.
+_STATE_VALUES: frozenset[str] = frozenset(s.value for s in State)
+
+
+def transition_state(
+    labels: set[str] | frozenset[str],
+    new_state: State,
+) -> frozenset[str]:
+    """Aplica uma transição de estado de forma atômica.
+
+    Garante exclusividade mútua: retorna o conjunto de labels com
+    **exatamente 1** estado (``new_state``), removendo todos os outros
+    estados anteriores.  Modificadores (``blocked``, ``running``,
+    ``reviewed``, …) e labels de tipo/prioridade/outros sistemas são
+    preservados intactos.
+
+    Esta é a fonte única de verdade para qualquer troca de estado — use
+    esta função sempre que a esteira precisar aplicar um novo estado, seja
+    no driving adapter (``deployment.py``), nos helpers de teste ou nos
+    adapters.  Nunca faça add + remove manual de estado diretamente.
+
+    Args:
+        labels:    Conjunto atual de labels da issue.
+        new_state: Estado de destino.
+
+    Returns:
+        Novo conjunto de labels com exatamente 1 estado (``new_state``)
+        e todos os modificadores/labels externos preservados.
+
+    Example::
+
+        labels = {"crewflow:todo", "crewflow:running", "crewflow:bug", "phase-1"}
+        result = transition_state(labels, State.DEV)
+        # → frozenset({"crewflow:dev", "crewflow:running", "crewflow:bug", "phase-1"})
+        # crewflow:todo foi removido; crewflow:dev foi adicionado.
+    """
+    # Remove TODOS os estados anteriores, adiciona o novo
+    without_states = frozenset(lbl for lbl in labels if lbl not in _STATE_VALUES)
+    return without_states | frozenset({new_state.value})
+
+
+# ---------------------------------------------------------------------------
 # Transições válidas
 # ---------------------------------------------------------------------------
 

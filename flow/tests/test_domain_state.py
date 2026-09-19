@@ -16,6 +16,7 @@ from flow.domain.state import (
     is_dispatchable,
     parse_modifiers,
     parse_state,
+    transition_state,
 )
 
 # ---------------------------------------------------------------------------
@@ -212,3 +213,95 @@ class TestCanTransition:
     def test_todo_nao_volta_para_dev_pois_ja_e_anterior(self) -> None:
         """TODO → DEV é avanço sequencial (válido), não retorno."""
         assert can_transition(State.TODO, State.DEV)
+
+
+# ---------------------------------------------------------------------------
+# transition_state
+# ---------------------------------------------------------------------------
+
+class TestTransitionState:
+    """transition_state() garante exclusividade mútua de estados."""
+
+    def test_troca_estado_simples(self) -> None:
+        """todo → dev: remove todo, adiciona dev."""
+        labels = {"crewflow:todo", "crewflow:bug", "phase-1"}
+        result = transition_state(labels, State.DEV)
+        assert "crewflow:dev" in result
+        assert "crewflow:todo" not in result
+
+    def test_preserva_modificadores(self) -> None:
+        """Modificadores (running, blocked, etc.) são preservados."""
+        labels = {"crewflow:todo", "crewflow:running", "crewflow:bug"}
+        result = transition_state(labels, State.DEV)
+        assert "crewflow:running" in result
+        assert "crewflow:dev" in result
+        assert "crewflow:todo" not in result
+
+    def test_preserva_labels_de_tipo(self) -> None:
+        """Labels de tipo (bug, feature, hotfix, debt) são preservadas."""
+        labels = {"crewflow:todo", "crewflow:bug", "crewflow:p2"}
+        result = transition_state(labels, State.REVIEW)
+        assert "crewflow:bug" in result
+        assert "crewflow:p2" in result
+        assert "crewflow:review" in result
+
+    def test_preserva_labels_externas(self) -> None:
+        """Labels de outros sistemas (phase-1, documentation) são preservadas."""
+        labels = {"crewflow:dev", "phase-1", "documentation", "crewflow:running"}
+        result = transition_state(labels, State.REVIEW)
+        assert "phase-1" in result
+        assert "documentation" in result
+        assert "crewflow:review" in result
+
+    def test_remove_todos_os_estados_anteriores(self) -> None:
+        """Caso de sobreposição (bug observado): todo + dev ao mesmo tempo → só review."""
+        labels = {"crewflow:todo", "crewflow:dev", "crewflow:running", "crewflow:bug"}
+        result = transition_state(labels, State.REVIEW)
+        # Apenas crewflow:review como estado
+        estados_em_result = {lbl for lbl in result if lbl.startswith("crewflow:") and lbl in {s.value for s in State}}
+        assert estados_em_result == {"crewflow:review"}
+        # Modificadores e tipo preservados
+        assert "crewflow:running" in result
+        assert "crewflow:bug" in result
+
+    def test_todo_para_dev_nao_acumula_estados(self) -> None:
+        """Transição todo→dev nunca deixa crewflow:todo na lista."""
+        labels = {"crewflow:todo", "crewflow:running", "crewflow:p1"}
+        result = transition_state(labels, State.DEV)
+        assert parse_state(result) is State.DEV
+
+    def test_dev_para_review_nao_acumula_estados(self) -> None:
+        """O bug original: dev→review nunca deixa crewflow:dev + crewflow:review juntos."""
+        labels = {"crewflow:dev", "crewflow:running", "crewflow:bug"}
+        result = transition_state(labels, State.REVIEW)
+        assert parse_state(result) is State.REVIEW
+
+    def test_retorna_frozenset(self) -> None:
+        result = transition_state({"crewflow:todo"}, State.DEV)
+        assert isinstance(result, frozenset)
+
+    def test_funciona_com_frozenset_input(self) -> None:
+        labels = frozenset({"crewflow:todo", "crewflow:bug"})
+        result = transition_state(labels, State.DEV)
+        assert parse_state(result) is State.DEV
+
+    def test_exatamente_um_estado_no_resultado(self) -> None:
+        """Invariante central: exatamente 1 estado no resultado."""
+        state_values = {s.value for s in State}
+        for de in State:
+            for para in State:
+                labels = {de.value, "crewflow:running", "crewflow:bug", "phase-1"}
+                result = transition_state(labels, para)
+                estados = {lbl for lbl in result if lbl in state_values}
+                assert len(estados) == 1, (
+                    f"transition_state({de!r}, {para!r}) resultou em "
+                    f"{len(estados)} estados: {estados!r}"
+                )
+                assert para.value in estados
+
+    def test_sem_labels_de_estado_adiciona_novo(self) -> None:
+        """Issue sem estado anterior recebe o novo estado."""
+        labels: set[str] = {"crewflow:bug", "phase-1"}
+        result = transition_state(labels, State.TODO)
+        assert "crewflow:todo" in result
+        assert "crewflow:bug" in result

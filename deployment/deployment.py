@@ -67,6 +67,7 @@ from datetime import UTC  # noqa: E402
 from flow.audit.state_comment import (  # noqa: E402
     render_pr_review_comment,
 )
+from flow.domain.state import State, transition_state  # noqa: E402
 from flow.ports.issue_provider import provider_for  # noqa: E402
 from flow.prompts.loader import PromptRenderError, render_prompt  # noqa: E402
 from flow.scan.cache import (  # noqa: E402
@@ -82,6 +83,37 @@ LABEL_DEV     = "crewflow:dev"
 LABEL_REVIEW  = "crewflow:review"
 LABEL_RUNNING = "crewflow:running"
 LABEL_BLOCKED = "crewflow:blocked"
+
+
+# ── Helper de transição atômica de estado ─────────────────────────────────
+
+def _apply_state_transition(
+    current_labels: list[str] | set[str] | frozenset[str],
+    new_state: State,
+    add_modifiers: tuple[str, ...] = (),
+    remove_modifiers: tuple[str, ...] = (),
+) -> list[str]:
+    """Aplica transição de estado de forma atômica via ``transition_state()``.
+
+    Garante que exatamente 1 estado permaneça no resultado.  Modificadores e
+    labels externas são preservados por ``transition_state()``; ``add_modifiers``
+    e ``remove_modifiers`` permitem ajustes adicionais de modificadores em uma
+    única operação.
+
+    Args:
+        current_labels:   Labels atuais da issue.
+        new_state:        Estado de destino.
+        add_modifiers:    Labels a adicionar (ex: ``("crewflow:running",)``).
+        remove_modifiers: Labels a remover (ex: ``("crewflow:running",)``).
+
+    Returns:
+        Lista de labels resultante, pronta para passar a ``set_labels()``.
+    """
+    result = transition_state(frozenset(current_labels), new_state)
+    result = result - frozenset(remove_modifiers)
+    result = result | frozenset(m for m in add_modifiers if m)
+    return sorted(result)  # sorted para determinismo nos testes
+
 
 # ── Carregamento de config ────────────────────────────────────────────────
 _CONFIG_CANDIDATES = [
@@ -2262,16 +2294,16 @@ def _execute_auto_merges(
                         pr_branch, pr_number,
                     )
 
-            # Atualiza labels da issue: remove review/reviewed, adiciona done
+            # Atualiza labels da issue: transição atômica → crewflow:done
+            # Remove todos os estados anteriores (review, etc.) + modificadores usados
             try:
                 item_data = gh_client.get_work_item(repo, str(issue_number))
-                current_labels = list(item_data.get("labels", []))
-                for lbl in ("crewflow:review", "crewflow:reviewed"):
-                    if lbl in current_labels:
-                        current_labels.remove(lbl)
-                if "crewflow:done" not in current_labels:
-                    current_labels.append("crewflow:done")
-                gh_client.set_labels(repo, str(issue_number), current_labels)
+                new_labels = _apply_state_transition(
+                    item_data.get("labels", []),
+                    State.DONE,
+                    remove_modifiers=("crewflow:reviewed", "crewflow:running"),
+                )
+                gh_client.set_labels(repo, str(issue_number), new_labels)
             except Exception as exc:
                 logger.warning(
                     "deployment: merge ok mas falha ao atualizar labels de %s#%s: %s",
