@@ -162,9 +162,10 @@ class TestHandleHealth:
 
 
 class TestHandleIssues:
-    def _run_with_mock_loader(self, columns: dict) -> dict:
+    def _run_with_mock_loader(self, columns: dict, squad_name: str = "Test Squad", project: str = "owner/repo") -> dict:
         """Executa handle_issues com _load_issues_from_github mockado."""
-        with mock.patch("backend.routes._load_issues_from_github", return_value=columns):
+        mock_result = {"squad_name": squad_name, "project": project, "columns": columns}
+        with mock.patch("backend.routes._load_issues_from_github", return_value=mock_result):
             loop = asyncio.get_event_loop()
             response = loop.run_until_complete(handle_issues(_make_request()))
         return _parse_body(response)
@@ -173,9 +174,14 @@ class TestHandleIssues:
         body = self._run_with_mock_loader(_empty_columns())
         assert "columns" in body
 
+    def test_returns_squad_name_and_project(self) -> None:
+        body = self._run_with_mock_loader(_empty_columns(), squad_name="My Squad", project="owner/repo")
+        assert body["squad_name"] == "My Squad"
+        assert body["project"] == "owner/repo"
+
     def test_returns_all_column_keys(self) -> None:
         body = self._run_with_mock_loader(_empty_columns())
-        for key in ("todo", "dev", "review", "reviewed", "done", "blocked"):
+        for key in ("spec", "ready", "todo", "dev", "review", "review_ok", "reviewed", "done", "blocked"):
             assert key in body["columns"], f"coluna '{key}' ausente no retorno"
 
     def test_returns_issues_in_correct_column(self) -> None:
@@ -198,7 +204,7 @@ class TestHandleIssues:
             response = loop.run_until_complete(handle_issues(_make_request()))
         body = _parse_body(response)
         assert "columns" in body
-        for key in ("todo", "dev", "review", "reviewed", "done", "blocked"):
+        for key in ("spec", "ready", "todo", "dev", "review", "review_ok", "reviewed", "done", "blocked"):
             assert body["columns"][key] == []
 
     def test_status_500_on_error(self) -> None:
@@ -338,13 +344,13 @@ class TestStateToColumn:
         from flow.domain.state import State
         assert _state_to_column(State.DONE) == "done"
 
-    def test_spec_maps_to_none(self) -> None:
+    def test_spec_maps_to_spec(self) -> None:
         from flow.domain.state import State
-        assert _state_to_column(State.SPEC) is None
+        assert _state_to_column(State.SPEC) == "spec"
 
-    def test_ready_maps_to_none(self) -> None:
+    def test_ready_maps_to_ready(self) -> None:
         from flow.domain.state import State
-        assert _state_to_column(State.READY) is None
+        assert _state_to_column(State.READY) == "ready"
 
 
 class TestRepoFromKey:
@@ -361,7 +367,7 @@ class TestRepoFromKey:
 class TestEmptyColumns:
     def test_has_all_required_keys(self) -> None:
         cols = _empty_columns()
-        for key in ("todo", "dev", "review", "reviewed", "done", "blocked"):
+        for key in ("spec", "ready", "todo", "dev", "review", "review_ok", "reviewed", "done", "blocked"):
             assert key in cols
 
     def test_all_values_are_empty_lists(self) -> None:

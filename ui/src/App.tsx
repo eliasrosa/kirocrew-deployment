@@ -18,12 +18,21 @@ interface Issue {
 }
 
 interface Columns {
+  spec: Issue[]
+  ready: Issue[]
   todo: Issue[]
   dev: Issue[]
   review: Issue[]
+  review_ok: Issue[]
   reviewed: Issue[]
   done: Issue[]
   blocked: Issue[]
+}
+
+interface ApiResponse {
+  squad_name?: string
+  project?: string
+  columns?: Columns
 }
 
 // ---------------------------------------------------------------------------
@@ -38,6 +47,54 @@ function formatAge(minutes: number): string {
 
 function repoShort(repo: string): string {
   return repo.split('/').pop() ?? repo
+}
+
+function emptyColumns(): Columns {
+  return {
+    spec: [],
+    ready: [],
+    todo: [],
+    dev: [],
+    review: [],
+    review_ok: [],
+    reviewed: [],
+    done: [],
+    blocked: [],
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Mock data — usado quando o backend.routes ainda não está disponível
+// ---------------------------------------------------------------------------
+
+const MOCK_RESPONSE: ApiResponse = {
+  squad_name: 'KiroCrew Flow (demo)',
+  project: 'eliasrosa/kirocrew-flow',
+  columns: {
+    spec: [
+      { number: 95, title: 'Exemplo: feature sendo especificada', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 240, labels: ['crewflow:spec', 'crewflow:feature'], blocked: false, running: false },
+    ],
+    ready: [
+      { number: 97, title: 'Exemplo: spec pronta, aguardando priorização', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 120, labels: ['crewflow:ready', 'crewflow:feature'], blocked: false, running: false },
+    ],
+    todo: [
+      { number: 99, title: 'Exemplo: feature aguardando dev', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 45, labels: ['crewflow:feature', 'crewflow:p2'], blocked: false, running: false },
+    ],
+    dev: [
+      { number: 100, title: 'Exemplo: issue em implementação', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 120, labels: ['crewflow:bug', 'crewflow:p1'], blocked: false, running: true },
+    ],
+    review: [
+      { number: 101, title: 'Exemplo: PR aguardando review', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 30, labels: ['crewflow:feature'], blocked: false, running: false },
+    ],
+    review_ok: [
+      { number: 103, title: 'Exemplo: PR aprovado, aguardando merge', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 15, labels: ['crewflow:feature', 'crewflow:review-ok'], blocked: false, running: false },
+    ],
+    reviewed: [],
+    done: [],
+    blocked: [
+      { number: 102, title: 'Exemplo: issue bloqueada', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 240, labels: ['crewflow:debt'], blocked: true, running: false },
+    ],
+  },
 }
 
 // ---------------------------------------------------------------------------
@@ -101,10 +158,10 @@ function IssueCard({ issue, showDispatch, onDispatch, dispatching }: IssueCardPr
 }
 
 // ---------------------------------------------------------------------------
-// Column
+// SubColumn — coluna dentro de um painel (ex: Aguardando / Trabalhando)
 // ---------------------------------------------------------------------------
 
-interface ColumnProps {
+interface SubColumnProps {
   title: string
   issues: Issue[]
   color: string
@@ -113,37 +170,36 @@ interface ColumnProps {
   dispatchingKey?: string
 }
 
-function Column({ title, issues, color, showDispatch, onDispatch, dispatchingKey }: ColumnProps) {
+function SubColumn({ title, issues, color, showDispatch, onDispatch, dispatchingKey }: SubColumnProps) {
   return (
-    <div style={{ flex: 1, minWidth: 180, maxWidth: 260 }}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          marginBottom: 10,
-          paddingBottom: 6,
-          borderBottom: `2px solid ${color}`,
-        }}
-      >
-        <span style={{ fontWeight: 700, fontSize: 13, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-          {title}
-        </span>
-        <span
-          style={{
-            background: color,
-            color: '#fff',
-            borderRadius: 10,
-            padding: '1px 7px',
-            fontSize: 11,
-            fontWeight: 700,
-          }}
-        >
+    <div style={{ flex: 1, minWidth: 160 }}>
+      <div style={{
+        fontSize: 11,
+        fontWeight: 600,
+        textTransform: 'uppercase',
+        letterSpacing: '0.06em',
+        opacity: 0.55,
+        marginBottom: 8,
+        paddingBottom: 4,
+        borderBottom: `1px solid ${color}44`,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+      }}>
+        {title}
+        <span style={{
+          background: color + '33',
+          color: color,
+          borderRadius: 8,
+          padding: '0 6px',
+          fontSize: 10,
+          fontWeight: 700,
+        }}>
           {issues.length}
         </span>
       </div>
       {issues.length === 0 ? (
-        <div style={{ fontSize: 12, opacity: 0.4, textAlign: 'center', padding: '16px 0' }}>—</div>
+        <div style={{ fontSize: 12, opacity: 0.3, textAlign: 'center', padding: '12px 0' }}>—</div>
       ) : (
         issues.map((issue) => {
           const key = `${issue.repo}#${issue.number}`
@@ -163,38 +219,158 @@ function Column({ title, issues, color, showDispatch, onDispatch, dispatchingKey
 }
 
 // ---------------------------------------------------------------------------
-// Mock data — usado quando o backend.routes ainda não está disponível
-// (issue #170: backend.routes não registra rotas para apps de terceiros)
+// WaitingSection — seção de espera humana (SPEC ou READY)
 // ---------------------------------------------------------------------------
 
-const MOCK_COLUMNS: Columns = {
-  todo: [
-    { number: 99, title: 'Exemplo: feature aguardando dev', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 45, labels: ['crewflow:feature', 'crewflow:p2'], blocked: false, running: false },
-  ],
-  dev: [
-    { number: 100, title: 'Exemplo: issue em implementação', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 120, labels: ['crewflow:bug', 'crewflow:p1'], blocked: false, running: true },
-  ],
-  review: [
-    { number: 101, title: 'Exemplo: PR aguardando review', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 30, labels: ['crewflow:feature'], blocked: false, running: false },
-  ],
-  reviewed: [],
-  done: [],
-  blocked: [
-    { number: 102, title: 'Exemplo: issue bloqueada', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 240, labels: ['crewflow:debt'], blocked: true, running: false },
-  ],
+interface WaitingSectionProps {
+  title: string
+  subtitle: string
+  issues: Issue[]
+  accentColor: string
 }
 
+function WaitingSection({ title, subtitle, issues, accentColor }: WaitingSectionProps) {
+  return (
+    <div style={{
+      flex: 1,
+      border: `1px solid ${accentColor}33`,
+      borderRadius: 10,
+      padding: '14px 16px',
+      background: `${accentColor}08`,
+      minWidth: 220,
+    }}>
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 13, color: accentColor, marginBottom: 2 }}>
+          {title}
+        </div>
+        <div style={{ fontSize: 11, opacity: 0.5 }}>{subtitle}</div>
+      </div>
+      {issues.length === 0 ? (
+        <div style={{ fontSize: 12, opacity: 0.3, textAlign: 'center', padding: '12px 0' }}>—</div>
+      ) : (
+        issues.map((issue) => (
+          <IssueCard key={`${issue.repo}#${issue.number}`} issue={issue} />
+        ))
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// AgentsPanel — painel duplo Desenvolvimento + Code Review
+// ---------------------------------------------------------------------------
+
+interface AgentsPanelProps {
+  columns: Columns
+  onDispatch: (repo: string, number: number | string) => Promise<void>
+  dispatchingKey: string | null
+}
+
+function AgentsPanel({ columns, onDispatch, dispatchingKey }: AgentsPanelProps) {
+  return (
+    <div style={{
+      border: '1px solid rgba(128,128,128,0.15)',
+      borderRadius: 10,
+      padding: '14px 16px',
+      marginTop: 16,
+    }}>
+      <div style={{ fontWeight: 700, fontSize: 12, opacity: 0.4, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 14 }}>
+        Agentes
+      </div>
+
+      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+        {/* Painel: Desenvolvimento */}
+        <div style={{ flex: 1, minWidth: 300 }}>
+          <div style={{
+            fontWeight: 700,
+            fontSize: 13,
+            marginBottom: 12,
+            paddingBottom: 6,
+            borderBottom: '2px solid #2563eb',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}>
+            <span>Desenvolvimento</span>
+            <span style={{
+              background: '#2563eb',
+              color: '#fff',
+              borderRadius: 10,
+              padding: '1px 7px',
+              fontSize: 11,
+              fontWeight: 700,
+            }}>
+              {columns.todo.length + columns.dev.length}
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <SubColumn
+              title="Aguardando"
+              issues={columns.todo}
+              color="#16a34a"
+              showDispatch
+              onDispatch={onDispatch}
+              dispatchingKey={dispatchingKey ?? undefined}
+            />
+            <SubColumn
+              title="Trabalhando"
+              issues={columns.dev}
+              color="#2563eb"
+            />
+          </div>
+        </div>
+
+        {/* Painel: Code Review */}
+        <div style={{ flex: 1, minWidth: 300 }}>
+          <div style={{
+            fontWeight: 700,
+            fontSize: 13,
+            marginBottom: 12,
+            paddingBottom: 6,
+            borderBottom: '2px solid #8b5cf6',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}>
+            <span>Code Review</span>
+            <span style={{
+              background: '#8b5cf6',
+              color: '#fff',
+              borderRadius: 10,
+              padding: '1px 7px',
+              fontSize: 11,
+              fontWeight: 700,
+            }}>
+              {columns.review.length + columns.review_ok.length}
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <SubColumn
+              title="Aguardando"
+              issues={columns.review}
+              color="#8b5cf6"
+            />
+            <SubColumn
+              title="Aprovado ✓"
+              issues={columns.review_ok}
+              color="#22c55e"
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// App principal
+// ---------------------------------------------------------------------------
 
 export default function CrewFlow() {
   const api = useAppApi()
-  const [columns, setColumns] = useState<Columns>({
-    todo: [],
-    dev: [],
-    review: [],
-    reviewed: [],
-    done: [],
-    blocked: [],
-  })
+  const [columns, setColumns] = useState<Columns>(emptyColumns())
+  const [squadName, setSquadName] = useState<string>('KiroCrew Flow')
+  const [project, setProject] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isMock, setIsMock] = useState(false)
@@ -204,8 +380,10 @@ export default function CrewFlow() {
   const load = useCallback(() => {
     return api
       .get('/api/apps/kirocrew-flow/issues')
-      .then((d: { columns?: Columns }) => {
-        setColumns(d.columns ?? { todo: [], dev: [], review: [], reviewed: [], done: [], blocked: [] })
+      .then((d: ApiResponse) => {
+        setColumns(d.columns ?? emptyColumns())
+        setSquadName(d.squad_name || 'KiroCrew Flow')
+        setProject(d.project || '')
         setLastUpdate(new Date())
         setError(null)
         setIsMock(false)
@@ -213,9 +391,11 @@ export default function CrewFlow() {
       .catch((err: unknown) => {
         const msg = String(err)
         // 404 = backend.routes não disponível para apps de terceiros (issue #170)
-        // Usar dados mock para permitir desenvolvimento da UI
         if (msg.includes('404') || msg.includes('not found')) {
-          setColumns(MOCK_COLUMNS)
+          const mock = MOCK_RESPONSE
+          setColumns(mock.columns ?? emptyColumns())
+          setSquadName(mock.squad_name || 'KiroCrew Flow')
+          setProject(mock.project || '')
           setIsMock(true)
           setError(null)
         } else {
@@ -249,75 +429,107 @@ export default function CrewFlow() {
     [api, load],
   )
 
-  const stageColumns: Array<{ key: keyof Columns; title: string; color: string; showDispatch?: boolean }> = [
-    { key: 'todo', title: 'Todo', color: '#16a34a', showDispatch: true },
-    { key: 'dev', title: 'Dev', color: '#2563eb' },
-    { key: 'review', title: 'Review', color: '#8b5cf6' },
-    { key: 'reviewed', title: 'QA', color: '#0ea5e9' },
-    { key: 'done', title: 'Done', color: '#22c55e' },
-  ]
+  const title = project ? `Flow - ${squadName} / ${project.split('/').pop()}` : squadName
 
   const totalActive = (
+    columns.spec.length +
+    columns.ready.length +
     columns.todo.length +
     columns.dev.length +
     columns.review.length +
-    columns.reviewed.length +
+    columns.review_ok.length +
     columns.blocked.length
   )
 
   return (
     <div style={{ padding: '20px 24px', maxWidth: 1400 }}>
       <PageHeader
-        title="KiroCrew Flow"
+        title={title}
         subtitle={
           loading
             ? 'Carregando…'
             : error
             ? `Erro: ${error}`
             : isMock
-            ? '⚠️ Modo demo — backend indisponível (issue #170)'
+            ? '⚠️ Modo demo — backend indisponível'
             : lastUpdate
             ? `${totalActive} issues ativas · atualizado ${lastUpdate.toLocaleTimeString()}`
             : ''
         }
         actions={
-          <Btn size="sm" variant="secondary" onClick={load} disabled={loading}>
-            ↻ Atualizar
-          </Btn>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Btn size="sm" variant="secondary" disabled>
+              Rules
+            </Btn>
+            <Btn size="sm" variant="secondary" disabled>
+              Configurações
+            </Btn>
+            <Btn size="sm" variant="secondary" onClick={load} disabled={loading}>
+              ↻ Atualizar
+            </Btn>
+          </div>
         }
       />
 
-      {/* Kanban principal — 5 colunas de estágio */}
-      <div
-        style={{
-          display: 'flex',
-          gap: 16,
-          overflowX: 'auto',
-          marginTop: 20,
-          paddingBottom: 8,
-        }}
-      >
-        {stageColumns.map(({ key, title, color, showDispatch }) => (
-          <Column
-            key={key}
-            title={title}
-            issues={columns[key]}
-            color={color}
-            showDispatch={showDispatch}
-            onDispatch={showDispatch ? handleDispatch : undefined}
-            dispatchingKey={dispatchingKey ?? undefined}
-          />
-        ))}
+      {/* Seções de espera humana */}
+      <div style={{ display: 'flex', gap: 16, marginTop: 20, flexWrap: 'wrap' }}>
+        <WaitingSection
+          title="Aguardando SPEC"
+          subtitle="PM especificando"
+          issues={columns.spec}
+          accentColor="#f59e0b"
+        />
+        <WaitingSection
+          title="Aguardando definição de produto/TL"
+          subtitle="Spec pronta, aguardando priorização"
+          issues={columns.ready}
+          accentColor="#fbbf24"
+        />
       </div>
+
+      {/* Seção de agentes */}
+      <AgentsPanel
+        columns={columns}
+        onDispatch={handleDispatch}
+        dispatchingKey={dispatchingKey}
+      />
 
       {/* Coluna blocked separada abaixo */}
       {columns.blocked.length > 0 && (
-        <div style={{ marginTop: 24 }}>
-          <Column
-            title="Blocked"
-            issues={columns.blocked}
-            color="#dc2626"
-          />
+        <div style={{
+          marginTop: 20,
+          border: '1px solid #dc262633',
+          borderRadius: 10,
+          padding: '14px 16px',
+          background: '#dc262608',
+        }}>
+          <div style={{
+            fontWeight: 700,
+            fontSize: 13,
+            color: '#dc2626',
+            marginBottom: 10,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}>
+            🔴 Bloqueadas
+            <span style={{
+              background: '#dc2626',
+              color: '#fff',
+              borderRadius: 10,
+              padding: '1px 7px',
+              fontSize: 11,
+            }}>
+              {columns.blocked.length}
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {columns.blocked.map((issue) => (
+              <div key={`${issue.repo}#${issue.number}`} style={{ minWidth: 200, flex: '0 0 auto', maxWidth: 280 }}>
+                <IssueCard issue={issue} />
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

@@ -151,11 +151,11 @@ def _extract_issue_number(raw: dict) -> int | str:
     return num or ""
 
 
-def _load_issues_from_github() -> dict[str, list[dict]]:
+def _load_issues_from_github() -> dict[str, object]:
     """Carrega issues agrupadas por estágio crewflow:* via scan (zero-token, cache-first).
 
     Usa o engine existente (flow/adapters + flow/scan) — sem gastar token.
-    Retorna um dict com chave = nome do estágio (ex: "todo") e valor = lista de issues.
+    Retorna um dict com squad_name, project e columns (colunas do kanban).
     """
     app_root = Path(__file__).parent.parent
     if str(app_root) not in sys.path:
@@ -173,17 +173,22 @@ def _load_issues_from_github() -> dict[str, list[dict]]:
     squads_dir = app_root / "squads"
     if not squads_dir.exists():
         logger.warning("handle_issues: squads/ não encontrado em %s", app_root)
-        return _empty_columns()
+        return {"squad_name": "KiroCrew Flow", "project": "", "columns": _empty_columns()}
 
     try:
         squads = load_squads_dir(squads_dir)
     except Exception as exc:
         logger.warning("handle_issues: falha ao carregar squads: %s", exc)
-        return _empty_columns()
+        return {"squad_name": "KiroCrew Flow", "project": "", "columns": _empty_columns()}
 
     if not squads:
         logger.warning("handle_issues: nenhuma squad configurada em %s", squads_dir)
-        return _empty_columns()
+        return {"squad_name": "KiroCrew Flow", "project": "", "columns": _empty_columns()}
+
+    # Pega o nome da primeira squad para exibir no título
+    first_squad = squads[0]
+    squad_name: str = getattr(first_squad, "name", "") or "KiroCrew Flow"
+    primary_project: str = first_squad.projects[0] if first_squad.projects else ""
 
     # Agrupa por estágio (todos os results de todas as squads)
     columns: dict[str, list[dict]] = _empty_columns()
@@ -242,10 +247,13 @@ def _load_issues_from_github() -> dict[str, list[dict]]:
             # Issues com crewflow:blocked vão para a coluna "blocked" (separada)
             if Modifier.BLOCKED in modifiers:
                 columns["blocked"].append(issue_entry)
+            # Issues em review + review_ok vão para coluna "review_ok"
+            elif col == "review" and Modifier.REVIEW_OK in modifiers:
+                columns["review_ok"].append(issue_entry)
             else:
                 columns[col].append(issue_entry)
 
-    return columns
+    return {"squad_name": squad_name, "project": primary_project, "columns": columns}
 
 
 def _fetch_all_state_items(projects: list[str], provider: object) -> list[dict]:
@@ -284,13 +292,13 @@ def _state_to_column(state: object) -> str | None:
     from flow.domain.state import State
 
     mapping: dict[State, str | None] = {
-        State.TODO: "todo",
-        State.DEV: "dev",
+        State.SPEC:   "spec",
+        State.READY:  "ready",
+        State.TODO:   "todo",
+        State.DEV:    "dev",
         State.REVIEW: "review",
-        State.QA: "reviewed",  # QA é pós-review = coluna "reviewed" no kanban
-        State.DONE: "done",
-        State.SPEC: None,   # spec não aparece no kanban
-        State.READY: None,  # ready não aparece no kanban
+        State.QA:     "reviewed",  # QA é pós-review = coluna "reviewed" no kanban
+        State.DONE:   "done",
     }
     if not isinstance(state, State):
         return None
@@ -300,9 +308,12 @@ def _state_to_column(state: object) -> str | None:
 def _empty_columns() -> dict[str, list[dict]]:
     """Retorna as colunas vazias do kanban."""
     return {
+        "spec": [],
+        "ready": [],
         "todo": [],
         "dev": [],
         "review": [],
+        "review_ok": [],
         "reviewed": [],
         "done": [],
         "blocked": [],
@@ -334,12 +345,12 @@ async def handle_issues(request: web.Request, ctx: object = None) -> web.Respons
     """Lista issues por estágio (crewflow:*). Zero-token, cache-first."""
     try:
         loop = asyncio.get_running_loop()
-        columns = await loop.run_in_executor(None, _load_issues_from_github)
-        return web.json_response({"columns": columns})
+        result = await loop.run_in_executor(None, _load_issues_from_github)
+        return web.json_response(result)
     except Exception as exc:
         logger.exception("handle_issues: erro inesperado: %s", exc)
         return web.json_response(
-            {"error": str(exc), "columns": _empty_columns()},
+            {"error": str(exc), "squad_name": "KiroCrew Flow", "project": "", "columns": _empty_columns()},
             status=500,
         )
 
