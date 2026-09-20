@@ -634,29 +634,87 @@ class TestTryAcquireDispatchLock:
     def test_race_dois_dispatches_mesma_issue_apenas_um_passa(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Dois chamadores concorrentes: apenas o primeiro adquire o lock."""
+        """Dois chamadores concorrentes: apenas um adquire o lock — 50 iterações.
+
+        Cada iteração usa um número de issue diferente para isolar o estado.
+        Garante que a implementação O_CREAT|O_EXCL não tem janela TOCTOU no
+        caminho normal (lock não existe).  Cobrimos 50 corridas para detectar
+        falhas intermitentes antes que cheguem ao CI.
+        """
         import threading
 
         from deployment.deployment import _try_acquire_dispatch_lock
 
         monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
 
-        resultados: list[bool] = []
+        for issue_n in range(1000, 1050):
+            resultados: list[bool] = []
+            resultado_lock = threading.Lock()
 
-        def dispatch_attempt() -> None:
-            acquired, _ = _try_acquire_dispatch_lock("owner/myrepo", 99)
-            resultados.append(acquired)
+            def dispatch_attempt(n: int = issue_n) -> None:
+                acquired, _ = _try_acquire_dispatch_lock("owner/myrepo", n)
+                with resultado_lock:
+                    resultados.append(acquired)
 
-        t1 = threading.Thread(target=dispatch_attempt)
-        t2 = threading.Thread(target=dispatch_attempt)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
+            t1 = threading.Thread(target=dispatch_attempt)
+            t2 = threading.Thread(target=dispatch_attempt)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
 
-        # Exatamente 1 deve ter adquirido o lock
-        assert resultados.count(True) == 1
-        assert resultados.count(False) == 1
+            # Exatamente 1 deve ter adquirido o lock em cada iteração
+            assert resultados.count(True) == 1, (
+                f"Iteração {issue_n - 999}/50: esperado 1 True, "
+                f"obtido {resultados.count(True)} — TOCTOU detectado"
+            )
+            assert resultados.count(False) == 1
+
+    def test_race_stale_lock_apenas_um_passa(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Dois chamadores concorrentes com lock stale: apenas um adquire — 50 iterações.
+
+        Este é o caminho que tinha o TOCTOU real (issue #141): ambos os threads
+        passavam pelo pré-check exists()+stale, um removia o arquivo do outro e
+        ambos retornavam True.  A nova implementação é O_EXCL-first: o unlink do
+        stale não reabre a janela porque a segunda tentativa atômica é O_EXCL.
+        """
+        import os as _os
+        import threading
+        import time
+
+        from deployment.deployment import _DISPATCH_BACKSTOP_SECS, _try_acquire_dispatch_lock
+
+        monkeypatch.setattr("deployment.deployment._sessdir", lambda: str(tmp_path))
+
+        for issue_n in range(2000, 2050):
+            # Cria um lock stale (mtime = agora - 3x backstop)
+            lock_file = tmp_path / f"dashboard_esteira-myrepo-{issue_n}.jsonl.lock"
+            lock_file.touch()
+            old_ts = time.time() - _DISPATCH_BACKSTOP_SECS * 3
+            _os.utime(str(lock_file), (old_ts, old_ts))
+
+            resultados: list[bool] = []
+            resultado_lock = threading.Lock()
+
+            def dispatch_attempt(n: int = issue_n) -> None:
+                acquired, _ = _try_acquire_dispatch_lock("owner/myrepo", n)
+                with resultado_lock:
+                    resultados.append(acquired)
+
+            t1 = threading.Thread(target=dispatch_attempt)
+            t2 = threading.Thread(target=dispatch_attempt)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+
+            assert resultados.count(True) == 1, (
+                f"Iteração stale {issue_n - 1999}/50: esperado 1 True, "
+                f"obtido {resultados.count(True)} — TOCTOU no caminho stale detectado"
+            )
+            assert resultados.count(False) == 1
 
     def test_nomes_de_repo_diferentes_nao_conflitam(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

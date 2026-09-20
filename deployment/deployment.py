@@ -51,6 +51,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading as _threading
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +261,14 @@ def _sessdir() -> str:
 _DISPATCH_BACKSTOP_SECS = 120  # 2 minutos: tempo mínimo para o label aparecer na API
 
 
+# Lock de thread para serializar a seção crítica de remoção de lock stale.
+# O O_CREAT|O_EXCL é atômico entre processos, mas dois threads do mesmo
+# processo podem passar simultaneamente pelo FileExistsError → is_stale=True →
+# unlink: o segundo remove o arquivo que o primeiro acabou de criar, e ambos
+# retornam True (TOCTOU, issue #141).  O threading.Lock serializa esta seção.
+_dispatch_stale_lock = _threading.Lock()
+
+
 def _try_acquire_dispatch_lock(repo: str, issue_number: int) -> tuple[bool, str]:
     """Tenta adquirir o backstop lock de forma atômica (O_CREAT|O_EXCL).
 
@@ -271,34 +280,56 @@ def _try_acquire_dispatch_lock(repo: str, issue_number: int) -> tuple[bool, str]
         (True, lock_path)  — lock adquirido; caller deve prosseguir com o dispatch.
         (False, lock_path) — lock já existia e ainda está válido; dispatch abortado.
 
-    A criação com O_CREAT|O_EXCL é atômica no kernel: dois processos concorrentes
-    nunca obtêm True ao mesmo tempo para o mesmo arquivo.
+    Implementação TOCTOU-free (issue #141):
+    - Caminho normal: O_EXCL diretamente, sem pré-check exists().
+    - Caminho stale: seção crítica protegida por threading.Lock para serializar
+      o unlink + re-open e evitar que dois threads removam o arquivo um do outro.
+      O threading.Lock é necessário porque O_EXCL é atômico entre processos mas
+      dois threads do mesmo processo podem ambos passar pelo is_stale=True e
+      fazer o unlink do arquivo que o outro acabou de criar.
     """
     short = repo.split("/")[-1]
     lock_path = os.path.join(
         _sessdir(), f"dashboard_esteira-{short}-{issue_number}.jsonl.lock"
     )
 
-    # Lock pré-existente ainda válido → outro dispatch ganhou a corrida
-    if os.path.exists(lock_path) and not _lock_is_stale(lock_path):
-        return False, lock_path
-
-    # Lock stale (expirado): remove para liberar o nome antes da criação atômica.
-    # Perda de atomicidade aqui é aceitável: dois processos concorrentes neste
-    # caminho só chegam depois que o backstop de 2min expirou — cenário normal
-    # de reboot/crash, não de dispatch duplicado.
-    if os.path.exists(lock_path):
-        import contextlib
-        with contextlib.suppress(OSError):
-            os.remove(lock_path)  # outro processo pode ter removido concorrentemente
+    def _try_open_excl() -> bool:
+        """Tenta criar o lock com O_EXCL. Retorna True se adquiriu."""
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            os.close(fd)
+            return True
+        except FileExistsError:
+            return False
 
     try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        os.close(fd)
-        return True, lock_path
-    except FileExistsError:
-        # Race: outro processo criou o arquivo entre o exists() e o open()
+        # Tentativa 1: caminho rápido (lock não existe)
+        if _try_open_excl():
+            return True, lock_path
+
+        # Lock existe. Verificar se está válido ou stale.
+        if not _lock_is_stale(lock_path):
+            # Outro dispatch ativo dentro do backstop → abortar.
+            return False, lock_path
+
+        # Lock stale: seção crítica serializada por threading.Lock para evitar
+        # que dois threads do mesmo processo façam unlink simultâneo.
+        with _dispatch_stale_lock:
+            # Re-checar dentro do lock: outro thread pode ter chegado aqui
+            # primeiro e já ter criado um lock novo (não stale).
+            if not _lock_is_stale(lock_path):
+                return False, lock_path
+
+            import contextlib
+            with contextlib.suppress(OSError):
+                os.unlink(lock_path)
+
+            # Uma única tentativa atômica após o unlink.
+            if _try_open_excl():
+                return True, lock_path
+
         return False, lock_path
+
     except OSError:
         # Diretório não existe ou erro inesperado: fail-open para não bloquear
         # dispatch legítimo por problema de filesystem.
@@ -2258,7 +2289,7 @@ def _is_issue_closed(repo: str, issue_number: int) -> bool:
         if result.returncode == 0:
             state = result.stdout.strip().upper()
             return state == "CLOSED"
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "deployment: não foi possível verificar estado de %s#%s: %s — fail-open",
             repo, issue_number, exc,
