@@ -15,6 +15,9 @@ dependencies = [
 yaml = [
     "pyyaml>=6.0",  # parser YAML completo; recomendado para squads com routing complexo
 ]
+gateway = [
+    "kirocrew-client>=0.1",  # SDK do Crew Gateway — instalado só no ambiente do gateway; ausente no PyPI público, por isso fora do dev/CI
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

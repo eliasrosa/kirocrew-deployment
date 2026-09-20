@@ -30,8 +30,8 @@
     "network": true
   },
   "setup": {
-    "onInstall": "pip install -e '.[dev]'",
-    "onUpdate":  "pip install -e '.[dev]'"
+    "onInstall": "pip install -e '.[dev,gateway]'",
+    "onUpdate":  "pip install -e '.[dev,gateway]'"
   },
   "dependencies": {"commands": ["git", "gh", "python3"]},
   "platform": {"os": ["linux", "macos"]}
