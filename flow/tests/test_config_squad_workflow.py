@@ -194,9 +194,9 @@ class TestMiniYaml:
     """Testes unitários do parser fallback _mini_yaml."""
 
     def _write(self, content: str) -> Path:
-        tmp = Path(tempfile.mktemp(suffix=".yaml"))
-        tmp.write_text(content)
-        return tmp
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(content)
+            return Path(f.name)
 
     def test_escalares(self) -> None:
         p = self._write("id: minha-squad\nauto: true\nmax: 3\n")
