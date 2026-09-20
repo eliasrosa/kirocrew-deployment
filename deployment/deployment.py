@@ -2023,6 +2023,14 @@ def _dispatch_rework(
 
     Reusa o mesmo slot da sessão dev para garantir one-per-repo funcione.
     """
+    # Guard: se a issue já está fechada, abortar (guard #136).
+    if _is_issue_closed(repo, issue["number"]):
+        logger.info(
+            "deployment: issue %s#%s está CLOSED — dispatch de rework ignorado (guard #136)",
+            repo, issue["number"],
+        )
+        return
+
     import urllib.request as _u
 
     short = repo.split("/")[-1]
@@ -2181,6 +2189,14 @@ def _dispatch_conflict_resolver(
     prompt_extra: str = "",
 ) -> None:
     """Fire-and-forget POST /api/chat para a sessão one-shot de resolução de conflito."""
+    # Guard: se a issue já está fechada, abortar (guard #136).
+    if _is_issue_closed(repo, issue["number"]):
+        logger.info(
+            "deployment: issue %s#%s está CLOSED — dispatch de conflict resolver ignorado (guard #136)",
+            repo, issue["number"],
+        )
+        return
+
     import urllib.request as _u
 
     short = repo.split("/")[-1]
@@ -2226,6 +2242,30 @@ def _dispatch_conflict_resolver(
         )
 
 
+def _is_issue_closed(repo: str, issue_number: int) -> bool:
+    """Verifica se a issue está fechada (state != 'OPEN') via gh CLI.
+
+    Guard defensivo: se a issue for CLOSED (PR canônica mergeada), nenhum
+    dispatch deve acontecer — a sessão deve ser no-op. Fail-open em caso de
+    erro de I/O (retorna False → despacha normalmente).
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "issue", "view", str(issue_number), "--repo", repo,
+             "--json", "state", "--jq", ".state"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if result.returncode == 0:
+            state = result.stdout.strip().upper()
+            return state == "CLOSED"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "deployment: não foi possível verificar estado de %s#%s: %s — fail-open",
+            repo, issue_number, exc,
+        )
+    return False
+
+
 def _dispatch_reviewer(
     ctx: object,
     repo: str,
@@ -2238,6 +2278,16 @@ def _dispatch_reviewer(
     Fallback para notificação se o PR não for encontrado.
     """
     issue_number = issue["number"]
+
+    # Guard: se a issue já está fechada (PR canônica mergeada), abortar.
+    # Evita a race onde o reviewer é despachado após o merge da canônica — foi
+    # o que causou a PR duplicada #135 relatada na issue #136.
+    if _is_issue_closed(repo, issue_number):
+        logger.info(
+            "deployment: issue %s#%s está CLOSED — dispatch do reviewer ignorado (guard #136)",
+            repo, issue_number,
+        )
+        return
     chat_id = cfg.get("notify_chat_id") or ""
     vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
 

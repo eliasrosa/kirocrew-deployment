@@ -317,3 +317,24 @@ problema ANTES do merge.
 3. Adicione testes smoke em `flow/tests/test_prompts_loader.py` (classe `TestRealTemplates`).
 4. O teste `test_template_code_parity.py` valida automaticamente a paridade — se quebrar, o `kwarg` está faltando no dispatch.
 5. Após o merge, **reinstale o cron**: `./scripts/install-cron.sh`.
+
+## Invariante de nome de branch (INVIOLÁVEL)
+
+**Toda branch de trabalho da esteira DEVE ter o nome `feat/issue-<number>`.**
+
+Nunca use nomes livres (`fix/...`, `chore/...`, `hotfix/...`). O motivo é que
+o sistema de guarda usa o nome canônico para detectar colisão de worktree e
+localizar a PR existente (`gh pr list --head feat/issue-N`). Um nome
+alternativo escapa à detecção e pode criar uma segunda PR silenciosamente
+(foi o que causou o bug #136 — sessão do reviewer inventou `fix/code-scanning-alerts-133`).
+
+**Esta regra vale para TODOS os templates:**
+
+| Template | Branch usada |
+|----------|-------------|
+| `dev.md` | cria `feat/issue-{{issue_number}}` |
+| `rework.md` | usa a `feat/issue-{{issue_number}}` existente |
+| `conflict.md` | usa a `feat/issue-{{issue_number}}` existente |
+| `reviewer.md` | **não cria branch** — apenas lê e comenta |
+
+Se uma sessão criar qualquer branch fora deste padrão, é um bug a reportar.

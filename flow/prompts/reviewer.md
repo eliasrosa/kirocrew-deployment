@@ -72,6 +72,10 @@ Execute UMA vez, do início ao fim, e PARE:
 
 - UMA passada. Terminou, acabou. NÃO entre em loop.
 - NUNCA mergeie. NUNCA faça deploy.
+- **NUNCA crie branch. NUNCA faça commit. NUNCA abra PR.**
+  O reviewer só lê e comenta — correções são responsabilidade do dev/rework, na
+  branch `feat/issue-{{issue_number}}` existente. Se você se pegar criando um
+  `git checkout -b` ou um `gh pr create`, pare imediatamente: é o bug #136.
 - Seja objetivo — aponte problemas concretos, não estilo pessoal.
 - CI vermelho sempre bloqueia — mesmo que o código esteja correto.
 - Resultado completo vai em DOIS lugares: PR (passo 7) e issue (passo 8).

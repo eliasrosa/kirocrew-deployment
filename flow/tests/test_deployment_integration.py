@@ -1051,9 +1051,11 @@ class TestDispatchReviewerFunction:
             )
             _dispatch_reviewer(ctx, "owner/repo", issue, self._minimal_cfg())
 
-        # Verifica que consultou gh pr list com --head feat/issue-42
-        mock_run.assert_called_once()
-        args = mock_run.call_args[0][0]
+        # Verifica que alguma chamada consultou gh pr list com --head feat/issue-42
+        # (pode haver mais chamadas — ex: _is_issue_closed roda antes como guard)
+        pr_list_calls = [c for c in mock_run.call_args_list if "--head" in c[0][0]]
+        assert len(pr_list_calls) == 1
+        args = pr_list_calls[0][0][0]
         assert "--head" in args
         assert "feat/issue-42" in args
         assert "--repo" in args
@@ -2570,3 +2572,171 @@ class TestRunStageConflictResolver:
         assert call_args[1] == "owner/repo"  # repo
         assert call_args[2]["number"] == 99   # issue["number"]
         assert call_args[3] == 50             # pr_number
+
+
+class TestIsIssueClosed:
+    """_is_issue_closed retorna True quando issue está CLOSED, False caso contrário."""
+
+    def test_retorna_true_quando_closed(self) -> None:
+        from deployment.deployment import _is_issue_closed
+
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(
+                returncode=0, stdout="CLOSED\n", stderr=""
+            )
+            assert _is_issue_closed("owner/repo", 42) is True
+
+    def test_retorna_false_quando_open(self) -> None:
+        from deployment.deployment import _is_issue_closed
+
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(
+                returncode=0, stdout="OPEN\n", stderr=""
+            )
+            assert _is_issue_closed("owner/repo", 42) is False
+
+    def test_fail_open_em_erro_de_cli(self) -> None:
+        """Falha de I/O retorna False (fail-open) — dispatch prossegue."""
+        from deployment.deployment import _is_issue_closed
+
+        with mock.patch("subprocess.run", side_effect=OSError("gh not found")):
+            assert _is_issue_closed("owner/repo", 42) is False
+
+    def test_fail_open_quando_returncode_nonzero(self) -> None:
+        from deployment.deployment import _is_issue_closed
+
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(
+                returncode=1, stdout="", stderr="error"
+            )
+            assert _is_issue_closed("owner/repo", 42) is False
+
+    def test_consulta_repo_e_numero_corretos(self) -> None:
+        from deployment.deployment import _is_issue_closed
+
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(
+                returncode=0, stdout="OPEN\n", stderr=""
+            )
+            _is_issue_closed("myorg/myrepo", 99)
+
+        args = mock_run.call_args[0][0]
+        assert "99" in args
+        assert "myorg/myrepo" in args
+        assert "--json" in args
+        assert "state" in args
+
+
+class TestIssueClosedGuardDispatch:
+    """Guard #136: dispatchers abortam silenciosamente quando issue está CLOSED."""
+
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "secret"
+        ctx.job.id = "test-job"
+        return ctx
+
+    def _minimal_cfg(self) -> dict:
+        return {"agent": "kirocrew", "notify_chat_id": ""}
+
+    def test_dispatch_reviewer_aborta_quando_issue_closed(self) -> None:
+        """_dispatch_reviewer não faz POST quando issue está CLOSED."""
+        import urllib.request as _u
+
+        from deployment.deployment import _dispatch_reviewer
+
+        ctx = self._make_ctx()
+        issue = {"number": 133, "title": "feat: algo"}
+
+        with (
+            mock.patch("deployment.deployment._is_issue_closed", return_value=True),
+            mock.patch.object(_u, "urlopen") as mock_urlopen,
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            _dispatch_reviewer(ctx, "owner/repo", issue, self._minimal_cfg())
+
+        # Nenhuma chamada HTTP nem subprocess (exceto o guard) deve ter ocorrido
+        mock_urlopen.assert_not_called()
+        ctx.notify.assert_not_called()
+        # subprocess.run não deve ter sido chamado para listar PRs
+        mock_run.assert_not_called()
+
+    def test_dispatch_reviewer_prossegue_quando_issue_open(self) -> None:
+        """_dispatch_reviewer consulta PR normalmente quando issue está OPEN."""
+        from deployment.deployment import _dispatch_reviewer
+
+        ctx = self._make_ctx()
+        issue = {"number": 42, "title": "feat: algo"}
+
+        with (
+            mock.patch("deployment.deployment._is_issue_closed", return_value=False),
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = mock.MagicMock(
+                returncode=0, stdout="[]", stderr=""
+            )
+            _dispatch_reviewer(ctx, "owner/repo", issue, self._minimal_cfg())
+
+        # Deve ter chamado subprocess.run para buscar o PR
+        mock_run.assert_called()
+
+    def test_dispatch_rework_aborta_quando_issue_closed(self) -> None:
+        """_dispatch_rework não faz POST quando issue está CLOSED."""
+        import urllib.request as _u
+
+        from deployment.deployment import _dispatch_rework
+
+        ctx = self._make_ctx()
+        issue = {"number": 133, "title": "feat: algo"}
+
+        with (
+            mock.patch("deployment.deployment._is_issue_closed", return_value=True),
+            mock.patch.object(_u, "urlopen") as mock_urlopen,
+        ):
+            _dispatch_rework(ctx, "owner/repo", issue, 50, 1, self._minimal_cfg())
+
+        mock_urlopen.assert_not_called()
+
+    def test_dispatch_conflict_resolver_aborta_quando_issue_closed(self) -> None:
+        """_dispatch_conflict_resolver não faz POST quando issue está CLOSED."""
+        import urllib.request as _u
+
+        from deployment.deployment import _dispatch_conflict_resolver
+
+        ctx = self._make_ctx()
+        issue = {"number": 133, "title": "feat: algo"}
+
+        with (
+            mock.patch("deployment.deployment._is_issue_closed", return_value=True),
+            mock.patch.object(_u, "urlopen") as mock_urlopen,
+        ):
+            _dispatch_conflict_resolver(ctx, "owner/repo", issue, 50, self._minimal_cfg())
+
+        mock_urlopen.assert_not_called()
+
+
+class TestReviewerNunCriabranchOuPR:
+    """reviewer.md contém regras explícitas contra criar branch/commit/PR."""
+
+    def _reviewer_md(self) -> str:
+        import pathlib
+        path = pathlib.Path(__file__).parent.parent / "prompts" / "reviewer.md"
+        return path.read_text()
+
+    def test_reviewer_proibe_criar_branch(self) -> None:
+        body = self._reviewer_md()
+        assert "NUNCA crie branch" in body or "NUNCA cria branch" in body or "NUNCA.*branch" in body or "NUNCA crie branch" in body
+
+    def test_reviewer_proibe_fazer_commit(self) -> None:
+        body = self._reviewer_md()
+        assert "NUNCA faça commit" in body
+
+    def test_reviewer_proibe_abrir_pr(self) -> None:
+        body = self._reviewer_md()
+        assert "NUNCA abra PR" in body
+
+    def test_reviewer_menciona_numero_do_bug(self) -> None:
+        """Referência ao bug #136 na regra crítica para rastreabilidade."""
+        body = self._reviewer_md()
+        assert "#136" in body
