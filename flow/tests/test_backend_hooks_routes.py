@@ -1,13 +1,16 @@
-"""Testes de unidade para backend.routes (Fase 3, assinatura corrigida).
+"""Testes de unidade para backend.routes (Fase 4 — implementação real).
 
-Critérios de aceite (issue #155, iteração 1):
-- register_routes(app) usa app.router.add_get/add_post (não duck-typing)
-- register_routes registra on_startup e on_cleanup no app
+Critérios de aceite:
+- register_routes(app) registra as 3 rotas + on_startup + on_cleanup
 - handle_health retorna {"ok": true, "app": "kirocrew-flow", "version": "1.0.0"}
-- handle_issues retorna {"issues": [], "note": "TODO Fase 4"}
-- handle_dispatch retorna {"ok": true, "note": "TODO Fase 4"}
+- handle_issues retorna {"columns": {todo, dev, review, reviewed, done, blocked}}
+  mesmo em caso de erro no scan (fallback para colunas vazias)
+- handle_dispatch valida o body e retorna {"ok": true/false, ...}
 - _start_loops cria 4 tasks asyncio e imprime log
 - _stop_loops cancela tasks e limpa a lista
+- _age_minutes calcula a idade em minutos
+- _state_to_column mapeia os estados para colunas do kanban
+- _repo_from_key extrai o repo de uma key
 """
 from __future__ import annotations
 
@@ -26,7 +29,11 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from backend.routes import (  # noqa: E402
+    _age_minutes,
+    _empty_columns,
+    _repo_from_key,
     _start_loops,
+    _state_to_column,
     _stop_loops,
     handle_dispatch,
     handle_health,
@@ -39,9 +46,19 @@ from backend.routes import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
-def _make_request() -> mock.MagicMock:
+def _make_request(body: dict | None = None) -> mock.MagicMock:
     """Retorna um mock mínimo de web.Request."""
-    return mock.MagicMock()
+    req = mock.MagicMock()
+    if body is not None:
+        future: asyncio.Future[dict] = asyncio.get_event_loop().create_future()
+        future.set_result(body)
+        req.json = mock.MagicMock(return_value=future)
+    else:
+        # json() que lança Exception para simular body inválido
+        async def _bad_json() -> dict:
+            raise ValueError("invalid json")
+        req.json = _bad_json
+    return req
 
 
 def _parse_body(response: object) -> dict:  # type: ignore[type-arg]
@@ -126,43 +143,217 @@ class TestHandleHealth:
 
 
 # ---------------------------------------------------------------------------
-# Tests: handle_issues
+# Tests: handle_issues — nova implementação real
 # ---------------------------------------------------------------------------
 
 
 class TestHandleIssues:
-    def test_returns_empty_issues_list(self) -> None:
-        loop = asyncio.get_event_loop()
-        response = loop.run_until_complete(handle_issues(_make_request()))
-        body = _parse_body(response)
-        assert body["issues"] == []
+    def _run_with_mock_loader(self, columns: dict) -> dict:
+        """Executa handle_issues com _load_issues_from_github mockado."""
+        with mock.patch("backend.routes._load_issues_from_github", return_value=columns):
+            loop = asyncio.get_event_loop()
+            response = loop.run_until_complete(handle_issues(_make_request()))
+        return _parse_body(response)
 
-    def test_returns_todo_note(self) -> None:
-        loop = asyncio.get_event_loop()
-        response = loop.run_until_complete(handle_issues(_make_request()))
+    def test_returns_columns_key(self) -> None:
+        body = self._run_with_mock_loader(_empty_columns())
+        assert "columns" in body
+
+    def test_returns_all_column_keys(self) -> None:
+        body = self._run_with_mock_loader(_empty_columns())
+        for key in ("todo", "dev", "review", "reviewed", "done", "blocked"):
+            assert key in body["columns"], f"coluna '{key}' ausente no retorno"
+
+    def test_returns_issues_in_correct_column(self) -> None:
+        cols = _empty_columns()
+        cols["todo"] = [
+            {"number": 42, "title": "Test", "repo": "owner/repo", "url": "", "age_min": 10,
+             "labels": ["crewflow:todo"], "blocked": False, "running": False}
+        ]
+        body = self._run_with_mock_loader(cols)
+        assert len(body["columns"]["todo"]) == 1
+        assert body["columns"]["todo"][0]["number"] == 42
+
+    def test_returns_empty_columns_when_loader_raises(self) -> None:
+        """Se _load_issues_from_github lançar exceção, deve retornar colunas vazias com status 500."""
+        with mock.patch(
+            "backend.routes._load_issues_from_github",
+            side_effect=RuntimeError("scan failed"),
+        ):
+            loop = asyncio.get_event_loop()
+            response = loop.run_until_complete(handle_issues(_make_request()))
         body = _parse_body(response)
-        assert "note" in body
-        assert "TODO" in body["note"]
+        assert "columns" in body
+        for key in ("todo", "dev", "review", "reviewed", "done", "blocked"):
+            assert body["columns"][key] == []
+
+    def test_status_500_on_error(self) -> None:
+        with mock.patch(
+            "backend.routes._load_issues_from_github",
+            side_effect=RuntimeError("scan failed"),
+        ):
+            loop = asyncio.get_event_loop()
+            response = loop.run_until_complete(handle_issues(_make_request()))
+        assert response.status == 500  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
-# Tests: handle_dispatch
+# Tests: handle_dispatch — nova implementação real
 # ---------------------------------------------------------------------------
 
 
 class TestHandleDispatch:
-    def test_returns_ok_true(self) -> None:
+    def test_returns_400_on_missing_body_fields(self) -> None:
+        """Body sem 'repo' ou 'number' deve retornar 400."""
+        req = _make_request(body={})
         loop = asyncio.get_event_loop()
-        response = loop.run_until_complete(handle_dispatch(_make_request()))
+        response = loop.run_until_complete(handle_dispatch(req))
+        assert response.status == 400  # type: ignore[attr-defined]
+        body = _parse_body(response)
+        assert body["ok"] is False
+
+    def test_returns_400_on_invalid_number(self) -> None:
+        req = _make_request(body={"repo": "owner/repo", "number": "not-a-number"})
+        loop = asyncio.get_event_loop()
+        response = loop.run_until_complete(handle_dispatch(req))
+        assert response.status == 400  # type: ignore[attr-defined]
+
+    def test_returns_400_on_invalid_json(self) -> None:
+        """Request com body inválido deve retornar 400."""
+        req = _make_request(body=None)  # json() vai lançar exceção
+        loop = asyncio.get_event_loop()
+        response = loop.run_until_complete(handle_dispatch(req))
+        assert response.status == 400  # type: ignore[attr-defined]
+
+    def test_calls_force_dispatch_with_correct_args(self) -> None:
+        """handle_dispatch deve chamar _force_dispatch com repo e number corretos."""
+        req = _make_request(body={"repo": "owner/repo", "number": 42})
+        with mock.patch(
+            "backend.routes._force_dispatch",
+            return_value={"ok": True, "dispatched": True},
+        ) as mock_fd:
+            loop = asyncio.get_event_loop()
+            response = loop.run_until_complete(handle_dispatch(req))
+
+        mock_fd.assert_called_once_with("owner/repo", 42)
         body = _parse_body(response)
         assert body["ok"] is True
+        assert body["dispatched"] is True
 
-    def test_returns_todo_note(self) -> None:
-        loop = asyncio.get_event_loop()
-        response = loop.run_until_complete(handle_dispatch(_make_request()))
+    def test_returns_200_on_successful_dispatch(self) -> None:
+        req = _make_request(body={"repo": "owner/repo", "number": 1})
+        with mock.patch(
+            "backend.routes._force_dispatch",
+            return_value={"ok": True, "dispatched": True},
+        ):
+            loop = asyncio.get_event_loop()
+            response = loop.run_until_complete(handle_dispatch(req))
+        assert response.status == 200  # type: ignore[attr-defined]
+
+    def test_returns_500_on_force_dispatch_exception(self) -> None:
+        req = _make_request(body={"repo": "owner/repo", "number": 1})
+        with mock.patch(
+            "backend.routes._force_dispatch",
+            side_effect=RuntimeError("dispatch explodiu"),
+        ):
+            loop = asyncio.get_event_loop()
+            response = loop.run_until_complete(handle_dispatch(req))
+        assert response.status == 500  # type: ignore[attr-defined]
         body = _parse_body(response)
-        assert "note" in body
-        assert "TODO" in body["note"]
+        assert body["ok"] is False
+
+    def test_number_as_string_is_coerced_to_int(self) -> None:
+        """'number' como string numérica deve ser aceito."""
+        req = _make_request(body={"repo": "owner/repo", "number": "99"})
+        with mock.patch(
+            "backend.routes._force_dispatch",
+            return_value={"ok": True, "dispatched": True},
+        ) as mock_fd:
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(handle_dispatch(req))
+        # Deve ter sido convertido para int
+        mock_fd.assert_called_once_with("owner/repo", 99)
+
+
+# ---------------------------------------------------------------------------
+# Tests: helpers
+# ---------------------------------------------------------------------------
+
+
+class TestAgeMinutes:
+    def test_returns_zero_for_empty_string(self) -> None:
+        assert _age_minutes("", 0) == 0
+
+    def test_calculates_age_in_minutes(self) -> None:
+        import datetime
+        # Cria um timestamp de exatamente 120 minutos atrás
+        now = datetime.datetime.now(tz=datetime.UTC)
+        past = now - datetime.timedelta(minutes=120)
+        age = _age_minutes(past.isoformat(), now.timestamp())
+        assert age == 120
+
+    def test_returns_zero_for_invalid_timestamp(self) -> None:
+        assert _age_minutes("not-a-date", 1000000) == 0
+
+    def test_returns_zero_for_future_timestamps(self) -> None:
+        import datetime
+        now = datetime.datetime.now(tz=datetime.UTC)
+        future = now + datetime.timedelta(minutes=10)
+        age = _age_minutes(future.isoformat(), now.timestamp())
+        assert age == 0
+
+
+class TestStateToColumn:
+    def test_todo_maps_to_todo(self) -> None:
+        from flow.domain.state import State
+        assert _state_to_column(State.TODO) == "todo"
+
+    def test_dev_maps_to_dev(self) -> None:
+        from flow.domain.state import State
+        assert _state_to_column(State.DEV) == "dev"
+
+    def test_review_maps_to_review(self) -> None:
+        from flow.domain.state import State
+        assert _state_to_column(State.REVIEW) == "review"
+
+    def test_qa_maps_to_reviewed(self) -> None:
+        from flow.domain.state import State
+        assert _state_to_column(State.QA) == "reviewed"
+
+    def test_done_maps_to_done(self) -> None:
+        from flow.domain.state import State
+        assert _state_to_column(State.DONE) == "done"
+
+    def test_spec_maps_to_none(self) -> None:
+        from flow.domain.state import State
+        assert _state_to_column(State.SPEC) is None
+
+    def test_ready_maps_to_none(self) -> None:
+        from flow.domain.state import State
+        assert _state_to_column(State.READY) is None
+
+
+class TestRepoFromKey:
+    def test_extracts_repo_from_owner_repo_hash_n(self) -> None:
+        assert _repo_from_key("owner/repo#42") == "owner/repo"
+
+    def test_returns_empty_for_plain_number(self) -> None:
+        assert _repo_from_key("42") == ""
+
+    def test_returns_empty_for_empty_string(self) -> None:
+        assert _repo_from_key("") == ""
+
+
+class TestEmptyColumns:
+    def test_has_all_required_keys(self) -> None:
+        cols = _empty_columns()
+        for key in ("todo", "dev", "review", "reviewed", "done", "blocked"):
+            assert key in cols
+
+    def test_all_values_are_empty_lists(self) -> None:
+        cols = _empty_columns()
+        for v in cols.values():
+            assert v == []
 
 
 # ---------------------------------------------------------------------------

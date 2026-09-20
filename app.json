@@ -13,6 +13,13 @@
   "backend": {
     "routes": "backend.routes:register_routes"
   },
+  "ui": {
+    "entry": "ui/dist/index.mjs",
+    "pages": [
+      { "route": "/apps/kirocrew-flow", "label": "Flow", "icon": "GitPullRequest" }
+    ],
+    "sidebar": { "section": "Dev Tools", "order": 1 }
+  },
   "crons": [
     {"name": "crewflow-dev",      "every": 300, "message": "crewflow: trigger dev stage",      "enabled": false},
     {"name": "crewflow-reviewer", "every": 180, "message": "crewflow: trigger reviewer stage", "enabled": false},
@@ -26,9 +33,9 @@
     "network": true
   },
   "setup": {
-    "onInstall": "pip install -e '.[dev,gateway]'",
-    "onUpdate":  "pip install -e '.[dev,gateway]'"
+    "onInstall": "pip install -e '.[dev,gateway]' && cd ui && npm install && npm run build",
+    "onUpdate":  "pip install -e '.[dev,gateway]' && cd ui && npm run build"
   },
-  "dependencies": {"commands": ["git", "gh", "python3"]},
+  "dependencies": {"commands": ["git", "gh", "python3", "node", "npm"]},
   "platform": {"os": ["linux", "macos"]}
 }

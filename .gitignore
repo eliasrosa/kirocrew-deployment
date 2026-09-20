@@ -1,6 +1,9 @@
 # Config real (contém chat_id, paths — dado do usuário)
 config.yaml
 
+# UI — dependências Node (não versionar)
+ui/node_modules/
+
 # Estado por-repo da vigia
 state/
 *.state.json
