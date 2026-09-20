@@ -11,11 +11,7 @@
     "agents/crewflow-merge.json"
   ],
   "backend": {
-    "entryPoint": "backend/server.py",
-    "port": "auto",
-    "healthCheck": "/health",
-    "routes": "/api/apps/kirocrew-flow",
-    "type": "python"
+    "routes": "backend.routes:register_routes"
   },
   "crons": [
     {"name": "crewflow-dev",      "every": 300, "message": "crewflow: trigger dev stage",      "enabled": false},
