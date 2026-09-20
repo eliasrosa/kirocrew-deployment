@@ -15,6 +15,7 @@ interface Issue {
   labels: string[]
   blocked: boolean
   running: boolean
+  implicit_state?: string | null
 }
 
 interface Columns {
@@ -82,9 +83,10 @@ const MOCK_RESPONSE: ApiResponse = {
     ],
     dev: [
       { number: 100, title: 'Exemplo: issue em implementação', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 120, labels: ['crewflow:bug', 'crewflow:p1'], blocked: false, running: true },
+      { number: 104, title: 'Exemplo: divergência — label=dev mas sem branch', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 30, labels: ['crewflow:feature'], blocked: false, running: false, implicit_state: 'todo' },
     ],
     review: [
-      { number: 101, title: 'Exemplo: PR aguardando review', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 30, labels: ['crewflow:feature'], blocked: false, running: false },
+      { number: 101, title: 'Exemplo: PR aguardando review', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 30, labels: ['crewflow:feature'], blocked: false, running: false, implicit_state: 'review' },
     ],
     review_ok: [
       { number: 103, title: 'Exemplo: PR aprovado, aguardando merge', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 15, labels: ['crewflow:feature', 'crewflow:review-ok'], blocked: false, running: false },
@@ -98,6 +100,30 @@ const MOCK_RESPONSE: ApiResponse = {
 }
 
 // ---------------------------------------------------------------------------
+// Shadow mode — mapeamento coluna → implicit_state equivalente
+// ---------------------------------------------------------------------------
+
+// Mapa de coluna kanban → nome de implicit_state equivalente
+// (para detectar divergência entre onde a issue está e o que as evidências indicam)
+const COLUMN_TO_IMPLICIT: Record<string, string> = {
+  todo: 'todo',
+  dev: 'dev',
+  review: 'review',
+  reviewed: 'review',  // QA está na coluna reviewed; implicit equivalente é review/review_ok
+  done: 'done',
+  blocked: '',
+}
+
+function hasDivergence(issue: Issue, column: string): boolean {
+  if (!issue.implicit_state) return false
+  const expected = COLUMN_TO_IMPLICIT[column] ?? ''
+  if (!expected) return false
+  // review_ok está na coluna review — não é divergência
+  if (column === 'review' && issue.implicit_state === 'review_ok') return false
+  return issue.implicit_state !== expected
+}
+
+// ---------------------------------------------------------------------------
 // IssueCard
 // ---------------------------------------------------------------------------
 
@@ -106,9 +132,11 @@ interface IssueCardProps {
   showDispatch?: boolean
   onDispatch?: (repo: string, number: number | string) => Promise<void>
   dispatching?: boolean
+  column?: string
 }
 
-function IssueCard({ issue, showDispatch, onDispatch, dispatching }: IssueCardProps) {
+function IssueCard({ issue, showDispatch, onDispatch, dispatching, column = '' }: IssueCardProps) {
+  const divergent = hasDivergence(issue, column)
   return (
     <Card style={{ marginBottom: 8, padding: '10px 12px' }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
@@ -128,6 +156,22 @@ function IssueCard({ issue, showDispatch, onDispatch, dispatching }: IssueCardPr
             )}
             {issue.running && (
               <span style={{ color: '#f97316' }}>● running</span>
+            )}
+            {divergent && issue.implicit_state && (
+              <span
+                title={`Estado implícito: ${issue.implicit_state} · Label atual: ${column}`}
+                style={{
+                  color: '#dc2626',
+                  fontWeight: 700,
+                  background: '#fee2e2',
+                  borderRadius: 4,
+                  padding: '1px 5px',
+                  fontSize: 10,
+                  letterSpacing: '0.02em',
+                }}
+              >
+                ⚠ impl: {issue.implicit_state}
+              </span>
             )}
           </div>
         </div>
@@ -168,9 +212,10 @@ interface SubColumnProps {
   showDispatch?: boolean
   onDispatch?: (repo: string, number: number | string) => Promise<void>
   dispatchingKey?: string
+  columnKey?: string
 }
 
-function SubColumn({ title, issues, color, showDispatch, onDispatch, dispatchingKey }: SubColumnProps) {
+function SubColumn({ title, issues, color, showDispatch, onDispatch, dispatchingKey, columnKey = '' }: SubColumnProps) {
   return (
     <div style={{ flex: 1, minWidth: 160 }}>
       <div style={{
@@ -210,6 +255,7 @@ function SubColumn({ title, issues, color, showDispatch, onDispatch, dispatching
               showDispatch={showDispatch}
               onDispatch={onDispatch}
               dispatching={dispatchingKey === key}
+              column={columnKey}
             />
           )
         })
@@ -311,11 +357,13 @@ function AgentsPanel({ columns, onDispatch, dispatchingKey }: AgentsPanelProps) 
               showDispatch
               onDispatch={onDispatch}
               dispatchingKey={dispatchingKey ?? undefined}
+              columnKey="todo"
             />
             <SubColumn
               title="Trabalhando"
               issues={columns.dev}
               color="#2563eb"
+              columnKey="dev"
             />
           </div>
         </div>
@@ -349,11 +397,13 @@ function AgentsPanel({ columns, onDispatch, dispatchingKey }: AgentsPanelProps) 
               title="Aguardando"
               issues={columns.review}
               color="#8b5cf6"
+              columnKey="review"
             />
             <SubColumn
               title="Aprovado ✓"
               issues={columns.review_ok}
               color="#22c55e"
+              columnKey="review_ok"
             />
           </div>
         </div>

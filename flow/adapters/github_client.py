@@ -203,3 +203,25 @@ def add_issue_comment(project: str, issue_number: int, body: str) -> dict:
     """Adiciona um comentário a uma issue."""
     from flow.adapters import github_transport as _t
     return _t.create_issue_comment(project, issue_number, body)
+
+
+def get_branch_exists(project: str, branch: str) -> bool:
+    """Verifica se um branch existe no repositório.
+
+    Retorna True se o branch existir, False caso contrário.
+    """
+    from flow.adapters import github_transport as _t
+    return _t.get_branch_exists(project, branch)
+
+
+def get_pr_reviews(project: str, pr_number: int) -> list:
+    """Retorna os reviews de um PR.
+
+    Cada item tem: ``id``, ``user``, ``state``, ``submitted_at``.
+    ``state`` pode ser: ``APPROVED``, ``CHANGES_REQUESTED``, ``COMMENTED``,
+    ``DISMISSED``, ``PENDING``.
+
+    Retorna lista vazia em caso de falha.
+    """
+    from flow.adapters import github_transport as _t
+    return _t.get_pr_reviews(project, pr_number)

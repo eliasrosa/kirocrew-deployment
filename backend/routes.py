@@ -242,6 +242,7 @@ def _load_issues_from_github() -> dict[str, object]:
                 "labels": sorted(labels),
                 "blocked": Modifier.BLOCKED in modifiers,
                 "running": Modifier.RUNNING in modifiers,
+                "implicit_state": _derive_implicit_state(raw, raw.get("repo", "") or _repo_from_key(raw.get("key", ""))),
             }
 
             # Issues com crewflow:blocked vão para a coluna "blocked" (separada)
@@ -339,6 +340,64 @@ def _repo_from_key(key: str) -> str:
     if "#" in key:
         return key.split("#")[0]
     return ""
+
+
+def _derive_implicit_state(raw: dict, project: str) -> str | None:
+    """Deriva o estado implícito de uma issue a partir de evidências externas.
+
+    Usa branch + PR + estado da issue para calcular ``ImplicitState``.
+    Retorna o valor string do estado (ex: ``"dev"``) ou ``None`` se não for
+    possível derivar (erro ou provedor não suportado).
+
+    Fail-safe: qualquer exceção retorna None — não bloqueia a resposta do /issues.
+    """
+    try:
+        import re as _re
+
+        from flow.adapters import github_client as _gh
+        from flow.scan.scanner import implicit_state as _implicit_state
+
+        key = raw.get("key", "") or raw.get("url", "")
+        m = _re.search(r"[#\-/](\d+)$", key)
+        if not m:
+            return None
+        issue_number = int(m.group(1))
+
+        # Estado fechado
+        issue_closed = (raw.get("state") or "").lower() == "closed"
+
+        # Verifica branch canônica
+        branch_name = f"feat/issue-{issue_number}"
+        branches: list[str] = []
+        if project and _gh.get_branch_exists(project, branch_name):
+            branches = [branch_name]
+
+        # Busca PR aberta e reviews
+        prs: list[dict] = []
+        if project:
+            pr = _gh.get_pr_for_issue(project, issue_number)
+            if pr:
+                pr_number = pr.get("number")
+                reviews: list[dict] = []
+                if pr_number:
+                    try:
+                        reviews = _gh.get_pr_reviews(project, int(pr_number))
+                    except Exception:
+                        pass
+                pr_entry = dict(pr)
+                pr_entry["state"] = "open"
+                pr_entry["reviews"] = reviews
+                prs = [pr_entry]
+
+        result = _implicit_state(
+            issue_closed=issue_closed,
+            branches=branches,
+            prs=prs,
+            issue_number=issue_number,
+        )
+        return result.value
+    except Exception:
+        return None
 
 
 async def handle_issues(request: web.Request, ctx: object = None) -> web.Response:

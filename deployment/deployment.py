@@ -947,6 +947,142 @@ def _scan_result_to_issue(result: object) -> dict:
     }
 
 
+# ── Shadow mode: estado implícito em paralelo com labels ─────────────────
+
+def _collect_implicit_state(
+    result: "ScanResult",
+    provider: object,
+    project: str,
+) -> object:
+    """Coleta evidências externas e deriva o estado implícito de uma issue.
+
+    Faz chamadas de I/O (branch check + PR + reviews) e delega a lógica pura
+    para ``implicit_state()`` em flow/scan/scanner.py.
+
+    Retorna ImplicitState ou None se ocorrer erro ao coletar as evidências (fail-safe).
+    """
+    from flow.scan.scanner import ImplicitState, implicit_state as _implicit_state
+
+    import re as _re
+
+    # Extrai o número da issue da key
+    m = _re.search(r"[#\-/](\d+)$", result.item.key)
+    if not m:
+        return None
+    issue_number = int(m.group(1))
+
+    # Verifica se a issue está fechada
+    issue_closed = False
+    try:
+        raw = provider.get_work_item(project, result.item.key)  # type: ignore[attr-defined]
+        issue_closed = (raw.get("state") or "").lower() == "closed"
+    except Exception:
+        pass
+
+    # Verifica se a branch canônica existe
+    branch_name = f"feat/issue-{issue_number}"
+    branches: list[str] = []
+    try:
+        from flow.adapters import github_client as _gh
+        if _gh.get_branch_exists(project, branch_name):
+            branches = [branch_name]
+    except Exception:
+        pass
+
+    # Busca PR aberta e seus reviews
+    prs: list[dict] = []
+    try:
+        from flow.adapters import github_client as _gh2
+        pr = _gh2.get_pr_for_issue(project, issue_number)
+        if pr:
+            pr_number = pr.get("number")
+            reviews: list[dict] = []
+            if pr_number:
+                try:
+                    reviews = _gh2.get_pr_reviews(project, int(pr_number))
+                except Exception:
+                    pass
+            pr_entry = dict(pr)
+            pr_entry["state"] = "open"
+            pr_entry["reviews"] = reviews
+            prs = [pr_entry]
+    except Exception:
+        pass
+
+    try:
+        return _implicit_state(
+            issue_closed=issue_closed,
+            branches=branches,
+            prs=prs,
+            issue_number=issue_number,
+        )
+    except Exception:
+        return None
+
+
+_IMPLICIT_TO_EXPLICIT: dict = {}  # preenchido abaixo, após imports
+
+
+def _build_implicit_to_explicit_map() -> dict:
+    """Mapeia ImplicitState → State equivalente para comparação."""
+    from flow.domain.state import State
+    from flow.scan.scanner import ImplicitState
+
+    return {
+        ImplicitState.TODO:      State.TODO,
+        ImplicitState.DEV:       State.DEV,
+        ImplicitState.REVIEW:    State.REVIEW,
+        ImplicitState.REVIEW_OK: State.REVIEW,  # REVIEW_OK está no estado REVIEW com modificador
+        ImplicitState.DONE:      State.DONE,
+    }
+
+
+def _log_shadow_divergences(
+    scan_results: list,
+    provider: object,
+    project: str,
+) -> None:
+    """Loga divergências entre estado implícito (evidências) e estado por label.
+
+    Shadow mode — apenas loga; não altera labels nem bloqueia dispatch.
+    O estado por label continua sendo a fonte de verdade para o executor.
+    """
+    from flow.scan.scanner import ImplicitState
+
+    implicit_map = _build_implicit_to_explicit_map()
+
+    for result in scan_results:
+        if result.current_state is None:
+            continue
+
+        imp = _collect_implicit_state(result, provider, project)
+        if imp is None:
+            # Não foi possível coletar evidências — pula silenciosamente
+            continue
+
+        # Compara estado implícito com estado por label
+        expected_explicit = implicit_map.get(imp)
+        if expected_explicit is None:
+            continue
+
+        label_state = result.current_state
+
+        if expected_explicit != label_state:
+            logger.warning(
+                "shadow: divergência em %s — label=%s  implícito=%s",
+                result.item.key,
+                label_state.value,
+                str(imp),
+            )
+        else:
+            logger.debug(
+                "shadow: %s consistente — label=%s  implícito=%s",
+                result.item.key,
+                label_state.value,
+                str(imp),
+            )
+
+
 # ── Ponto de entrada do cron ──────────────────────────────────────────────
 
 def _dry_run_report(
@@ -1167,6 +1303,12 @@ def run(ctx: object) -> None:
             clear_running_since(conn, _r.item.key)
 
     conn.close()
+
+    # ── Shadow mode: loga divergências entre estado implícito e labels ────
+    # Apenas loga — labels continuam sendo a fonte de verdade para o executor.
+    _first_project = scan_cfg.projects[0] if scan_cfg.projects else ""
+    if _first_project:
+        _log_shadow_divergences(scan_results, provider, _first_project)
 
     # ── Separa candidatos de dispatch dos informativos ────────────────────
     # ── Passa todos os resultados pelo executor ────────────────────────────
@@ -2797,6 +2939,12 @@ def _run_stage(ctx: object, stage: str) -> None:
             clear_running_since(conn, _r.item.key)
 
     conn.close()
+
+    # ── Shadow mode: loga divergências entre estado implícito e labels ────
+    # Apenas loga — labels continuam sendo a fonte de verdade para o executor.
+    _first_project_stage = scan_cfg.projects[0] if scan_cfg.projects else ""
+    if _first_project_stage:
+        _log_shadow_divergences(scan_results, provider, _first_project_stage)
 
     from flow.executor.executor import ActionKind, decide, resolve_template
 

@@ -9,6 +9,12 @@ Fluxo por ciclo:
 6. Retorna apenas os candidatos reais
 
 Nenhum token de agente é gasto neste módulo.
+
+Shadow mode (fase #177-A):
+  ``implicit_state()`` deriva o estado esperado de uma issue com base em
+  evidências externas (branch existente, PR aberta, PR aprovada, issue fechada)
+  em paralelo com as labels existentes.  Hoje é só para log — as labels
+  continuam sendo a fonte de verdade para o executor.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from dataclasses import dataclass
+from enum import StrEnum
 
 from flow.domain import gates
 from flow.domain import state as state_mod
@@ -31,6 +38,90 @@ from flow.scan.cache import compute_hash, get_hash, set_hash
 ALWAYS_INCLUDE_STATES: frozenset[State] = frozenset({State.REVIEW, State.QA})
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Estado implícito (shadow mode)
+# ---------------------------------------------------------------------------
+
+class ImplicitState(StrEnum):
+    """Estado implícito derivado de evidências externas (branch + PR + issue state).
+
+    Não substitui as labels — é derivado em paralelo para validação (shadow mode).
+
+    Mapeamento das evidências para o estado esperado:
+        done       — issue fechada
+        review_ok  — PR aprovada (review decisions incluem "APPROVED")
+        review     — PR aberta (qualquer estado de mergeable)
+        dev        — branch feat/issue-N existe mas sem PR aberta
+        todo       — sem branch e sem PR
+    """
+
+    TODO      = "todo"       # sem branch e sem PR aberta
+    DEV       = "dev"        # branch existe, sem PR aberta
+    REVIEW    = "review"     # PR aberta
+    REVIEW_OK = "review_ok"  # PR aprovada (pelo menos 1 aprovação)
+    DONE      = "done"       # issue fechada
+
+
+def implicit_state(
+    issue_closed: bool,
+    branches: list[str],
+    prs: list[dict],
+    issue_number: int | str | None = None,
+) -> ImplicitState:
+    """Deriva o estado implícito de uma issue com base em evidências externas.
+
+    Puro Python, sem I/O.  O chamador é responsável por buscar os dados e
+    passar como parâmetros — esta função não faz chamadas de rede.
+
+    Args:
+        issue_closed:  True se a issue está fechada no provedor.
+        branches:      Lista de nomes de branches que existem no repositório
+                       para esta issue.  O nome canônico é ``feat/issue-N``,
+                       mas outros prefixos são aceitos para robustez.
+        prs:           Lista de PRs abertas associadas à issue.  Cada entry é
+                       um dict com pelo menos:
+                           - ``state``: ``"open"`` | ``"closed"`` | ``"merged"``
+                           - ``reviews``: lista de dicts com ``state`` do reviewer
+                             (``"APPROVED"``, ``"CHANGES_REQUESTED"``, etc.) —
+                             pode estar ausente ou vazia.
+        issue_number:  Número da issue (usado para filtrar branch canônica).
+                       Opcional — sem ele, qualquer branch passada conta.
+
+    Returns:
+        O ``ImplicitState`` mais avançado que as evidências suportam.
+    """
+    # Prioridade decrescente: done > review_ok > review > dev > todo
+
+    if issue_closed:
+        return ImplicitState.DONE
+
+    # Filtra só PRs abertas
+    open_prs = [pr for pr in prs if (pr.get("state") or "").lower() == "open"]
+
+    if open_prs:
+        # Verifica se alguma PR aberta tem pelo menos 1 aprovação
+        for pr in open_prs:
+            reviews = pr.get("reviews") or []
+            approved = any(
+                (r.get("state") or "").upper() == "APPROVED"
+                for r in reviews
+            )
+            if approved:
+                return ImplicitState.REVIEW_OK
+        return ImplicitState.REVIEW
+
+    # Verifica se existe branch para a issue
+    has_branch = bool(branches)
+    if has_branch and issue_number is not None:
+        canonical = f"feat/issue-{issue_number}"
+        has_branch = canonical in branches
+
+    if has_branch:
+        return ImplicitState.DEV
+
+    return ImplicitState.TODO
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +156,8 @@ class ScanResult:
     ``spec_valid``         = True se o título tem um repo reconhecido (GATE 1 zero-token).
     ``changed``            = True se as labels mudaram desde o último ciclo.
     ``reason``             = motivo de estar neste resultado (para log).
+    ``implicit_state``     = estado derivado de evidências externas (branch/PR/issue state).
+                             None quando o chamador não forneceu os dados externos.
     """
 
     item: WorkItem
@@ -74,6 +167,7 @@ class ScanResult:
     spec_valid: bool | None  # None = não verificado (estado não é spec)
     changed: bool
     reason: str
+    implicit_state: ImplicitState | None = None  # shadow mode — None = dados não fornecidos
 
 
 # ---------------------------------------------------------------------------

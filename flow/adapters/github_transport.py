@@ -261,3 +261,39 @@ def delete_branch(owner_repo: str, branch: str) -> None:
     # 404 = branch já deletado ou não existe — não é erro
     if result.returncode != 0 and b"404" not in result.stderr and b"Not Found" not in result.stderr:
         raise ProviderError(f"delete_branch {branch}: {result.stderr.decode()[:200]}")
+
+
+def get_branch_exists(owner_repo: str, branch: str) -> bool:
+    """Verifica se um branch existe no repositório.
+
+    Retorna True se o branch existir, False caso contrário.
+    Silencioso em erros — retorna False.
+    """
+    result = subprocess.run(
+        ["gh", "api", f"repos/{owner_repo}/git/refs/heads/{branch}"],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return True
+    if b"404" in result.stderr or b"Not Found" in result.stderr:
+        return False
+    # Outros erros: tratar como não existente (fail-safe)
+    return False
+
+
+def get_pr_reviews(owner_repo: str, pr_number: int) -> list:
+    """Retorna os reviews de um PR.
+
+    Cada item tem: ``id``, ``user`` (dict com ``login``), ``state``, ``submitted_at``.
+    ``state`` pode ser: ``APPROVED``, ``CHANGES_REQUESTED``, ``COMMENTED``,
+    ``DISMISSED``, ``PENDING``.
+
+    Retorna lista vazia em caso de falha.
+    """
+    try:
+        return cast(list, _run([
+            "api", f"repos/{owner_repo}/pulls/{pr_number}/reviews",
+        ]))
+    except ProviderError:
+        return []
