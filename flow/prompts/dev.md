@@ -10,7 +10,10 @@
 ## Contexto da task
 Você é um agente de implementação ONE-SHOT. Tarefa ÚNICA, sem loop, sem watchdog.
 
-FLUXO (execute UMA vez, do início ao fim, e PARE):
+### Fluxo
+
+Execute UMA vez, do início ao fim, e PARE:
+
 1. CONTEXTO: leia TODA a documentação do repo antes de qualquer ação:
    - `.kiro/steering/*.md` (steerings do projeto)
    - `README.md`
@@ -33,11 +36,17 @@ FLUXO (execute UMA vez, do início ao fim, e PARE):
 7. Abra PR com 'Closes #{{issue_number}}' e troque a label para `crewflow:review` REMOVENDO `crewflow:dev`. Após abrir o PR, ATUALIZE o título da sessão adicionando o número do PR: `{{repo_short}} #{{issue_number}} #<N-PR>: {{issue_title}}`. **NUNCA mergeie. NUNCA faça deploy.** Ambos são ações humanas manuais.
    Use SEMPRE a forma atômica que remove todos os estados anteriores:
    `gh issue edit {{issue_number}} --repo {{repo}} --add-label "crewflow:review" --remove-label "crewflow:dev,crewflow:todo,crewflow:running"`
-8. Ao terminar: {{notify_step}}remova `crewflow:running` (mantenha `crewflow:review`), e ENCERRE.
+8. Ao terminar: {{notify_step}}
+
+   remova `crewflow:running` (mantenha `crewflow:review`), e ENCERRE.
    `gh issue edit {{issue_number}} --repo {{repo}} --remove-label "crewflow:running"`
+
 {{vault_step}}
-REGRAS CRÍTICAS:
+
+### Regras críticas
+
 - UMA passada. Terminou, acabou. NÃO entre em loop.
 - NUNCA mergeie. NUNCA faça deploy.
 - Se bloquear, marque `crewflow:blocked`, avise, e pare.
+
 {{prompt_extra}}
