@@ -2798,3 +2798,154 @@ class TestReviewerNunCriabranchOuPR:
         """Referência ao bug #136 na regra crítica para rastreabilidade."""
         body = self._reviewer_md()
         assert "#136" in body
+
+
+class TestDispatchClosedGuard:
+    """Guard #163: _dispatch aborta quando issue está CLOSED (evita PR duplicada pós-auto-merge)."""
+
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "secret"
+        ctx.job.id = "test-job"
+        return ctx
+
+    def _minimal_cfg(self) -> dict:
+        return {
+            "agent": "kirocrew",
+            "notify_chat_id": "",
+            "dev_root": "/tmp/dev",
+        }
+
+    def test_dispatch_aborta_quando_issue_closed(self) -> None:
+        """_dispatch não faz POST quando issue está CLOSED — sem PR duplicada."""
+        import urllib.request as _u
+
+        from deployment.deployment import _dispatch
+
+        ctx = self._make_ctx()
+        issue = {"number": 157, "title": "feat: algo", "url": "https://github.com/owner/repo/issues/157"}
+
+        with (
+            mock.patch("deployment.deployment._is_issue_closed", return_value=True),
+            mock.patch.object(_u, "urlopen") as mock_urlopen,
+        ):
+            _dispatch(ctx, "owner/repo", issue, self._minimal_cfg())
+
+        mock_urlopen.assert_not_called()
+
+    def test_dispatch_nao_adquire_lock_quando_issue_closed(self) -> None:
+        """_dispatch nem tenta adquirir lock quando issue está CLOSED."""
+        from deployment.deployment import _dispatch
+
+        ctx = self._make_ctx()
+        issue = {"number": 157, "title": "feat: algo", "url": "https://github.com/owner/repo/issues/157"}
+
+        with (
+            mock.patch("deployment.deployment._is_issue_closed", return_value=True),
+            mock.patch("deployment.deployment._try_acquire_dispatch_lock") as mock_lock,
+        ):
+            _dispatch(ctx, "owner/repo", issue, self._minimal_cfg())
+
+        mock_lock.assert_not_called()
+
+    def test_dispatch_prossegue_quando_issue_open(self) -> None:
+        """_dispatch tenta adquirir lock quando issue está OPEN."""
+        from deployment.deployment import _dispatch
+
+        ctx = self._make_ctx()
+        issue = {"number": 157, "title": "feat: algo", "url": "https://github.com/owner/repo/issues/157"}
+
+        with (
+            mock.patch("deployment.deployment._is_issue_closed", return_value=False),
+            mock.patch("deployment.deployment._try_acquire_dispatch_lock", return_value=(False, "/tmp/lock")) as mock_lock,
+        ):
+            _dispatch(ctx, "owner/repo", issue, self._minimal_cfg())
+
+        mock_lock.assert_called_once()
+
+    def test_dispatch_fail_open_em_erro_de_issue_check(self) -> None:
+        """_dispatch prossegue (fail-open) se a verificação de issue.state falhar."""
+        from deployment.deployment import _dispatch
+
+        ctx = self._make_ctx()
+        issue = {"number": 157, "title": "feat: algo", "url": "https://github.com/owner/repo/issues/157"}
+
+        with (
+            mock.patch("deployment.deployment._is_issue_closed", return_value=False),
+            mock.patch("deployment.deployment._try_acquire_dispatch_lock", return_value=(False, "/tmp/lock")) as mock_lock,
+        ):
+            _dispatch(ctx, "owner/repo", issue, self._minimal_cfg())
+
+        # Chegou na tentativa de lock (não abortou antes)
+        mock_lock.assert_called_once()
+
+
+class TestPromptsClosedGuard:
+    """Guard #163: todos os prompts contêm instrução de verificar issue.state == CLOSED."""
+
+    def _read_prompt(self, stage: str) -> str:
+        import pathlib
+        path = pathlib.Path(__file__).parent.parent / "prompts" / f"{stage}.md"
+        return path.read_text()
+
+    def test_dev_md_tem_guard_closed(self) -> None:
+        body = self._read_prompt("dev")
+        assert "CLOSED" in body
+        assert "exit 0" in body or "encerrando" in body.lower()
+
+    def test_reviewer_md_tem_guard_closed(self) -> None:
+        body = self._read_prompt("reviewer")
+        assert "CLOSED" in body
+        assert "exit 0" in body or "encerrando" in body.lower()
+
+    def test_rework_md_tem_guard_closed(self) -> None:
+        body = self._read_prompt("rework")
+        assert "CLOSED" in body
+        assert "exit 0" in body or "encerrando" in body.lower()
+
+    def test_conflict_md_tem_guard_closed(self) -> None:
+        body = self._read_prompt("conflict")
+        assert "CLOSED" in body
+        assert "exit 0" in body or "encerrando" in body.lower()
+
+    def test_guard_e_primeiro_passo_em_dev(self) -> None:
+        """O guard deve ser o passo 1 — verificado antes de qualquer ação."""
+        body = self._read_prompt("dev")
+        # Passo 1 deve conter "CLOSED"
+        lines = body.splitlines()
+        passo1_start = next((i for i, ln in enumerate(lines) if ln.strip().startswith("1.")), None)
+        assert passo1_start is not None, "Passo 1 não encontrado em dev.md"
+        passo1_text = "\n".join(lines[passo1_start:passo1_start + 10])
+        assert "CLOSED" in passo1_text, "Passo 1 de dev.md não contém guard CLOSED"
+
+    def test_guard_e_primeiro_passo_em_reviewer(self) -> None:
+        """O guard deve ser o passo 1 — verificado antes de qualquer ação."""
+        body = self._read_prompt("reviewer")
+        lines = body.splitlines()
+        passo1_start = next((i for i, ln in enumerate(lines) if ln.strip().startswith("1.")), None)
+        assert passo1_start is not None, "Passo 1 não encontrado em reviewer.md"
+        passo1_text = "\n".join(lines[passo1_start:passo1_start + 10])
+        assert "CLOSED" in passo1_text, "Passo 1 de reviewer.md não contém guard CLOSED"
+
+    def test_guard_e_primeiro_passo_em_rework(self) -> None:
+        body = self._read_prompt("rework")
+        lines = body.splitlines()
+        passo1_start = next((i for i, ln in enumerate(lines) if ln.strip().startswith("1.")), None)
+        assert passo1_start is not None, "Passo 1 não encontrado em rework.md"
+        passo1_text = "\n".join(lines[passo1_start:passo1_start + 10])
+        assert "CLOSED" in passo1_text, "Passo 1 de rework.md não contém guard CLOSED"
+
+    def test_guard_e_primeiro_passo_em_conflict(self) -> None:
+        body = self._read_prompt("conflict")
+        lines = body.splitlines()
+        passo1_start = next((i for i, ln in enumerate(lines) if ln.strip().startswith("1.")), None)
+        assert passo1_start is not None, "Passo 1 não encontrado em conflict.md"
+        passo1_text = "\n".join(lines[passo1_start:passo1_start + 10])
+        assert "CLOSED" in passo1_text, "Passo 1 de conflict.md não contém guard CLOSED"
+
+    def test_prompts_referencia_issue_163(self) -> None:
+        """Referência ao bug #163 para rastreabilidade em ao menos um prompt."""
+        prompts = ["dev", "reviewer", "rework", "conflict"]
+        has_ref = any("#163" in self._read_prompt(s) for s in prompts)
+        assert has_ref, "Nenhum prompt referencia o bug #163 para rastreabilidade"

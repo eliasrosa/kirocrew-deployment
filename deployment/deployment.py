@@ -875,6 +875,18 @@ def _dispatch(
     """
     import urllib.request as _u
 
+    # ── Guard: issue CLOSED → não despachar (fix #163) ───────────────────
+    # Cobre a race onde a PR canônica mergeia (fechando a issue via "Closes #N")
+    # enquanto o cron ainda vê crewflow:todo na cache de labels.  O state da
+    # issue via API já retorna CLOSED imediatamente — mais confiável que aguardar
+    # a propagação do label crewflow:done.
+    if _is_issue_closed(repo, issue["number"]):
+        logger.info(
+            "deployment: _dispatch abortado — issue %s#%s está CLOSED (guard #163)",
+            repo, issue["number"],
+        )
+        return
+
     # ── Reserva atômica: ANTES do POST ───────────────────────────────────
     acquired, _lock_path = _try_acquire_dispatch_lock(repo, issue["number"])
     if not acquired:
