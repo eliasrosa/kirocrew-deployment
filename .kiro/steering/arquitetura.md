@@ -12,7 +12,7 @@ description: Arquitetura hexagonal, stack, convenções de código e qualidade d
 |---|---|---|
 | Linguagem | **Python 3.12** | |
 | Servidor web | **aiohttp** | NÃO usar FastAPI, Flask, Starlette ou Pydantic |
-| Testes | **pytest** + **pytest-cov** | 242 testes, 75% de cobertura mínima |
+| Testes | **pytest** + **pytest-cov** | 630 testes, 75% de cobertura mínima |
 | Linting | **ruff** | zero warnings permitidos |
 | Type check | **mypy** | `--ignore-missing-imports` no CI |
 

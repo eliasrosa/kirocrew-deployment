@@ -122,8 +122,7 @@ Em vez de um único cron monolítico (`run`), a esteira pode ser dividida em
 | `run_dev` | `crewflow:todo` | `DISPATCH_DEV` — implementa + abre PR | 600s (10 min) |
 | `run_reviewer` | `crewflow:review` (sem `crewflow:reviewed`) | `DISPATCH_REVIEWER` — code review | 300s (5 min) |
 | `run_merge` | `crewflow:review` + `crewflow:reviewed` aprovado | `MERGE_PR` — merge squash | 120s (2 min) |
-| `run_rework` | `crewflow:changes-requested` | `DISPATCH_REWORK` — re-trabalho pós-review | 300s (5 min) |
-| `run_conflito` | `crewflow:conflito` | `DISPATCH_CONFLICT_RESOLVER` — resolve conflito de merge | 300s (5 min) |
+| `run_conflito` | `crewflow:changes-requested` ou `crewflow:conflito` | `DISPATCH_REWORK` (re-trabalho pós-review) / `DISPATCH_CONFLICT_RESOLVER` (conflito de merge) | 300s (5 min) |
 
 O modelo por estágio é configurável via `stage_models` na `deployment.config.yaml`:
 

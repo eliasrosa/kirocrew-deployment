@@ -222,7 +222,7 @@ python3 -m pytest flow/tests/ --cov=flow --cov-report=term-missing
 python3 -m ruff check flow/ && python3 -m pytest flow/tests/ --cov=flow --cov-fail-under=75
 ```
 
-260 testes, 82% cobertura, ruff limpo (Fase 1).
+630 testes, cobertura ≥75% (piso do CI), ruff limpo.
 
 ## Dry-run — inspecionar sem despachar
 
