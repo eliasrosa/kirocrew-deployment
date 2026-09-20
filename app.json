@@ -1,41 +1,93 @@
 {
-  "name": "kirocrew-flow",
-  "version": "1.0.0",
-  "displayName": "KiroCrew Flow",
-  "description": "Autonomous dev pipeline: issue to PR to review to merge. Zero-token polling over GitHub/Jira labels.",
-  "author": "eliasrosa",
-  "tags": ["devops", "github", "automation", "pr-review"],
-  "agents": [
-    "agents/crewflow-dev.json",
-    "agents/crewflow-reviewer.json",
-    "agents/crewflow-merge.json"
-  ],
-  "backend": {
-    "routes": "backend.routes:register_routes"
-  },
-  "ui": {
-    "entry": "ui/dist/index.mjs",
-    "pages": [
-      { "route": "/apps/kirocrew-flow", "label": "Flow", "icon": "GitPullRequest" }
+    "name": "kirocrew-flow",
+    "version": "1.0.0",
+    "displayName": "KiroCrew Flow",
+    "description": "Autonomous dev pipeline: issue to PR to review to merge. Zero-token polling over GitHub/Jira labels.",
+    "author": "eliasrosa",
+    "tags": [
+        "devops",
+        "github",
+        "automation",
+        "pr-review"
     ],
-    "sidebar": { "section": "Dev Tools", "order": 1 }
-  },
-  "crons": [
-    {"name": "crewflow-dev",      "every": 300, "message": "crewflow: trigger dev stage",      "enabled": false},
-    {"name": "crewflow-reviewer", "every": 180, "message": "crewflow: trigger reviewer stage", "enabled": false},
-    {"name": "crewflow-merge",    "every": 120, "message": "crewflow: trigger merge stage",    "enabled": false},
-    {"name": "crewflow-conflito", "every": 300, "message": "crewflow: trigger conflito stage", "enabled": false}
-  ],
-  "permissions": {
-    "api": ["/api/crons", "/api/status", "/apps/kirocrew-flow/api"],
-    "events": ["notification"],
-    "storage": true,
-    "network": true
-  },
-  "setup": {
-    "onInstall": "pip install -e '.[dev,gateway]' && cd ui && npm install && npm run build",
-    "onUpdate":  "pip install -e '.[dev,gateway]' && cd ui && npm run build"
-  },
-  "dependencies": {"commands": ["git", "gh", "python3", "node", "npm"]},
-  "platform": {"os": ["linux", "macos"]}
+    "agents": [
+        "agents/crewflow-dev.json",
+        "agents/crewflow-reviewer.json",
+        "agents/crewflow-merge.json"
+    ],
+    "backend": {
+        "routes": "backend.routes:register_routes"
+    },
+    "ui": {
+        "entry": "dist/index.mjs",
+        "pages": [
+            {
+                "route": "/apps/kirocrew-flow",
+                "label": "Flow",
+                "icon": "GitPullRequest"
+            }
+        ],
+        "sidebar": {
+            "section": "Dev Tools",
+            "order": 1
+        }
+    },
+    "crons": [
+        {
+            "name": "crewflow-dev",
+            "every": 300,
+            "message": "crewflow: trigger dev stage",
+            "enabled": false
+        },
+        {
+            "name": "crewflow-reviewer",
+            "every": 180,
+            "message": "crewflow: trigger reviewer stage",
+            "enabled": false
+        },
+        {
+            "name": "crewflow-merge",
+            "every": 120,
+            "message": "crewflow: trigger merge stage",
+            "enabled": false
+        },
+        {
+            "name": "crewflow-conflito",
+            "every": 300,
+            "message": "crewflow: trigger conflito stage",
+            "enabled": false
+        }
+    ],
+    "permissions": {
+        "api": [
+            "/api/crons",
+            "/api/status",
+            "/apps/kirocrew-flow/api",
+            "/api/apps/kirocrew-flow"
+        ],
+        "events": [
+            "notification"
+        ],
+        "storage": true,
+        "network": true
+    },
+    "setup": {
+        "onInstall": "pip install -e '.[dev,gateway]' && cd ui && npm install && npm run build",
+        "onUpdate": "pip install -e '.[dev,gateway]' && cd ui && npm run build"
+    },
+    "dependencies": {
+        "commands": [
+            "git",
+            "gh",
+            "python3",
+            "node",
+            "npm"
+        ]
+    },
+    "platform": {
+        "os": [
+            "linux",
+            "macos"
+        ]
+    }
 }

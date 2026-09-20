@@ -1,42 +1,42 @@
-import { jsxs as r, jsx as t } from "react/jsx-runtime";
-import { useAppApi as C } from "@kirocrew/app-sdk";
-import { PageHeader as $, Btn as w, Card as B } from "@kirocrew/app-sdk/ui";
-import { useState as s, useCallback as u, useEffect as W } from "react";
+import { jsxs as n, jsx as t } from "react/jsx-runtime";
+import { useAppApi as B } from "@kirocrew/app-sdk";
+import { PageHeader as I, Btn as k, Card as W } from "@kirocrew/app-sdk/ui";
+import { useState as c, useCallback as v, useEffect as _ } from "react";
 function A(e) {
   return e < 60 ? `${e}m` : e < 1440 ? `${Math.floor(e / 60)}h` : `${Math.floor(e / 1440)}d`;
 }
 function D(e) {
   return e.split("/").pop() ?? e;
 }
-function I({ issue: e, showDispatch: n, onDispatch: i, dispatching: l }) {
-  return /* @__PURE__ */ r(B, { style: { marginBottom: 8, padding: "10px 12px" }, children: [
-    /* @__PURE__ */ r("div", { style: { display: "flex", alignItems: "flex-start", gap: 8 }, children: [
-      /* @__PURE__ */ r("div", { style: { flex: 1, minWidth: 0 }, children: [
-        /* @__PURE__ */ r("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }, children: [
-          /* @__PURE__ */ r("span", { style: { fontWeight: 600, fontSize: 12, opacity: 0.6, whiteSpace: "nowrap" }, children: [
+function E({ issue: e, showDispatch: l, onDispatch: r, dispatching: a }) {
+  return /* @__PURE__ */ n(W, { style: { marginBottom: 8, padding: "10px 12px" }, children: [
+    /* @__PURE__ */ n("div", { style: { display: "flex", alignItems: "flex-start", gap: 8 }, children: [
+      /* @__PURE__ */ n("div", { style: { flex: 1, minWidth: 0 }, children: [
+        /* @__PURE__ */ n("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }, children: [
+          /* @__PURE__ */ n("span", { style: { fontWeight: 600, fontSize: 12, opacity: 0.6, whiteSpace: "nowrap" }, children: [
             "#",
             e.number
           ] }),
           /* @__PURE__ */ t("span", { style: { fontWeight: 500, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: e.title })
         ] }),
-        /* @__PURE__ */ r("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 11, opacity: 0.6 }, children: [
+        /* @__PURE__ */ n("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 11, opacity: 0.6 }, children: [
           /* @__PURE__ */ t("span", { children: D(e.repo) }),
-          e.age_min > 0 && /* @__PURE__ */ r("span", { children: [
+          e.age_min > 0 && /* @__PURE__ */ n("span", { children: [
             "⏱ ",
             A(e.age_min)
           ] }),
           e.running && /* @__PURE__ */ t("span", { style: { color: "#f97316" }, children: "● running" })
         ] })
       ] }),
-      n && i && /* @__PURE__ */ t(
-        w,
+      l && r && /* @__PURE__ */ t(
+        k,
         {
           size: "sm",
           variant: "secondary",
-          disabled: l,
-          onClick: () => i(e.repo, e.number),
+          disabled: a,
+          onClick: () => r(e.repo, e.number),
           style: { flexShrink: 0, fontSize: 11 },
-          children: l ? "..." : "Dispatch"
+          children: a ? "..." : "Dispatch"
         }
       )
     ] }),
@@ -52,9 +52,9 @@ function I({ issue: e, showDispatch: n, onDispatch: i, dispatching: l }) {
     )
   ] });
 }
-function v({ title: e, issues: n, color: i, showDispatch: l, onDispatch: g, dispatchingKey: p }) {
-  return /* @__PURE__ */ r("div", { style: { flex: 1, minWidth: 180, maxWidth: 260 }, children: [
-    /* @__PURE__ */ r(
+function b({ title: e, issues: l, color: r, showDispatch: a, onDispatch: u, dispatchingKey: p }) {
+  return /* @__PURE__ */ n("div", { style: { flex: 1, minWidth: 180, maxWidth: 260 }, children: [
+    /* @__PURE__ */ n(
       "div",
       {
         style: {
@@ -63,7 +63,7 @@ function v({ title: e, issues: n, color: i, showDispatch: l, onDispatch: g, disp
           gap: 8,
           marginBottom: 10,
           paddingBottom: 6,
-          borderBottom: `2px solid ${i}`
+          borderBottom: `2px solid ${r}`
         },
         children: [
           /* @__PURE__ */ t("span", { style: { fontWeight: 700, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.04em" }, children: e }),
@@ -71,81 +71,98 @@ function v({ title: e, issues: n, color: i, showDispatch: l, onDispatch: g, disp
             "span",
             {
               style: {
-                background: i,
+                background: r,
                 color: "#fff",
                 borderRadius: 10,
                 padding: "1px 7px",
                 fontSize: 11,
                 fontWeight: 700
               },
-              children: n.length
+              children: l.length
             }
           )
         ]
       }
     ),
-    n.length === 0 ? /* @__PURE__ */ t("div", { style: { fontSize: 12, opacity: 0.4, textAlign: "center", padding: "16px 0" }, children: "—" }) : n.map((a) => {
-      const c = `${a.repo}#${a.number}`;
+    l.length === 0 ? /* @__PURE__ */ t("div", { style: { fontSize: 12, opacity: 0.4, textAlign: "center", padding: "16px 0" }, children: "—" }) : l.map((d) => {
+      const f = `${d.repo}#${d.number}`;
       return /* @__PURE__ */ t(
-        I,
+        E,
         {
-          issue: a,
-          showDispatch: l,
-          onDispatch: g,
-          dispatching: p === c
+          issue: d,
+          showDispatch: a,
+          onDispatch: u,
+          dispatching: p === f
         },
-        c
+        f
       );
     })
   ] });
 }
-function _() {
-  const e = C(), [n, i] = s({
+const M = {
+  todo: [
+    { number: 99, title: "Exemplo: feature aguardando dev", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 45, labels: ["crewflow:feature", "crewflow:p2"], blocked: !1, running: !1 }
+  ],
+  dev: [
+    { number: 100, title: "Exemplo: issue em implementação", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 120, labels: ["crewflow:bug", "crewflow:p1"], blocked: !1, running: !0 }
+  ],
+  review: [
+    { number: 101, title: "Exemplo: PR aguardando review", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 30, labels: ["crewflow:feature"], blocked: !1, running: !1 }
+  ],
+  reviewed: [],
+  done: [],
+  blocked: [
+    { number: 102, title: "Exemplo: issue bloqueada", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 240, labels: ["crewflow:debt"], blocked: !0, running: !1 }
+  ]
+};
+function R() {
+  const e = B(), [l, r] = c({
     todo: [],
     dev: [],
     review: [],
     reviewed: [],
     done: [],
     blocked: []
-  }), [l, g] = s(!0), [p, a] = s(null), [c, x] = s(null), [k, y] = s(null), d = u(() => e.get("/api/apps/kirocrew-flow/issues").then((o) => {
-    i(o.columns ?? { todo: [], dev: [], review: [], reviewed: [], done: [], blocked: [] }), x(/* @__PURE__ */ new Date()), a(null);
+  }), [a, u] = c(!0), [p, d] = c(null), [f, h] = c(!1), [w, x] = c(null), [S, y] = c(null), s = v(() => e.get("/api/apps/kirocrew-flow/issues").then((o) => {
+    r(o.columns ?? { todo: [], dev: [], review: [], reviewed: [], done: [], blocked: [] }), x(/* @__PURE__ */ new Date()), d(null), h(!1);
   }).catch((o) => {
-    a(String(o));
+    const i = String(o);
+    i.includes("404") || i.includes("not found") ? (r(M), h(!0), d(null)) : d(i);
   }).finally(() => {
-    g(!1);
+    u(!1);
   }), [e]);
-  W(() => {
-    d();
-    const o = setInterval(d, 15e3);
+  _(() => {
+    s();
+    const o = setInterval(s, 15e3);
     return () => clearInterval(o);
-  }, [d]);
-  const b = u(
-    async (o, h) => {
-      const m = `${o}#${h}`;
+  }, [s]);
+  const C = v(
+    async (o, i) => {
+      const m = `${o}#${i}`;
       y(m);
       try {
-        await e.post("/api/apps/kirocrew-flow/dispatch", { repo: o, number: Number(h) }), await d();
-      } catch (f) {
-        console.error("dispatch failed:", f);
+        await e.post("/api/apps/kirocrew-flow/dispatch", { repo: o, number: Number(i) }), await s();
+      } catch (g) {
+        console.error("dispatch failed:", g);
       } finally {
         y(null);
       }
     },
-    [e, d]
-  ), S = [
+    [e, s]
+  ), z = [
     { key: "todo", title: "Todo", color: "#16a34a", showDispatch: !0 },
     { key: "dev", title: "Dev", color: "#2563eb" },
     { key: "review", title: "Review", color: "#8b5cf6" },
     { key: "reviewed", title: "QA", color: "#0ea5e9" },
     { key: "done", title: "Done", color: "#22c55e" }
-  ], z = n.todo.length + n.dev.length + n.review.length + n.reviewed.length + n.blocked.length;
-  return /* @__PURE__ */ r("div", { style: { padding: "20px 24px", maxWidth: 1400 }, children: [
+  ], $ = l.todo.length + l.dev.length + l.review.length + l.reviewed.length + l.blocked.length;
+  return /* @__PURE__ */ n("div", { style: { padding: "20px 24px", maxWidth: 1400 }, children: [
     /* @__PURE__ */ t(
-      $,
+      I,
       {
         title: "KiroCrew Flow",
-        subtitle: l ? "Carregando…" : p ? `Erro: ${p}` : c ? `${z} issues ativas · atualizado ${c.toLocaleTimeString()}` : "",
-        actions: /* @__PURE__ */ t(w, { size: "sm", variant: "secondary", onClick: d, disabled: l, children: "↻ Atualizar" })
+        subtitle: a ? "Carregando…" : p ? `Erro: ${p}` : f ? "⚠️ Modo demo — backend indisponível (issue #170)" : w ? `${$} issues ativas · atualizado ${w.toLocaleTimeString()}` : "",
+        actions: /* @__PURE__ */ t(k, { size: "sm", variant: "secondary", onClick: s, disabled: a, children: "↻ Atualizar" })
       }
     ),
     /* @__PURE__ */ t(
@@ -158,30 +175,30 @@ function _() {
           marginTop: 20,
           paddingBottom: 8
         },
-        children: S.map(({ key: o, title: h, color: m, showDispatch: f }) => /* @__PURE__ */ t(
-          v,
+        children: z.map(({ key: o, title: i, color: m, showDispatch: g }) => /* @__PURE__ */ t(
+          b,
           {
-            title: h,
-            issues: n[o],
+            title: i,
+            issues: l[o],
             color: m,
-            showDispatch: f,
-            onDispatch: f ? b : void 0,
-            dispatchingKey: k ?? void 0
+            showDispatch: g,
+            onDispatch: g ? C : void 0,
+            dispatchingKey: S ?? void 0
           },
           o
         ))
       }
     ),
-    n.blocked.length > 0 && /* @__PURE__ */ t("div", { style: { marginTop: 24 }, children: /* @__PURE__ */ t(
-      v,
+    l.blocked.length > 0 && /* @__PURE__ */ t("div", { style: { marginTop: 24 }, children: /* @__PURE__ */ t(
+      b,
       {
         title: "Blocked",
-        issues: n.blocked,
+        issues: l.blocked,
         color: "#dc2626"
       }
     ) })
   ] });
 }
 export {
-  _ as default
+  R as default
 };

@@ -163,8 +163,27 @@ function Column({ title, issues, color, showDispatch, onDispatch, dispatchingKey
 }
 
 // ---------------------------------------------------------------------------
-// App principal
+// Mock data — usado quando o backend.routes ainda não está disponível
+// (issue #170: backend.routes não registra rotas para apps de terceiros)
 // ---------------------------------------------------------------------------
+
+const MOCK_COLUMNS: Columns = {
+  todo: [
+    { number: 99, title: 'Exemplo: feature aguardando dev', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 45, labels: ['crewflow:feature', 'crewflow:p2'], blocked: false, running: false },
+  ],
+  dev: [
+    { number: 100, title: 'Exemplo: issue em implementação', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 120, labels: ['crewflow:bug', 'crewflow:p1'], blocked: false, running: true },
+  ],
+  review: [
+    { number: 101, title: 'Exemplo: PR aguardando review', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 30, labels: ['crewflow:feature'], blocked: false, running: false },
+  ],
+  reviewed: [],
+  done: [],
+  blocked: [
+    { number: 102, title: 'Exemplo: issue bloqueada', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 240, labels: ['crewflow:debt'], blocked: true, running: false },
+  ],
+}
+
 
 export default function CrewFlow() {
   const api = useAppApi()
@@ -178,6 +197,7 @@ export default function CrewFlow() {
   })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [isMock, setIsMock] = useState(false)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
   const [dispatchingKey, setDispatchingKey] = useState<string | null>(null)
 
@@ -188,9 +208,19 @@ export default function CrewFlow() {
         setColumns(d.columns ?? { todo: [], dev: [], review: [], reviewed: [], done: [], blocked: [] })
         setLastUpdate(new Date())
         setError(null)
+        setIsMock(false)
       })
       .catch((err: unknown) => {
-        setError(String(err))
+        const msg = String(err)
+        // 404 = backend.routes não disponível para apps de terceiros (issue #170)
+        // Usar dados mock para permitir desenvolvimento da UI
+        if (msg.includes('404') || msg.includes('not found')) {
+          setColumns(MOCK_COLUMNS)
+          setIsMock(true)
+          setError(null)
+        } else {
+          setError(msg)
+        }
       })
       .finally(() => {
         setLoading(false)
@@ -244,6 +274,8 @@ export default function CrewFlow() {
             ? 'Carregando…'
             : error
             ? `Erro: ${error}`
+            : isMock
+            ? '⚠️ Modo demo — backend indisponível (issue #170)'
             : lastUpdate
             ? `${totalActive} issues ativas · atualizado ${lastUpdate.toLocaleTimeString()}`
             : ''

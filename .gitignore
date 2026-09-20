@@ -22,3 +22,8 @@ __pycache__/
 .coverage
 # Config de deploy real (contém paths pessoais)
 deployment/deployment.config.yaml
+
+# Playwright CLI snapshots e venv local
+.playwright-cli/
+.venv-playwright/
+/tmp/.kirocrew-flow-session-token

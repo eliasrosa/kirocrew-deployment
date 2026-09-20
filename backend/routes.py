@@ -66,26 +66,60 @@ async def _stop_loops(app: web.Application) -> None:
     print("[kirocrew-flow] on_cleanup: loops cancelados", flush=True)
 
 
-def register_routes(app: web.Application) -> None:
-    """Registra as rotas HTTP e hooks de ciclo de vida no app do gateway.
+def register_routes(ctx: object) -> list:
+    """Registra as rotas do app kirocrew-flow no RouteRegistry do gateway.
 
-    Chamado pelo gateway com o ``web.Application`` de forma idêntica ao Issue Radar
-    (``_mod.register_routes(app)``). Usa ``app.router`` para as rotas e
-    ``app.on_startup`` / ``app.on_cleanup`` para os loops asyncio.
+    Assinatura correta para apps de terceiros (não builtins):
+    - Recebe ``ctx: AppContext`` (duck-typed como object)
+    - Retorna ``list[AppRoute]`` — o registry monta as rotas como
+      ``/api/apps/{app_name}{path}`` automaticamente
 
-    Args:
-        app: instância de ``aiohttp.web.Application`` do gateway.
+    Diferente dos apps builtins que usam ``app.router.add_get(...)`` diretamente,
+    apps de terceiros usam o RouteRegistry via esta interface.
+    Descoberto via inspeção de ``kiro_crew.apps.route_registry.py``.
     """
-    app.router.add_get("/api/apps/kirocrew-flow/health", handle_health)
-    app.router.add_get("/api/apps/kirocrew-flow/issues", handle_issues)
-    app.router.add_post("/api/apps/kirocrew-flow/dispatch", handle_dispatch)
+    try:
+        from kiro_crew.apps.route_registry import AppRoute  # type: ignore[import]
+    except ImportError:
+        # Fallback: criar AppRoute simples se não disponível (desenvolvimento local)
+        from dataclasses import dataclass
+        from typing import Any
 
-    app.on_startup.append(_start_loops)
-    app.on_cleanup.append(_stop_loops)
+        @dataclass
+        class AppRoute:  # type: ignore[no-redef]
+            method: str
+            path: str
+            handler: Any
+
+    return [
+        AppRoute("GET", "/health", handle_health),
+        AppRoute("GET", "/issues", handle_issues),
+        AppRoute("POST", "/dispatch", handle_dispatch),
+    ]
 
 
-async def handle_health(request: web.Request) -> web.Response:
+async def handle_health(request: web.Request, ctx: object = None) -> web.Response:
     return web.json_response({"ok": True, "app": "kirocrew-flow", "version": "1.0.0"})
+
+
+def _extract_issue_number(raw: dict) -> int | str:
+    """Extrai o número inteiro da issue do objeto raw do scan.
+
+    O scan do engine usa ``key`` como URL completa
+    (``https://github.com/owner/repo/issues/N``). O campo ``number`` pode ser
+    None, ausente, um int, ou a própria URL — dependendo da versão do adapter.
+    """
+    num = raw.get("number")
+    if isinstance(num, int):
+        return num
+    # Tentar extrair da URL em qualquer campo relevante
+    for val in (num, raw.get("key", ""), raw.get("url", "")):
+        if isinstance(val, str) and "/issues/" in val:
+            try:
+                return int(val.rstrip("/").split("/issues/")[-1])
+            except ValueError:
+                pass
+    return num or ""
 
 
 def _load_issues_from_github() -> dict[str, list[dict]]:
@@ -166,7 +200,7 @@ def _load_issues_from_github() -> dict[str, list[dict]]:
             age_min = _age_minutes(created_at, now)
 
             issue_entry = {
-                "number": raw.get("number") or raw.get("key", ""),
+                "number": _extract_issue_number(raw),
                 "title": raw.get("title", ""),
                 "repo": raw.get("repo", "") or _repo_from_key(raw.get("key", "")),
                 "url": raw.get("url", ""),
@@ -267,7 +301,7 @@ def _repo_from_key(key: str) -> str:
     return ""
 
 
-async def handle_issues(request: web.Request) -> web.Response:
+async def handle_issues(request: web.Request, ctx: object = None) -> web.Response:
     """Lista issues por estágio (crewflow:*). Zero-token, cache-first."""
     try:
         loop = asyncio.get_running_loop()
@@ -281,7 +315,7 @@ async def handle_issues(request: web.Request) -> web.Response:
         )
 
 
-async def handle_dispatch(request: web.Request) -> web.Response:
+async def handle_dispatch(request: web.Request, ctx: object = None) -> web.Response:
     """Force dispatch manual de uma issue.
 
     Body JSON: {"repo": "owner/repo", "number": 123}
