@@ -338,7 +338,7 @@ class TestStateToColumn:
 
     def test_qa_maps_to_reviewed(self) -> None:
         from flow.domain.state import State
-        assert _state_to_column(State.QA) == "reviewed"
+        assert _state_to_column(State.QA) == "review_ok"
 
     def test_done_maps_to_done(self) -> None:
         from flow.domain.state import State

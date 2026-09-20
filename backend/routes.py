@@ -297,7 +297,7 @@ def _state_to_column(state: object) -> str | None:
         State.TODO:   "todo",
         State.DEV:    "dev",
         State.REVIEW: "review",
-        State.QA:     "reviewed",  # QA é pós-review = coluna "reviewed" no kanban
+        State.QA:     "review_ok",  # QA é pós-aprovação — aparece no painel Code Review/Aprovado
         State.DONE:   "done",
     }
     if not isinstance(state, State):
