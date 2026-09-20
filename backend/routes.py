@@ -1,4 +1,21 @@
-"""Rotas do app kirocrew-flow registradas no gateway in-process."""
+"""Rotas do app kirocrew-flow registradas no gateway in-process.
+
+Wiring correto (ver issue #170):
+
+- As rotas HTTP são registradas pelo ``RouteRegistry`` do gateway a partir do
+  hook declarado em ``app.json`` sob ``backend.hooks.routes`` (apontando para
+  ``backend.routes:register_routes``). ``register_routes(ctx)`` retorna uma
+  ``list[AppRoute]`` e o registry monta cada rota como
+  ``/api/apps/kirocrew-flow{path}``.
+- O ciclo de vida dos 4 loops asyncio de polling (dev/reviewer/merge/conflito)
+  é de propriedade de ``backend/hooks.py`` (``on_startup``/``on_shutdown``),
+  invocados pelo gateway como ``func(ctx)``.
+
+Os helpers ``_start_loops(app)``/``_stop_loops(app)`` abaixo são o caminho
+baseado em ``aiohttp.web.Application`` usado pelo servidor standalone e pelos
+testes; o gateway NÃO os usa (ele entrega um ``AppContext``, não uma
+``Application``).
+"""
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +30,11 @@ logger = logging.getLogger(__name__)
 
 
 async def _start_loops(app: web.Application) -> None:
-    """Hook on_startup: inicia os 4 loops asyncio de polling da esteira."""
+    """Inicia os 4 loops asyncio de polling da esteira (caminho aiohttp/standalone).
+
+    Usado pelo servidor standalone e pelos testes via ``app.on_startup``. O
+    gateway usa o caminho baseado em ``ctx`` em ``backend/hooks.py:on_startup``.
+    """
     app_root = Path(__file__).parent.parent
     if str(app_root) not in sys.path:
         sys.path.insert(0, str(app_root))
@@ -59,7 +80,11 @@ async def _start_loops(app: web.Application) -> None:
 
 
 async def _stop_loops(app: web.Application) -> None:
-    """Hook on_cleanup: cancela os loops asyncio e limpa a lista."""
+    """Cancela os loops asyncio e limpa a lista (caminho aiohttp/standalone).
+
+    Usado pelo servidor standalone e pelos testes via ``app.on_cleanup``. O
+    gateway usa o caminho baseado em ``ctx`` em ``backend/hooks.py:on_shutdown``.
+    """
     for task in app.get("crewflow_tasks", []):
         task.cancel()
     app["crewflow_tasks"] = []
@@ -74,8 +99,12 @@ def register_routes(ctx: object) -> list:
     - Retorna ``list[AppRoute]`` — o registry monta as rotas como
       ``/api/apps/{app_name}{path}`` automaticamente
 
-    Diferente dos apps builtins que usam ``app.router.add_get(...)`` diretamente,
-    apps de terceiros usam o RouteRegistry via esta interface.
+    O gateway chega até esta função pelo hook declarado em ``app.json`` sob
+    ``backend.hooks.routes`` (``on_app_enable`` lê ``backend.hooks.routes``,
+    não ``backend.routes`` — ver issue #170). Diferente dos apps builtins, que
+    usam ``app.router.add_get(...)`` diretamente, apps de terceiros usam o
+    RouteRegistry via esta interface. O ciclo de vida dos loops de polling é de
+    ``backend/hooks.py`` (``on_startup``/``on_shutdown``), não daqui.
     Descoberto via inspeção de ``kiro_crew.apps.route_registry.py``.
     """
     try:
