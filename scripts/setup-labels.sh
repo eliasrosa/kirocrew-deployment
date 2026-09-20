@@ -42,6 +42,11 @@ LABELS=(
   # rebase/merge na branch feat/issue-N existente e atualiza a MESMA PR.
   # Nunca abre PR nova.
   "crewflow:conflito|F97316|PR com conflito de merge ou base desatualizada: cron de conflito resolve e atualiza a mesma branch"
+  # Resultado semantico de review (1 label, sem combinacao):
+  #   review-ok   = reviewer aprovou, pronto para merge (substitui review+reviewed)
+  #   review-fail = reviewer reprovou, aguarda rework  (substitui review+changes-requested)
+  "crewflow:review-ok|22C55E|Reviewer aprovou — pronto para merge"
+  "crewflow:review-fail|DC2626|Reviewer reprovou — aguarda rework"
 
   # ── TIPO DE FLUXO (routing: define qual workflow aplicar) ────────────
   "crewflow:feature|A855F7|Feature nova"

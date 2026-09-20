@@ -231,14 +231,14 @@ def decide(
             remove_labels=("crewflow:conflito",),
         )
 
-    # ── Ciclo de re-trabalho pós-review: crewflow:changes-requested ───
-    # Quando o reviewer pediu mudança (marcou changes-requested), o motor
-    # despacha uma sessão dev de re-trabalho que:
+    # ── Ciclo de re-trabalho pós-review: crewflow:review-fail ─────────
+    # Quando o reviewer reprovou (marcou review-fail), o motor despacha uma
+    # sessão dev de re-trabalho que:
     #   - lê os pedidos de mudança do PR
     #   - aplica os ajustes na MESMA branch/PR
     #   - volta a issue para crewflow:review
     # Antes de despachar, verifica o teto de iterações (anti-loop infinito).
-    if Modifier.CHANGES_REQUESTED in modifiers:
+    if Modifier.REVIEW_FAIL in modifiers:
         from flow.audit.state_comment import get_review_iterations_from_comment
         iterations = get_review_iterations_from_comment(state_comment)
         _max_iter = (
@@ -256,19 +256,40 @@ def decide(
         return ExecutorDecision(
             action=ActionKind.DISPATCH_REWORK,
             reason=(
-                f"reviewer pediu mudanças — despachando sessão de re-trabalho "
+                f"reviewer reprovou — despachando sessão de re-trabalho "
                 f"(iteração {iterations + 1}/{_max_iter})"
             ),
             add_labels=("crewflow:running",),
-            remove_labels=("crewflow:changes-requested",),
+            remove_labels=("crewflow:review-fail",),
         )
 
-    # ── Lock anti-loop: crewflow:reviewed ─────────────────────────────
-    # Se reviewed está presente, lemos o resultado do reviewer no state_comment.
-    # - SHA divergiu (push pós-review) → remove reviewed e redespacha reviewer
-    # - Aprovado sem comentários → MERGE_PR (caminho feliz)
-    # - Aprovado com comentários → NOTIFY_HUMAN TL
-    # - Resultado ainda não disponível (reviewer ainda rodando) → SKIP
+    # ── Resultado aprovado: crewflow:review-ok ────────────────────────
+    # Reviewer aprovou sem comentários. Label review-ok já implica o resultado —
+    # não é necessário ler o state_comment para decidir.
+    # - auto_merge_on_approve=True  → MERGE_PR automático
+    # - auto_merge_on_approve=False → SKIP aguardando merge manual
+    if Modifier.REVIEW_OK in modifiers:
+        if not auto_merge_on_approve:
+            return ExecutorDecision(
+                action=ActionKind.SKIP,
+                reason=(
+                    "reviewer aprovado (crewflow:review-ok) — aguardando merge manual "
+                    "(auto_merge_on_approve=false). "
+                    "Ative a flag no squad config para merge automático."
+                ),
+            )
+        return ExecutorDecision(
+            action=ActionKind.MERGE_PR,
+            reason="reviewer aprovado sem pedidos de mudança — merge squash automático",
+            add_labels=("crewflow:done",),
+            remove_labels=("crewflow:review-ok",),
+        )
+
+    # ── Lock anti-loop: crewflow:reviewed (interno) ───────────────────
+    # crewflow:reviewed é agora apenas lock interno anti-loop de SHA —
+    # não carrega resultado de negócio. Quando presente em REVIEW, indica
+    # que o reviewer ainda está rodando ou acabou de processar mas ainda não
+    # atualizou as labels semânticas (review-ok / review-fail).
     if current_state is State.REVIEW and Modifier.REVIEWED in modifiers:
         from flow.audit.state_comment import get_reviewer_result_from_comment
         reviewer_result = get_reviewer_result_from_comment(state_comment)
@@ -299,7 +320,7 @@ def decide(
 
         if reviewer_result.is_auto_mergeable:
             if not auto_merge_on_approve:
-                # Flag desativada: fica em crewflow:reviewed aguardando merge manual.
+                # Flag desativada: aguarda merge manual; reviewer deve ter posto review-ok.
                 return ExecutorDecision(
                     action=ActionKind.SKIP,
                     reason=(
@@ -315,15 +336,15 @@ def decide(
                 remove_labels=("crewflow:review", "crewflow:reviewed"),
             )
 
-        # Reviewer tem comentários — marca changes-requested para disparar re-trabalho
-        # no próximo ciclo do scan, e notifica TL para acompanhar.
+        # Reviewer tem comentários — aplica review-fail para disparar re-trabalho
+        # no próximo ciclo do scan.
         comments_text = "; ".join(reviewer_result.comments) if reviewer_result.comments else "(ver comentário na issue)"
         return ExecutorDecision(
             action=ActionKind.NOTIFY_HUMAN,
             reason=f"reviewer retornou pedidos de mudança: {comments_text}",
             notify_role=HumanRole.TL,
-            add_labels=("crewflow:changes-requested",),
-            remove_labels=("crewflow:reviewed",),
+            add_labels=("crewflow:review-fail",),
+            remove_labels=("crewflow:reviewed", "crewflow:review"),
         )
 
     # ── Pré-condição COV (débito técnico em dev) ───────────────────────

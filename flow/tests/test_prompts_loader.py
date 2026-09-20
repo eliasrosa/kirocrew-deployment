@@ -248,7 +248,7 @@ class TestRealTemplates:
         assert "#5" in result
         assert "#42" in result
         assert "NUNCA mergeie" in result
-        assert "crewflow:reviewed" in result
+        assert "crewflow:review-ok" in result
 
     def test_reviewer_template_real_session_title(self) -> None:
         result = render_prompt(
@@ -339,7 +339,7 @@ class TestRealTemplates:
         )
         # A decisão exige as três condições
         assert "CI verde" in result
-        assert "crewflow:reviewed" in result
+        assert "crewflow:review-ok" in result
 
     def test_reviewer_template_contem_head_sha_injetado(self) -> None:
         """O prompt deve incluir o SHA injetado para que o reviewer saiba qual HEAD revisar."""

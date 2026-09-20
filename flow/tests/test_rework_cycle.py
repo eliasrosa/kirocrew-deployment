@@ -1,9 +1,9 @@
 """Testes do ciclo de re-trabalho pós-review (issue #96).
 
 Cobre:
-  - Executor: REVIEW + CHANGES_REQUESTED → DISPATCH_REWORK
+  - Executor: REVIEW + REVIEW_FAIL → DISPATCH_REWORK
   - Teto de iterações → NOTIFY_HUMAN TL
-  - NOTIFY_HUMAN com pedidos → add_labels changes-requested
+  - NOTIFY_HUMAN com pedidos → add_labels review-fail
   - StateComment: review_iterations render/parse
   - Gates: exceeded_review_iterations
   - Prompts: rework.md renderiza com todas as variáveis esperadas
@@ -50,7 +50,7 @@ def _state_comment_with_changes(iterations: int = 0) -> str:
     sc = StateComment(
         workflow="feature (v1)",
         current_node="review",
-        status="changes-requested",
+        status="review-fail",
         repo="repo",
         review_iterations=iterations,
     )
@@ -136,32 +136,32 @@ class TestReviewIterations:
 # ---------------------------------------------------------------------------
 
 class TestReworkCycle:
-    def test_changes_requested_despacha_rework(self) -> None:
-        """REVIEW + CHANGES_REQUESTED → DISPATCH_REWORK."""
+    def test_review_fail_despacha_rework(self) -> None:
+        """REVIEW + REVIEW_FAIL → DISPATCH_REWORK."""
         r = _result(
-            labels=["crewflow:review", "crewflow:changes-requested", "crewflow:feature"],
-            modifiers={Modifier.CHANGES_REQUESTED},
+            labels=["crewflow:review-fail", "crewflow:feature"],
+            modifiers={Modifier.REVIEW_FAIL},
         )
         d = decide(r, state_comment=None)
         assert d.action is ActionKind.DISPATCH_REWORK
 
-    def test_rework_adiciona_running_remove_changes_requested(self) -> None:
-        """Ao despachar re-trabalho, adiciona running e remove changes-requested."""
+    def test_rework_adiciona_running_remove_review_fail(self) -> None:
+        """Ao despachar re-trabalho, adiciona running e remove review-fail."""
         r = _result(
-            labels=["crewflow:review", "crewflow:changes-requested", "crewflow:feature"],
-            modifiers={Modifier.CHANGES_REQUESTED},
+            labels=["crewflow:review-fail", "crewflow:feature"],
+            modifiers={Modifier.REVIEW_FAIL},
         )
         d = decide(r, state_comment=None)
         assert d.action is ActionKind.DISPATCH_REWORK
         assert "crewflow:running" in d.add_labels
-        assert "crewflow:changes-requested" in d.remove_labels
+        assert "crewflow:review-fail" in d.remove_labels
 
     def test_rework_registra_numero_de_iteracao(self) -> None:
         """O reason do dispatch indica a iteração atual."""
         state_comment = _state_comment_with_changes(iterations=1)
         r = _result(
-            labels=["crewflow:review", "crewflow:changes-requested", "crewflow:feature"],
-            modifiers={Modifier.CHANGES_REQUESTED},
+            labels=["crewflow:review-fail", "crewflow:feature"],
+            modifiers={Modifier.REVIEW_FAIL},
         )
         d = decide(r, state_comment=state_comment)
         assert d.action is ActionKind.DISPATCH_REWORK
@@ -172,8 +172,8 @@ class TestReworkCycle:
         # 3 iterações já feitas = teto atingido (default 3)
         state_comment = _state_comment_with_changes(iterations=3)
         r = _result(
-            labels=["crewflow:review", "crewflow:changes-requested", "crewflow:feature"],
-            modifiers={Modifier.CHANGES_REQUESTED},
+            labels=["crewflow:review-fail", "crewflow:feature"],
+            modifiers={Modifier.REVIEW_FAIL},
         )
         d = decide(r, state_comment=state_comment)
         assert d.action is ActionKind.NOTIFY_HUMAN
@@ -184,26 +184,25 @@ class TestReworkCycle:
         """max_review_iterations=1 faz escalar na segunda iteração."""
         state_comment = _state_comment_with_changes(iterations=1)
         r = _result(
-            labels=["crewflow:review", "crewflow:changes-requested", "crewflow:feature"],
-            modifiers={Modifier.CHANGES_REQUESTED},
+            labels=["crewflow:review-fail", "crewflow:feature"],
+            modifiers={Modifier.REVIEW_FAIL},
         )
         d = decide(r, state_comment=state_comment, max_review_iterations=1)
         assert d.action is ActionKind.NOTIFY_HUMAN
         assert d.notify_role is HumanRole.TL
 
-    def test_changes_requested_tem_prioridade_sobre_reviewed(self) -> None:
-        """CHANGES_REQUESTED é processado antes do lock REVIEWED."""
+    def test_review_fail_tem_prioridade_sobre_reviewed(self) -> None:
+        """REVIEW_FAIL é processado antes do lock REVIEWED."""
         r = _result(
-            labels=["crewflow:review", "crewflow:changes-requested", "crewflow:reviewed",
-                    "crewflow:feature"],
-            modifiers={Modifier.CHANGES_REQUESTED, Modifier.REVIEWED},
+            labels=["crewflow:review-fail", "crewflow:reviewed", "crewflow:feature"],
+            modifiers={Modifier.REVIEW_FAIL, Modifier.REVIEWED},
         )
         d = decide(r, state_comment=None)
-        # CHANGES_REQUESTED deve ser processado primeiro (antes do lock REVIEWED)
+        # REVIEW_FAIL deve ser processado primeiro (antes do lock REVIEWED)
         assert d.action is ActionKind.DISPATCH_REWORK
 
-    def test_sem_changes_requested_segue_fluxo_normal(self) -> None:
-        """Sem CHANGES_REQUESTED, o fluxo normal (dispatch_reviewer) continua."""
+    def test_sem_review_fail_segue_fluxo_normal(self) -> None:
+        """Sem REVIEW_FAIL, o fluxo normal (dispatch_reviewer) continua."""
         r = _result(
             labels=["crewflow:review", "crewflow:feature"],
         )
@@ -212,10 +211,10 @@ class TestReworkCycle:
 
 
 # ---------------------------------------------------------------------------
-# Executor: NOTIFY_HUMAN com pedidos de mudança adiciona changes-requested
+# Executor: NOTIFY_HUMAN com pedidos de mudança adiciona review-fail
 # ---------------------------------------------------------------------------
 
-class TestNotifyHumanAddsChangesRequested:
+class TestNotifyHumanAddsReviewFail:
     def _make_review_result(self, comments: list[str]) -> str:
         sc = StateComment(
             workflow="feature (v1)",
@@ -226,8 +225,8 @@ class TestNotifyHumanAddsChangesRequested:
         sc.set_reviewer_result(approved=False, comments=comments, sha="abc123")
         return render(sc)
 
-    def test_reprovado_com_comentarios_adiciona_changes_requested(self) -> None:
-        """Reviewer reprovado com comentários: NOTIFY_HUMAN TL + add changes-requested."""
+    def test_reprovado_com_comentarios_adiciona_review_fail(self) -> None:
+        """Reviewer reprovado com comentários: NOTIFY_HUMAN TL + add review-fail."""
         state_comment = self._make_review_result(["Falta teste", "Lógica errada"])
         r = _result(
             labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
@@ -236,11 +235,11 @@ class TestNotifyHumanAddsChangesRequested:
         d = decide(r, state_comment=state_comment)
         assert d.action is ActionKind.NOTIFY_HUMAN
         assert d.notify_role is HumanRole.TL
-        assert "crewflow:changes-requested" in d.add_labels
+        assert "crewflow:review-fail" in d.add_labels
         assert "crewflow:reviewed" in d.remove_labels
 
-    def test_aprovado_sem_comentarios_nao_adiciona_changes_requested(self) -> None:
-        """Reviewer aprovado sem comentários: MERGE_PR (caminho feliz, sem changes-requested)."""
+    def test_aprovado_sem_comentarios_nao_adiciona_review_fail(self) -> None:
+        """Reviewer aprovado sem comentários: MERGE_PR (caminho feliz, sem review-fail)."""
         sc = StateComment(workflow="f", current_node="review", status="reviewed", repo="r")
         sc.set_reviewer_result(approved=True, comments=[], sha="abc123")
         state_comment = render(sc)
@@ -251,7 +250,7 @@ class TestNotifyHumanAddsChangesRequested:
         )
         d = decide(r, state_comment=state_comment, auto_merge_on_approve=True)
         assert d.action is ActionKind.MERGE_PR
-        assert "crewflow:changes-requested" not in d.add_labels
+        assert "crewflow:review-fail" not in d.add_labels
 
 
 # ---------------------------------------------------------------------------

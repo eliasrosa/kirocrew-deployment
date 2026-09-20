@@ -39,6 +39,14 @@ class TestStateConstants:
         """reviewed é lock anti-loop, não impede dispatch da issue."""
         assert Modifier.REVIEWED not in STOP_MODIFIERS
 
+    def test_review_ok_nao_e_stop_modifier(self) -> None:
+        """review-ok é resultado de review, não impede dispatch de TODO."""
+        assert Modifier.REVIEW_OK not in STOP_MODIFIERS
+
+    def test_review_fail_nao_e_stop_modifier(self) -> None:
+        """review-fail é resultado de review, não impede dispatch de TODO."""
+        assert Modifier.REVIEW_FAIL not in STOP_MODIFIERS
+
     def test_valores_das_labels_tem_prefixo_crewflow(self) -> None:
         for s in State:
             assert s.value.startswith("crewflow:"), s

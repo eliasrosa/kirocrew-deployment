@@ -72,10 +72,12 @@ sobrepostos. **Modificador de parada tem prioridade sobre o estado.**
 |---|---|---|
 | `crewflow:blocked` | 🔴 `#DC2626` | bloqueado — **para tudo** (prioridade sobre o estado) |
 | `crewflow:running` | 🟠 `#F97316` | trabalho em andamento no estado atual |
-| `crewflow:reviewed` | ⚫ `#6B7280` | lock anti-loop: já analisado neste SHA |
+| `crewflow:reviewed` | ⚫ `#6B7280` | lock anti-loop interno: já analisado neste SHA (não é resultado externo) |
 | `crewflow:hml-bypass` | 🟧 `#C2410C` | **exceção auditada:** hotfix foi direto pra PRD sem HML — exige justificativa no comentário (o motor **bloqueia o merge** sem ela) |
-| `crewflow:changes-requested` | 🟣 `#9333EA` | reviewer pediu mudança — **re-trabalho na mesma PR** (teto: N rounds → NOTIFY_HUMAN tl) |
+| `crewflow:changes-requested` | 🟣 `#9333EA` | DEPRECATED — mantido para compatibilidade; usar `crewflow:review-fail` |
 | `crewflow:conflito` | 🟠 `#F97316` | PR com conflito de merge ou base desatualizada — **cron de conflito resolve via rebase na mesma branch** |
+| `crewflow:review-ok` | 🟩 `#22C55E` | reviewer aprovou — **pronto para merge** (1 label, sem combinação) |
+| `crewflow:review-fail` | 🔴 `#DC2626` | reviewer reprovou — **aguarda rework** (1 label, sem combinação) |
 
 ### Tipo de fluxo (routing) e prioridade
 
@@ -121,8 +123,8 @@ Em vez de um único cron monolítico (`run`), a esteira pode ser dividida em
 |---|---|---|---|
 | `run_dev` | `crewflow:todo` | `DISPATCH_DEV` — implementa + abre PR | 600s (10 min) |
 | `run_reviewer` | `crewflow:review` (sem `crewflow:reviewed`) | `DISPATCH_REVIEWER` — code review | 300s (5 min) |
-| `run_merge` | `crewflow:review` + `crewflow:reviewed` aprovado | `MERGE_PR` — merge squash | 120s (2 min) |
-| `run_conflito` | `crewflow:changes-requested` ou `crewflow:conflito` | `DISPATCH_REWORK` (re-trabalho pós-review) / `DISPATCH_CONFLICT_RESOLVER` (conflito de merge) | 300s (5 min) |
+| `run_merge` | `crewflow:review-ok` | `MERGE_PR` — merge squash | 120s (2 min) |
+| `run_conflito` | `crewflow:review-fail` ou `crewflow:conflito` | `DISPATCH_REWORK` (re-trabalho pós-review) / `DISPATCH_CONFLICT_RESOLVER` (conflito de merge) | 300s (5 min) |
 
 O modelo por estágio é configurável via `stage_models` na `deployment.config.yaml`:
 
@@ -140,8 +142,11 @@ sequência — útil para migração gradual ou modo de aviso (auto_dispatch=fal
 ## Lock anti-loop: `crewflow:reviewed`
 
 Uma análise por SHA. O robô de review adiciona `crewflow:reviewed` depois de
-comentar. Se a label já está lá, o executor ignora a issue. Quando o dev faz um
-novo push, a label é removida e a próxima varredura dispara nova análise.
+iniciar a análise (lock interno). Quando o review termina, substitui `review` por
+`crewflow:review-ok` (aprovado) ou `crewflow:review-fail` (reprovado) — 1 label por vez.
+Se a label `crewflow:reviewed` já estiver sem resultado correspondente, o executor
+aguarda. Quando o dev faz um novo push, a label é removida e a próxima varredura
+dispara nova análise.
 
 ## Travas de segurança
 

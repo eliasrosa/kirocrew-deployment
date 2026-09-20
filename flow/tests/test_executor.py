@@ -601,3 +601,80 @@ class TestAutoMergeOnApprove:
         assert "crewflow:done" in d.add_labels
         assert "crewflow:review" in d.remove_labels
         assert "crewflow:reviewed" in d.remove_labels
+
+
+# ---------------------------------------------------------------------------
+# decide() — labels semânticas review-ok e review-fail (issue #165)
+# ---------------------------------------------------------------------------
+
+class TestReviewOkReviewFail:
+    """Testa os novos modificadores semânticos review-ok e review-fail."""
+
+    def _result_review_ok(self) -> ScanResult:
+        return _result(
+            state=State.REVIEW,
+            labels=["crewflow:review-ok", "crewflow:feature"],
+            modifiers={Modifier.REVIEW_OK},
+        )
+
+    def _result_review_fail(self) -> ScanResult:
+        return _result(
+            state=State.REVIEW,
+            labels=["crewflow:review-fail", "crewflow:feature"],
+            modifiers={Modifier.REVIEW_FAIL},
+        )
+
+    # ── REVIEW_OK ──────────────────────────────────────────────────────────
+
+    def test_review_ok_auto_merge_true_emite_merge_pr(self) -> None:
+        """REVIEW_OK + auto_merge_on_approve=True → MERGE_PR."""
+        r = self._result_review_ok()
+        d = decide(r, auto_merge_on_approve=True)
+        assert d.action is ActionKind.MERGE_PR
+        assert "crewflow:done" in d.add_labels
+        assert "crewflow:review-ok" in d.remove_labels
+
+    def test_review_ok_auto_merge_false_emite_skip(self) -> None:
+        """REVIEW_OK + auto_merge_on_approve=False → SKIP (aguarda merge manual)."""
+        r = self._result_review_ok()
+        d = decide(r, auto_merge_on_approve=False)
+        assert d.action is ActionKind.SKIP
+        assert "merge manual" in d.reason
+
+    def test_review_ok_default_emite_skip(self) -> None:
+        """REVIEW_OK sem parâmetro → default False → SKIP."""
+        r = self._result_review_ok()
+        d = decide(r)
+        assert d.action is ActionKind.SKIP
+
+    def test_review_ok_nao_precisa_de_state_comment(self) -> None:
+        """REVIEW_OK não precisa ler o state_comment para decidir."""
+        r = self._result_review_ok()
+        # state_comment=None não deve causar SKIP/erro
+        d = decide(r, state_comment=None, auto_merge_on_approve=True)
+        assert d.action is ActionKind.MERGE_PR
+
+    # ── REVIEW_FAIL ────────────────────────────────────────────────────────
+
+    def test_review_fail_despacha_rework(self) -> None:
+        """REVIEW_FAIL → DISPATCH_REWORK."""
+        r = self._result_review_fail()
+        d = decide(r, state_comment=None)
+        assert d.action is ActionKind.DISPATCH_REWORK
+
+    def test_review_fail_adiciona_running_remove_review_fail(self) -> None:
+        """REVIEW_FAIL: add running, remove review-fail."""
+        r = self._result_review_fail()
+        d = decide(r, state_comment=None)
+        assert "crewflow:running" in d.add_labels
+        assert "crewflow:review-fail" in d.remove_labels
+
+    def test_review_fail_tem_prioridade_sobre_review_ok(self) -> None:
+        """REVIEW_FAIL é processado antes de REVIEW_OK (não acontece em produção, guarda de ordem)."""
+        r = _result(
+            state=State.REVIEW,
+            labels=["crewflow:review-fail", "crewflow:review-ok", "crewflow:feature"],
+            modifiers={Modifier.REVIEW_FAIL, Modifier.REVIEW_OK},
+        )
+        d = decide(r, state_comment=None)
+        assert d.action is ActionKind.DISPATCH_REWORK

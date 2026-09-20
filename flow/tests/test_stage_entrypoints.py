@@ -446,12 +446,12 @@ class TestRunMerge:
 
 
 # ---------------------------------------------------------------------------
-# run_conflito — só despacha DISPATCH_REWORK (crewflow:changes-requested)
+# run_conflito — só despacha DISPATCH_REWORK (crewflow:review-fail)
 # ---------------------------------------------------------------------------
 
 class TestRunConflito:
     def _make_rework_result(self) -> object:
-        """ScanResult em crewflow:review + crewflow:changes-requested."""
+        """ScanResult em crewflow:review-fail."""
         from flow.domain.gates import WorkItem
         from flow.domain.state import Modifier, State
         from flow.scan.scanner import ScanResult
@@ -460,18 +460,18 @@ class TestRunConflito:
             item=WorkItem(
                 key="https://github.com/owner/repo/issues/42",
                 title="[owner/repo] Feature com mudanças",
-                labels=frozenset(["crewflow:review", "crewflow:changes-requested"]),
+                labels=frozenset(["crewflow:review-fail"]),
             ),
             current_state=State.REVIEW,
-            modifiers=frozenset([Modifier.CHANGES_REQUESTED]),
+            modifiers=frozenset([Modifier.REVIEW_FAIL]),
             dispatch_candidate=False,
             spec_valid=None,
             changed=True,
-            reason="changes-requested",
+            reason="review-fail",
         )
 
-    def test_despacha_rework_para_changes_requested(self) -> None:
-        """run_conflito chama _dispatch_rework para issue com changes-requested."""
+    def test_despacha_rework_para_review_fail(self) -> None:
+        """run_conflito chama _dispatch_rework para issue com review-fail."""
         ctx = _make_ctx()
         result = self._make_rework_result()
 

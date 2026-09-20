@@ -68,7 +68,7 @@ Execute UMA vez, do início ao fim, e PARE:
    - Adicione uma linha no histórico: `| <data> | rework → review | kiro-dev |`
    - Atualize via `gh issue comment {{issue_number}} --repo {{repo}} --body "..."` (editando o comentário existente)
 10. Troque a label de volta para review:
-   `gh issue edit {{issue_number}} --repo {{repo}} --remove-label "crewflow:running,crewflow:changes-requested" --add-label "crewflow:review"`
+   `gh issue edit {{issue_number}} --repo {{repo}} --remove-label "crewflow:running,crewflow:review-fail" --add-label "crewflow:review"`
 11. Ao terminar: {{notify_step}}
 
    remova `crewflow:running`, mantenha `crewflow:review`, e ENCERRE.

@@ -942,12 +942,13 @@ class TestReviewerPrompt:
 
         assert "gh pr diff 99 --repo owner/myrepo" in prompt
 
-    def test_contem_instrucao_de_crewflow_reviewed(self) -> None:
+    def test_contem_instrucao_de_crewflow_review_ok_e_fail(self) -> None:
         from deployment.deployment import _reviewer_prompt
 
         prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
 
-        assert "crewflow:reviewed" in prompt
+        assert "crewflow:review-ok" in prompt
+        assert "crewflow:review-fail" in prompt
 
     def test_contem_regra_nunca_merge(self) -> None:
         from deployment.deployment import _reviewer_prompt
@@ -1030,7 +1031,7 @@ class TestReviewerPrompt:
         assert "# review: myrepo PR #99 (issue #42)" in prompt
         assert "gh issue view 42 --repo owner/myrepo" in prompt
         assert "gh pr diff 99 --repo owner/myrepo" in prompt
-        assert "crewflow:reviewed" in prompt
+        assert "crewflow:review-ok" in prompt
         assert "NUNCA mergeie" in prompt
 
     def test_exemplar_do_pr_derivado_do_helper(self) -> None:
