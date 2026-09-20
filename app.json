@@ -1,0 +1,38 @@
+{
+  "name": "kirocrew-flow",
+  "version": "1.0.0",
+  "displayName": "KiroCrew Flow",
+  "description": "Autonomous dev pipeline: issue to PR to review to merge. Zero-token polling over GitHub/Jira labels.",
+  "author": "eliasrosa",
+  "tags": ["devops", "github", "automation", "pr-review"],
+  "agents": [
+    "agents/crewflow-dev.json",
+    "agents/crewflow-reviewer.json",
+    "agents/crewflow-merge.json"
+  ],
+  "backend": {
+    "entryPoint": "backend/server.py",
+    "port": "auto",
+    "healthCheck": "/health",
+    "routes": "/api/apps/kirocrew-flow",
+    "type": "python"
+  },
+  "crons": [
+    {"name": "crewflow-dev",      "every": 300, "message": "crewflow: trigger dev stage",      "enabled": false},
+    {"name": "crewflow-reviewer", "every": 180, "message": "crewflow: trigger reviewer stage", "enabled": false},
+    {"name": "crewflow-merge",    "every": 120, "message": "crewflow: trigger merge stage",    "enabled": false},
+    {"name": "crewflow-conflito", "every": 300, "message": "crewflow: trigger conflito stage", "enabled": false}
+  ],
+  "permissions": {
+    "api": ["/api/crons", "/api/status", "/apps/kirocrew-flow/api"],
+    "events": ["notification"],
+    "storage": true,
+    "network": true
+  },
+  "setup": {
+    "onInstall": "pip install -e '.[dev]'",
+    "onUpdate":  "pip install -e '.[dev]'"
+  },
+  "dependencies": {"commands": ["git", "gh", "python3"]},
+  "platform": {"os": ["linux", "macos"]}
+}
