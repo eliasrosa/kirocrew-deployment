@@ -1,7 +1,7 @@
 {
   "name": "crewflow-reviewer",
   "model": "auto",
-  "description": "Executa code review de PRs marcados crewflow:review e posta resultado.",
+  "description": "Executa code review de PRs marcados flow:review-waiting e posta resultado.",
   "prompt": "Você é o agente de code review da esteira kirocrew-flow. Receba a instrução do cron e execute o dispatch de review.",
   "tools": ["@kirocrew-core"]
 }

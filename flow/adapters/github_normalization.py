@@ -65,19 +65,20 @@ def labels_hash(labels: list[str]) -> str:
 def extract_justification_from_state_comment(comment_body: str | None) -> str | None:
     """Extrai a justificativa de bypass do comentário de estado.
 
-    Procura por um campo "| `crewflow:hml-bypass` | <justificativa> |" na
-    tabela de exceções do comentário estruturado.
+    Procura por um campo "| `flow:blocked` | <justificativa> |" ou
+    "| `crewflow:hml-bypass` | <justificativa> |" na tabela de exceções
+    do comentário estruturado (suporte ao namespace legado crewflow:* durante migração).
 
     Retorna None se não encontrar nenhuma justificativa.
     """
     if not comment_body or STATE_COMMENT_MARKER not in comment_body:
         return None
 
-    # Procura pela linha da exceção de bypass
+    # Procura pela linha da exceção de bypass (namespace novo flow:* e legado crewflow:*)
     for line in comment_body.splitlines():
-        if "crewflow:hml-bypass" in line and "|" in line:
+        if ("flow:blocked" in line or "crewflow:hml-bypass" in line) and "|" in line:
             parts = [p.strip() for p in line.split("|")]
-            # Formato: | `crewflow:hml-bypass` | justificativa | quem | quando |
+            # Formato: | `flow:blocked` | justificativa | quem | quando |
             if len(parts) >= 3:
                 justification = parts[2].strip()
                 if justification:

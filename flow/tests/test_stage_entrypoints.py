@@ -79,8 +79,8 @@ def _make_scan_result(state_label: str, modifiers: list[str] | None = None) -> o
         ),
         current_state=state,
         modifiers=mods,
-        dispatch_candidate=(state is State.TODO and not any(
-            m in labels_set for m in ("crewflow:blocked", "crewflow:running")
+        dispatch_candidate=(state is State.DEVELOP_WAITING and not any(
+            m in labels_set for m in ("flow:blocked", "flow:develop-running")
         )),
         spec_valid=None,
         changed=True,
@@ -112,14 +112,14 @@ class TestStageModel:
 
 
 # ---------------------------------------------------------------------------
-# run_dev — só despacha DISPATCH_DEV (issues crewflow:todo)
+# run_dev — só despacha DISPATCH_DEV (issues flow:develop-waiting)
 # ---------------------------------------------------------------------------
 
 class TestRunDev:
     def test_despacha_issue_em_todo(self) -> None:
-        """run_dev chama _dispatch para issue em crewflow:todo."""
+        """run_dev chama _dispatch para issue em flow:develop-waiting."""
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:todo")
+        result = _make_scan_result("flow:develop-waiting")
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -142,9 +142,9 @@ class TestRunDev:
         mock_dispatch.assert_called_once()
 
     def test_nao_despacha_issue_em_review(self) -> None:
-        """run_dev NÃO toca em issues crewflow:review (pertence ao cron reviewer)."""
+        """run_dev NÃO toca em issues flow:review-waiting (pertence ao cron reviewer)."""
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:review")
+        result = _make_scan_result("flow:review-waiting")
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -167,7 +167,7 @@ class TestRunDev:
     def test_nao_despacha_quando_auto_false(self) -> None:
         """run_dev com auto_dispatch=false notifica sem despachar."""
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:todo")
+        result = _make_scan_result("flow:develop-waiting")
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -191,7 +191,7 @@ class TestRunDev:
     def test_usa_modelo_do_stage_models(self) -> None:
         """run_dev substitui cfg['agent'] pelo modelo configurado em stage_models.dev."""
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:todo")
+        result = _make_scan_result("flow:develop-waiting")
 
         capturado: list[dict] = []
 
@@ -222,7 +222,7 @@ class TestRunDev:
     def test_sem_stage_models_usa_agent_padrao(self) -> None:
         """run_dev sem stage_models.dev usa cfg['agent'] padrão."""
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:todo")
+        result = _make_scan_result("flow:develop-waiting")
 
         capturado: list[dict] = []
 
@@ -252,14 +252,14 @@ class TestRunDev:
 
 
 # ---------------------------------------------------------------------------
-# run_reviewer — só despacha DISPATCH_REVIEWER (issues crewflow:review)
+# run_reviewer — só despacha DISPATCH_REVIEWER (issues flow:review-waiting)
 # ---------------------------------------------------------------------------
 
 class TestRunReviewer:
     def test_despacha_review_sem_reviewed(self) -> None:
-        """run_reviewer chama _dispatch_reviewer para issue em crewflow:review sem reviewed."""
+        """run_reviewer chama _dispatch_reviewer para issue em flow:review-waiting sem reviewed."""
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:review")
+        result = _make_scan_result("flow:review-waiting")
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -279,9 +279,9 @@ class TestRunReviewer:
         mock_rev.assert_called_once()
 
     def test_nao_despacha_issue_em_todo(self) -> None:
-        """run_reviewer NÃO toca em issues crewflow:todo (pertence ao cron dev)."""
+        """run_reviewer NÃO toca em issues flow:develop-waiting (pertence ao cron dev)."""
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:todo")
+        result = _make_scan_result("flow:develop-waiting")
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -304,7 +304,7 @@ class TestRunReviewer:
     def test_usa_modelo_do_stage_models_reviewer(self) -> None:
         """run_reviewer usa stage_models.reviewer para o dispatch."""
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:review")
+        result = _make_scan_result("flow:review-waiting")
 
         capturado: list[dict] = []
 
@@ -335,7 +335,7 @@ class TestRunReviewer:
     def test_nao_despacha_quando_reviewer_ja_ativo(self) -> None:
         """run_reviewer não duplica dispatch quando sessão já está ativa."""
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:review")
+        result = _make_scan_result("flow:review-waiting")
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -361,7 +361,7 @@ class TestRunReviewer:
 
 class TestRunMerge:
     def _make_merge_result(self) -> object:
-        """ScanResult em crewflow:review + crewflow:reviewed com ReviewerResult aprovado."""
+        """ScanResult em flow:review-waiting + flow:reviewed com ReviewerResult aprovado."""
         from flow.audit.state_comment import StateComment, render
         from flow.domain.gates import WorkItem
         from flow.domain.state import Modifier, State
@@ -378,9 +378,9 @@ class TestRunMerge:
             item=WorkItem(
                 key="https://github.com/owner/repo/issues/42",
                 title="[owner/repo] Feature X",
-                labels=frozenset(["crewflow:review", "crewflow:reviewed"]),
+                labels=frozenset(["flow:review-waiting", "flow:reviewed"]),
             ),
-            current_state=State.REVIEW,
+            current_state=State.REVIEW_WAITING,
             modifiers=frozenset([Modifier.REVIEWED]),
             dispatch_candidate=False,
             spec_valid=None,
@@ -424,9 +424,9 @@ class TestRunMerge:
         mock_merge.assert_called_once()
 
     def test_nao_executa_merge_para_issue_em_todo(self) -> None:
-        """run_merge NÃO toca em issues crewflow:todo."""
+        """run_merge NÃO toca em issues flow:develop-waiting."""
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:todo")
+        result = _make_scan_result("flow:develop-waiting")
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -446,32 +446,32 @@ class TestRunMerge:
 
 
 # ---------------------------------------------------------------------------
-# run_conflito — só despacha DISPATCH_REWORK (crewflow:review-fail)
+# run_conflito — só despacha DISPATCH_REWORK (flow:review-refused)
 # ---------------------------------------------------------------------------
 
 class TestRunConflito:
     def _make_rework_result(self) -> object:
-        """ScanResult em crewflow:review-fail."""
+        """ScanResult em flow:review-refused (gate humano)."""
         from flow.domain.gates import WorkItem
-        from flow.domain.state import Modifier, State
+        from flow.domain.state import State
         from flow.scan.scanner import ScanResult
 
         return ScanResult(
             item=WorkItem(
                 key="https://github.com/owner/repo/issues/42",
                 title="[owner/repo] Feature com mudanças",
-                labels=frozenset(["crewflow:review-fail"]),
+                labels=frozenset(["flow:review-refused"]),
             ),
-            current_state=State.REVIEW,
-            modifiers=frozenset([Modifier.REVIEW_FAIL]),
+            current_state=State.REVIEW_REFUSED,
+            modifiers=frozenset(),
             dispatch_candidate=False,
             spec_valid=None,
             changed=True,
-            reason="review-fail",
+            reason="review-refused",
         )
 
     def test_despacha_rework_para_review_fail(self) -> None:
-        """run_conflito chama _dispatch_rework para issue com review-fail."""
+        """run_conflito com review-refused: gate humano — notifica TL (não redespacha)."""
         ctx = _make_ctx()
         result = self._make_rework_result()
 
@@ -494,12 +494,13 @@ class TestRunConflito:
             mock_pf.return_value = mock.MagicMock()
             run_conflito(ctx)
 
-        mock_rework.assert_called_once()
+        # No novo design, REVIEW_REFUSED é gate humano — NÃO chama _dispatch_rework
+        mock_rework.assert_not_called()
 
     def test_nao_despacha_para_issue_em_todo(self) -> None:
-        """run_conflito NÃO toca em issues crewflow:todo."""
+        """run_conflito NÃO toca em issues flow:develop-waiting."""
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:todo")
+        result = _make_scan_result("flow:develop-waiting")
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -520,7 +521,7 @@ class TestRunConflito:
         mock_dispatch.assert_not_called()
 
     def test_notifica_sem_dispatch_quando_auto_false(self) -> None:
-        """run_conflito com auto_dispatch=false notifica sem despachar rework."""
+        """run_conflito com review-refused (gate humano) notifica TL sem despachar."""
         ctx = _make_ctx()
         result = self._make_rework_result()
 
@@ -538,32 +539,47 @@ class TestRunConflito:
             mock_pf.return_value = mock.MagicMock()
             run_conflito(ctx)
 
+        # Gate humano — NÃO redespacha automaticamente
         mock_rework.assert_not_called()
-        ctx.notify.assert_called()
-        msg = ctx.notify.call_args[0][0]
-        assert "re-trabalho" in msg.lower() or "mudanças" in msg.lower() or "conflito" in msg.lower()
 
     def test_usa_modelo_do_stage_models_conflito(self) -> None:
-        """run_conflito usa stage_models.conflito para o dispatch de rework."""
+        """run_conflito com flow:merge-conflict usa stage_models.conflito para dispatch."""
         ctx = _make_ctx()
-        result = self._make_rework_result()
+        # Para testar o modelo, precisamos de um issue com flow:merge-conflict, não review-refused
+        from flow.domain.gates import WorkItem
+        from flow.domain.state import Modifier, State
+        from flow.scan.scanner import ScanResult
+
+        conflict_result = ScanResult(
+            item=WorkItem(
+                key="https://github.com/owner/repo/issues/42",
+                title="[owner/repo] Feature com conflito",
+                labels=frozenset(["flow:review-waiting", "flow:merge-conflict"]),
+            ),
+            current_state=State.REVIEW_WAITING,
+            modifiers=frozenset([Modifier.MERGE_CONFLICT]),
+            dispatch_candidate=False,
+            spec_valid=None,
+            changed=True,
+            reason="merge-conflict",
+        )
 
         capturado: list[dict] = []
 
-        def _fake_rework(
+        def _fake_conflict(
             ctx: object, repo: str, issue: dict, pr_number: int,
-            iteration: int, cfg: dict, **kw: object
+            cfg: dict, **kw: object
         ) -> None:
             capturado.append({"agent": cfg.get("agent")})
 
         with (
             mock.patch("deployment.deployment._load_config",
                        return_value=_base_config(stage_models={"conflito": "opus"})),
-            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[conflict_result]),
             mock.patch("deployment.deployment.open_cache") as mock_cache,
             mock.patch("deployment.deployment.provider_for") as mock_pf,
-            mock.patch("deployment.deployment._rework_has_active", return_value=False),
-            mock.patch("deployment.deployment._dispatch_rework", side_effect=_fake_rework),
+            mock.patch("deployment.deployment._conflict_resolver_has_active", return_value=False),
+            mock.patch("deployment.deployment._dispatch_conflict_resolver", side_effect=_fake_conflict),
             mock.patch("subprocess.run") as mock_sub,
         ):
             mock_sub.return_value = mock.MagicMock(
@@ -604,9 +620,9 @@ class TestEstagioIsolamento:
             item=WorkItem(
                 key="https://github.com/owner/repo/issues/42",
                 title="[owner/repo] Feature X",
-                labels=frozenset(["crewflow:review", "crewflow:reviewed"]),
+                labels=frozenset(["flow:review-waiting", "flow:reviewed"]),
             ),
-            current_state=State.REVIEW,
+            current_state=State.REVIEW_WAITING,
             modifiers=frozenset([Modifier.REVIEWED]),
             dispatch_candidate=False,
             spec_valid=None,
@@ -640,7 +656,7 @@ class TestEstagioIsolamento:
     def test_run_merge_nao_aciona_dispatch_dev(self) -> None:
         """run_merge com scan retornando issue em todo não faz dispatch dev."""
         ctx = _make_ctx()
-        todo_result = _make_scan_result("crewflow:todo")
+        todo_result = _make_scan_result("flow:develop-waiting")
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -666,8 +682,8 @@ class TestEstagioIsolamento:
         ctx_dev = _make_ctx()
         ctx_rev = _make_ctx()
 
-        todo_result = _make_scan_result("crewflow:todo")
-        review_result = _make_scan_result("crewflow:review")
+        todo_result = _make_scan_result("flow:develop-waiting")
+        review_result = _make_scan_result("flow:review-waiting")
 
         # Ambos os resultados no scan
         all_results = [todo_result, review_result]
@@ -742,7 +758,7 @@ class TestDryRunPorEstagio:
         """CREWFLOW_DRY_RUN=1 → run_dev não chama _dispatch."""
         monkeypatch.setenv("CREWFLOW_DRY_RUN", "1")
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:todo")
+        result = _make_scan_result("flow:develop-waiting")
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -767,7 +783,7 @@ class TestDryRunPorEstagio:
         """CREWFLOW_DRY_RUN=1 → run_reviewer não chama _dispatch_reviewer."""
         monkeypatch.setenv("CREWFLOW_DRY_RUN", "1")
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:review")
+        result = _make_scan_result("flow:review-waiting")
 
         with (
             mock.patch("deployment.deployment._load_config",

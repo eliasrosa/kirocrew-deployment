@@ -191,20 +191,21 @@ def can_leave_spec(item: WorkItem, squad: Squad) -> Result:
 def triage_hotfix(item: WorkItem) -> GateVerdict:
     """GATE 0 do hotfix — este item é realmente um incidente de PRD?
 
-    Um item com ``crewflow:hotfix`` que NÃO tem ``crewflow:p1`` pode não ser
+    Um item com ``flow:hotfix`` que NÃO tem ``flow:p1`` pode não ser
     urgência real. O gate retorna um ``switch=BUG`` para o motor rebaixar.
 
     Esta é uma heurística, não uma regra absoluta — o TL que aprova o GATE 1
     pode sobrescrever a triagem.
     """
 
-    has_p1 = "crewflow:p1" in item.labels
+    # Suporte a ambos os namespaces durante coexistência
+    has_p1 = "flow:p1" in item.labels or "crewflow:p1" in item.labels
 
     if not has_p1:
         return GateVerdict(
             result=Result.fail(
-                "hotfix sem crewflow:p1 — confirme se é incidente de PRD. "
-                "Se não for, rebaixe para crewflow:bug."
+                "hotfix sem flow:p1 — confirme se é incidente de PRD. "
+                "Se não for, rebaixe para flow:bug."
             ),
             switch=TemplateSwitch.BUG,
         )
@@ -294,22 +295,22 @@ def exceeded_review_iterations(
 def validate_hml_bypass(item: WorkItem, justification: str | None) -> Result:
     """Valida a exceção auditada de bypass do HML.
 
-    O motor bloqueia o merge quando ``crewflow:hml-bypass`` está presente e
-    não há justificativa registrada no comentário da issue.
+    No namespace flow:*, `flow:blocked` é usado para indicar que uma issue
+    foi bloqueada (incluindo bypass de HML). Quando presente com uma justificativa,
+    o motor valida que a justificativa foi registrada.
 
     ``justification`` é o texto extraído do comentário estruturado pelo
-    executor (#8) — nunca buscado aqui.
+    executor — nunca buscado aqui.
     """
-    from flow.domain.state import Modifier
-
-    has_bypass = Modifier.HML_BYPASS.value in item.labels
+    # Verifica presença do label de bypass (flow:blocked ou legado crewflow:hml-bypass)
+    has_bypass = "flow:blocked" in item.labels or "crewflow:hml-bypass" in item.labels
 
     if not has_bypass:
         return Result.success()  # não é bypass, nada a validar
 
     if not justification or not justification.strip():
         return Result.fail(
-            "crewflow:hml-bypass presente mas justificativa ausente. "
+            "flow:blocked presente mas justificativa ausente. "
             "Registre o motivo no comentário da issue antes do merge. "
             "O motor não permite merge sem justificativa."
         )

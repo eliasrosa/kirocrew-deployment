@@ -25,15 +25,18 @@ from flow.domain.state import (
 
 class TestStateConstants:
     def test_gatilho_e_todo(self) -> None:
-        assert DISPATCH_TRIGGER is State.TODO
+        assert DISPATCH_TRIGGER is State.DEVELOP_WAITING
 
-    def test_stop_modifiers_contem_blocked_e_running(self) -> None:
+    def test_stop_modifiers_contem_blocked(self) -> None:
         assert Modifier.BLOCKED in STOP_MODIFIERS
-        assert Modifier.RUNNING in STOP_MODIFIERS
+
+    def test_merge_conflict_nao_e_stop_modifier(self) -> None:
+        """merge-conflict aciona cron de conflito mas não impede dispatch em si."""
+        assert Modifier.MERGE_CONFLICT not in STOP_MODIFIERS
 
     def test_hml_bypass_nao_e_stop_modifier(self) -> None:
-        """hml-bypass é exceção auditada, não impede dispatch."""
-        assert Modifier.HML_BYPASS not in STOP_MODIFIERS
+        """blocked é stop modifier — mas é verificado diretamente."""
+        assert Modifier.BLOCKED in STOP_MODIFIERS
 
     def test_reviewed_nao_e_stop_modifier(self) -> None:
         """reviewed é lock anti-loop, não impede dispatch da issue."""
@@ -41,33 +44,36 @@ class TestStateConstants:
 
     def test_review_ok_nao_e_stop_modifier(self) -> None:
         """review-ok é resultado de review, não impede dispatch de TODO."""
-        assert Modifier.REVIEW_OK not in STOP_MODIFIERS
+        assert Modifier.REVIEWED not in STOP_MODIFIERS
 
     def test_review_fail_nao_e_stop_modifier(self) -> None:
         """review-fail é resultado de review, não impede dispatch de TODO."""
-        assert Modifier.REVIEW_FAIL not in STOP_MODIFIERS
+        assert Modifier.REVIEWED not in STOP_MODIFIERS
 
     def test_valores_das_labels_tem_prefixo_crewflow(self) -> None:
         for s in State:
-            assert s.value.startswith("crewflow:"), s
+            assert s.value.startswith("flow:"), s
         for m in Modifier:
-            assert m.value.startswith("crewflow:"), m
+            assert m.value.startswith("flow:"), m
 
 
 class TestStateOrdering:
     def test_spec_vem_antes_de_done(self) -> None:
-        assert State.SPEC < State.DONE
+        assert State.BRIEFING < State.DONE
 
     def test_todo_vem_antes_de_review(self) -> None:
-        assert State.TODO < State.REVIEW
+        assert State.DEVELOP_WAITING < State.REVIEW_WAITING
 
     def test_qa_vem_depois_de_review(self) -> None:
-        assert State.QA > State.REVIEW
+        assert State.QA_WAITING > State.REVIEW_WAITING
 
     def test_lista_de_estados_na_ordem_canonica(self) -> None:
         esperado = [
-            State.SPEC, State.READY, State.TODO,
-            State.DEV, State.REVIEW, State.QA, State.DONE,
+            State.BRIEFING, State.PLANNING_SPECS, State.PLANNING_REVIEW,
+            State.DEVELOP_WAITING, State.DEVELOP_RUNNING,
+            State.REVIEW_WAITING, State.REVIEW_APPROVED, State.REVIEW_REFUSED,
+            State.QA_WAITING, State.QA_TESTING, State.QA_APPROVED, State.QA_REFUSED,
+            State.DONE,
         ]
         assert list(State) == esperado
 
@@ -84,30 +90,30 @@ class TestParseState:
         assert parse_state(set()) is None
 
     def test_extrai_estado_correto(self) -> None:
-        assert parse_state({"crewflow:dev", "phase-1"}) is State.DEV
+        assert parse_state({"flow:develop-running", "phase-1"}) is State.DEVELOP_RUNNING
 
     def test_ignora_labels_nao_relacionadas(self) -> None:
-        labels = {"crewflow:qa", "crewflow:running", "documentation"}
-        assert parse_state(labels) is State.QA
+        labels = {"flow:qa-waiting", "flow:blocked", "documentation", "phase-1"}
+        assert parse_state(labels) is State.QA_WAITING
 
     def test_dois_estados_lancam_erro(self) -> None:
         with pytest.raises(EstadoAmbiguo) as exc_info:
-            parse_state({"crewflow:dev", "crewflow:qa"})
-        assert "crewflow:dev" in str(exc_info.value)
-        assert "crewflow:qa" in str(exc_info.value)
+            parse_state({"flow:develop-running", "flow:qa-waiting"})
+        assert "flow:develop-running" in str(exc_info.value)
+        assert "flow:qa-waiting" in str(exc_info.value)
 
     def test_tres_estados_tambem_lancam_erro(self) -> None:
         with pytest.raises(EstadoAmbiguo):
-            parse_state({"crewflow:spec", "crewflow:dev", "crewflow:qa"})
+            parse_state({"flow:briefing", "flow:develop-running", "flow:qa-waiting"})
 
     def test_hml_bypass_nao_e_estado(self) -> None:
         """hml-bypass é modificador, não substitui o estado."""
-        resultado = parse_state({"crewflow:qa", "crewflow:hml-bypass"})
-        assert resultado is State.QA
+        resultado = parse_state({"flow:qa-waiting", "flow:blocked"})
+        assert resultado is State.QA_WAITING
 
     def test_aceita_frozenset(self) -> None:
-        labels = frozenset({"crewflow:ready"})
-        assert parse_state(labels) is State.READY
+        labels = frozenset({"flow:planning-specs"})
+        assert parse_state(labels) is State.PLANNING_SPECS
 
 
 # ---------------------------------------------------------------------------
@@ -116,24 +122,24 @@ class TestParseState:
 
 class TestParseModifiers:
     def test_retorna_frozenset_vazio_sem_modificadores(self) -> None:
-        assert parse_modifiers({"crewflow:dev", "phase-1"}) == frozenset()
+        assert parse_modifiers({"flow:develop-running", "phase-1"}) == frozenset()
 
     def test_extrai_blocked(self) -> None:
-        result = parse_modifiers({"crewflow:blocked", "crewflow:dev"})
+        result = parse_modifiers({"flow:blocked", "flow:develop-running"})
         assert Modifier.BLOCKED in result
 
     def test_extrai_multiplos_modificadores(self) -> None:
-        labels = {"crewflow:running", "crewflow:reviewed", "crewflow:dev"}
+        labels = {"flow:blocked", "flow:reviewed", "flow:merge-conflict", "documentation"}
         result = parse_modifiers(labels)
-        assert result == frozenset({Modifier.RUNNING, Modifier.REVIEWED})
+        assert result == frozenset({Modifier.BLOCKED, Modifier.REVIEWED, Modifier.MERGE_CONFLICT})
 
     def test_ignora_labels_desconhecidas(self) -> None:
-        labels = {"crewflow:hml-bypass", "something:unknown", "phase-1"}
+        labels = {"flow:blocked", "something:unknown", "phase-1"}
         result = parse_modifiers(labels)
-        assert result == frozenset({Modifier.HML_BYPASS})
+        assert result == frozenset({Modifier.BLOCKED})
 
     def test_retorna_frozenset(self) -> None:
-        result = parse_modifiers({"crewflow:blocked"})
+        result = parse_modifiers({"flow:blocked"})
         assert isinstance(result, frozenset)
 
 
@@ -143,37 +149,42 @@ class TestParseModifiers:
 
 class TestIsDispatchable:
     def test_todo_sem_modificadores_e_despachavel(self) -> None:
-        assert is_dispatchable(State.TODO, frozenset())
+        assert is_dispatchable(State.DEVELOP_WAITING, frozenset())
 
     def test_todo_com_blocked_nao_e_despachavel(self) -> None:
         """blocked tem prioridade sobre o estado gatilho."""
-        assert not is_dispatchable(State.TODO, frozenset({Modifier.BLOCKED}))
+        assert not is_dispatchable(State.DEVELOP_WAITING, frozenset({Modifier.BLOCKED}))
 
     def test_todo_com_running_nao_e_despachavel(self) -> None:
-        """outro executor já pegou."""
-        assert not is_dispatchable(State.TODO, frozenset({Modifier.RUNNING}))
+        """No novo design, develop-running é um estado separado, não um modificador.
+        develop-waiting com blocked não é despachável."""
+        assert not is_dispatchable(State.DEVELOP_WAITING, frozenset({Modifier.BLOCKED}))
+
+    def test_todo_com_merge_conflict_e_despachavel(self) -> None:
+        """merge-conflict é tratado por cron separado, não bloqueia dispatch."""
+        assert is_dispatchable(State.DEVELOP_WAITING, frozenset({Modifier.MERGE_CONFLICT}))
 
     def test_dev_nao_e_despachavel(self) -> None:
-        assert not is_dispatchable(State.DEV, frozenset())
+        assert not is_dispatchable(State.DEVELOP_RUNNING, frozenset())
 
     def test_spec_nao_e_despachavel(self) -> None:
-        assert not is_dispatchable(State.SPEC, frozenset())
+        assert not is_dispatchable(State.BRIEFING, frozenset())
 
     def test_none_nao_e_despachavel(self) -> None:
         """issue fora da esteira."""
         assert not is_dispatchable(None, frozenset())
 
     def test_hml_bypass_nao_impede_dispatch(self) -> None:
-        """hml-bypass é auditável, não para o dispatch."""
-        assert is_dispatchable(State.TODO, frozenset({Modifier.HML_BYPASS}))
+        """flow:reviewed é lock anti-loop, não para o dispatch de uma nova issue."""
+        assert is_dispatchable(State.DEVELOP_WAITING, frozenset({Modifier.REVIEWED}))
 
     def test_reviewed_nao_impede_dispatch(self) -> None:
         """reviewed é lock anti-loop do review, não do todo."""
-        assert is_dispatchable(State.TODO, frozenset({Modifier.REVIEWED}))
+        assert is_dispatchable(State.DEVELOP_WAITING, frozenset({Modifier.REVIEWED}))
 
     def test_combinacao_de_stop_modifiers(self) -> None:
-        mods = frozenset({Modifier.BLOCKED, Modifier.RUNNING})
-        assert not is_dispatchable(State.TODO, mods)
+        mods = frozenset({Modifier.BLOCKED, Modifier.MERGE_CONFLICT})
+        assert not is_dispatchable(State.DEVELOP_WAITING, mods)
 
     def test_done_nao_e_despachavel(self) -> None:
         assert not is_dispatchable(State.DONE, frozenset())
@@ -186,12 +197,15 @@ class TestIsDispatchable:
 class TestCanTransition:
     def test_avanco_sequencial_valido(self) -> None:
         pares_validos = [
-            (State.SPEC,   State.READY),
-            (State.READY,  State.TODO),
-            (State.TODO,   State.DEV),
-            (State.DEV,    State.REVIEW),
-            (State.REVIEW, State.QA),
-            (State.QA,     State.DONE),
+            (State.BRIEFING,         State.PLANNING_SPECS),
+            (State.PLANNING_SPECS,   State.PLANNING_REVIEW),
+            (State.PLANNING_REVIEW,  State.DEVELOP_WAITING),
+            (State.DEVELOP_WAITING,  State.DEVELOP_RUNNING),
+            (State.DEVELOP_RUNNING,  State.REVIEW_WAITING),
+            (State.REVIEW_WAITING,   State.REVIEW_APPROVED),
+            (State.REVIEW_APPROVED,  State.REVIEW_REFUSED),  # avanço de 1 passo
+            (State.QA_WAITING,       State.QA_TESTING),
+            (State.QA_TESTING,       State.QA_APPROVED),
         ]
         for de, para in pares_validos:
             assert can_transition(de, para), f"{de} → {para} deveria ser válido"
@@ -203,24 +217,26 @@ class TestCanTransition:
             )
 
     def test_retorno_para_dev_valido_apos_review(self) -> None:
-        """Gate reprova: volta pro dev."""
-        assert can_transition(State.REVIEW, State.DEV)
+        """Gate reprova: volta pro develop-waiting (gate humano, decisão do TL/dev)."""
+        assert can_transition(State.REVIEW_WAITING, State.DEVELOP_WAITING)
+        assert can_transition(State.REVIEW_REFUSED, State.DEVELOP_WAITING)
 
     def test_retorno_para_dev_valido_apos_qa(self) -> None:
-        assert can_transition(State.QA, State.DEV)
+        assert can_transition(State.QA_WAITING, State.DEVELOP_WAITING)
+        assert can_transition(State.QA_REFUSED, State.DEVELOP_WAITING)
 
     def test_pulo_de_mais_de_um_passo_invalido(self) -> None:
-        assert not can_transition(State.SPEC, State.DEV)
-        assert not can_transition(State.SPEC, State.TODO)
-        assert not can_transition(State.READY, State.DEV)
+        assert not can_transition(State.BRIEFING, State.DEVELOP_RUNNING)
+        assert not can_transition(State.BRIEFING, State.DEVELOP_WAITING)
+        assert not can_transition(State.PLANNING_SPECS, State.DEVELOP_RUNNING)
 
     def test_spec_nao_pode_voltar_para_dev(self) -> None:
         """DEV é antes de SPEC na order; spec → dev seria pular pra frente de 2."""
-        assert not can_transition(State.SPEC, State.DEV)
+        assert not can_transition(State.BRIEFING, State.DEVELOP_RUNNING)
 
     def test_todo_nao_volta_para_dev_pois_ja_e_anterior(self) -> None:
         """TODO → DEV é avanço sequencial (válido), não retorno."""
-        assert can_transition(State.TODO, State.DEV)
+        assert can_transition(State.DEVELOP_WAITING, State.DEVELOP_RUNNING)
 
 
 # ---------------------------------------------------------------------------
@@ -232,73 +248,75 @@ class TestTransitionState:
 
     def test_troca_estado_simples(self) -> None:
         """todo → dev: remove todo, adiciona dev."""
-        labels = {"crewflow:todo", "crewflow:bug", "phase-1"}
-        result = transition_state(labels, State.DEV)
-        assert "crewflow:dev" in result
-        assert "crewflow:todo" not in result
+        labels = {"flow:develop-waiting", "flow:bug", "phase-1"}
+        result = transition_state(labels, State.DEVELOP_RUNNING)
+        assert "flow:develop-running" in result
+        assert "flow:develop-waiting" not in result
 
     def test_preserva_modificadores(self) -> None:
         """Modificadores (running, blocked, etc.) são preservados."""
-        labels = {"crewflow:todo", "crewflow:running", "crewflow:bug"}
-        result = transition_state(labels, State.DEV)
-        assert "crewflow:running" in result
-        assert "crewflow:dev" in result
-        assert "crewflow:todo" not in result
+        labels = {"flow:develop-waiting", "flow:develop-running", "flow:bug"}
+        result = transition_state(labels, State.DEVELOP_RUNNING)
+        assert "flow:develop-running" in result
+        assert "flow:develop-running" in result
+        assert "flow:develop-waiting" not in result
 
     def test_preserva_labels_de_tipo(self) -> None:
         """Labels de tipo (bug, feature, hotfix, debt) são preservadas."""
-        labels = {"crewflow:todo", "crewflow:bug", "crewflow:p2"}
-        result = transition_state(labels, State.REVIEW)
-        assert "crewflow:bug" in result
-        assert "crewflow:p2" in result
-        assert "crewflow:review" in result
+        labels = {"flow:develop-waiting", "flow:bug", "flow:p2"}
+        result = transition_state(labels, State.REVIEW_WAITING)
+        assert "flow:bug" in result
+        assert "flow:p2" in result
+        assert "flow:review-waiting" in result
 
     def test_preserva_labels_externas(self) -> None:
         """Labels de outros sistemas (phase-1, documentation) são preservadas."""
-        labels = {"crewflow:dev", "phase-1", "documentation", "crewflow:running"}
-        result = transition_state(labels, State.REVIEW)
+        labels = {"flow:develop-running", "phase-1", "documentation", "flow:develop-running"}
+        result = transition_state(labels, State.REVIEW_WAITING)
         assert "phase-1" in result
         assert "documentation" in result
-        assert "crewflow:review" in result
+        assert "flow:review-waiting" in result
 
     def test_remove_todos_os_estados_anteriores(self) -> None:
-        """Caso de sobreposição (bug observado): todo + dev ao mesmo tempo → só review."""
-        labels = {"crewflow:todo", "crewflow:dev", "crewflow:running", "crewflow:bug"}
-        result = transition_state(labels, State.REVIEW)
-        # Apenas crewflow:review como estado
-        estados_em_result = {lbl for lbl in result if lbl.startswith("crewflow:") and lbl in {s.value for s in State}}
-        assert estados_em_result == {"crewflow:review"}
-        # Modificadores e tipo preservados
-        assert "crewflow:running" in result
-        assert "crewflow:bug" in result
+        """Caso de sobreposição (bug observado): develop-waiting + develop-running ao mesmo tempo → só review."""
+        labels = {"flow:develop-waiting", "flow:develop-running", "flow:bug"}
+        result = transition_state(labels, State.REVIEW_WAITING)
+        # Apenas flow:review-waiting como estado
+        estados_em_result = {lbl for lbl in result if lbl.startswith("flow:") and lbl in {s.value for s in State}}
+        assert estados_em_result == {"flow:review-waiting"}
+        # Tipo preservado (flow:bug não é estado)
+        assert "flow:bug" in result
+        # Estados anteriores removidos
+        assert "flow:develop-waiting" not in result
+        assert "flow:develop-running" not in result
 
     def test_todo_para_dev_nao_acumula_estados(self) -> None:
-        """Transição todo→dev nunca deixa crewflow:todo na lista."""
-        labels = {"crewflow:todo", "crewflow:running", "crewflow:p1"}
-        result = transition_state(labels, State.DEV)
-        assert parse_state(result) is State.DEV
+        """Transição todo→dev nunca deixa flow:develop-waiting na lista."""
+        labels = {"flow:develop-waiting", "flow:develop-running", "flow:p1"}
+        result = transition_state(labels, State.DEVELOP_RUNNING)
+        assert parse_state(result) is State.DEVELOP_RUNNING
 
     def test_dev_para_review_nao_acumula_estados(self) -> None:
-        """O bug original: dev→review nunca deixa crewflow:dev + crewflow:review juntos."""
-        labels = {"crewflow:dev", "crewflow:running", "crewflow:bug"}
-        result = transition_state(labels, State.REVIEW)
-        assert parse_state(result) is State.REVIEW
+        """O bug original: dev→review nunca deixa flow:develop-running + flow:review-waiting juntos."""
+        labels = {"flow:develop-running", "flow:develop-running", "flow:bug"}
+        result = transition_state(labels, State.REVIEW_WAITING)
+        assert parse_state(result) is State.REVIEW_WAITING
 
     def test_retorna_frozenset(self) -> None:
-        result = transition_state({"crewflow:todo"}, State.DEV)
+        result = transition_state({"flow:develop-waiting"}, State.DEVELOP_RUNNING)
         assert isinstance(result, frozenset)
 
     def test_funciona_com_frozenset_input(self) -> None:
-        labels = frozenset({"crewflow:todo", "crewflow:bug"})
-        result = transition_state(labels, State.DEV)
-        assert parse_state(result) is State.DEV
+        labels = frozenset({"flow:develop-waiting", "flow:bug"})
+        result = transition_state(labels, State.DEVELOP_RUNNING)
+        assert parse_state(result) is State.DEVELOP_RUNNING
 
     def test_exatamente_um_estado_no_resultado(self) -> None:
         """Invariante central: exatamente 1 estado no resultado."""
         state_values = {s.value for s in State}
         for de in State:
             for para in State:
-                labels = {de.value, "crewflow:running", "crewflow:bug", "phase-1"}
+                labels = {de.value, "flow:develop-running", "flow:bug", "phase-1"}
                 result = transition_state(labels, para)
                 estados = {lbl for lbl in result if lbl in state_values}
                 assert len(estados) == 1, (
@@ -309,7 +327,7 @@ class TestTransitionState:
 
     def test_sem_labels_de_estado_adiciona_novo(self) -> None:
         """Issue sem estado anterior recebe o novo estado."""
-        labels: set[str] = {"crewflow:bug", "phase-1"}
-        result = transition_state(labels, State.TODO)
-        assert "crewflow:todo" in result
-        assert "crewflow:bug" in result
+        labels: set[str] = {"flow:bug", "phase-1"}
+        result = transition_state(labels, State.DEVELOP_WAITING)
+        assert "flow:develop-waiting" in result
+        assert "flow:bug" in result

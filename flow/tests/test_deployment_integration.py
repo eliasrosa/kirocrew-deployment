@@ -51,13 +51,13 @@ def _make_scan_result(key: str = "https://github.com/owner/repo/issues/42",
     from flow.scan.scanner import ScanResult
 
     return ScanResult(
-        item=WorkItem(key=key, title=title, labels=frozenset(["crewflow:todo"])),
-        current_state=State.TODO,
+        item=WorkItem(key=key, title=title, labels=frozenset(["flow:develop-waiting"])),
+        current_state=State.DEVELOP_WAITING,
         modifiers=frozenset(),
         dispatch_candidate=dispatch,
         spec_valid=spec_valid,
         changed=True,
-        reason="CANDIDATO A DISPATCH; labels mudaram" if dispatch else "estado: crewflow:dev",
+        reason="CANDIDATO A DISPATCH; labels mudaram" if dispatch else "estado: flow:develop-running",
     )
 
 
@@ -107,7 +107,7 @@ class TestLoadConfigFallback:
             "routing:\n"
             "  - match:\n"
             "      labels:\n"
-            "        - crewflow:debt\n"
+            "        - flow:debt\n"
             "    workflow: debt-flow\n"
             "  - default: feature-flow\n"
         )
@@ -123,7 +123,7 @@ class TestLoadConfigFallback:
         assert cfg["max_concurrent"] == 2
         # O routing multi-linha foi parseado com a MESMA estrutura do PyYAML.
         assert cfg["routing"][0] == {
-            "match": {"labels": ["crewflow:debt"]},
+            "match": {"labels": ["flow:debt"]},
             "workflow": "debt-flow",
         }
         assert cfg["routing"][-1] == {"default": "feature-flow"}
@@ -174,8 +174,8 @@ class TestRunIntegration:
 
         spec_result = ScanResult(
             item=WorkItem(key="VGAT-1", title="Fix sem repo",
-                          labels=frozenset(["crewflow:spec"])),
-            current_state=State.SPEC,
+                          labels=frozenset(["flow:briefing"])),
+            current_state=State.BRIEFING,
             modifiers=frozenset(),
             dispatch_candidate=False,
             spec_valid=False,
@@ -247,7 +247,7 @@ class TestAutoMergeIntegration:
         return ctx
 
     def _make_review_scan_result(self) -> object:
-        """ScanResult em crewflow:review com crewflow:reviewed."""
+        """ScanResult em flow:review-waiting com flow:reviewed."""
         from flow.audit.state_comment import StateComment, render
         from flow.domain.gates import WorkItem
         from flow.domain.state import Modifier, State
@@ -264,9 +264,9 @@ class TestAutoMergeIntegration:
             item=WorkItem(
                 key="https://github.com/owner/repo/issues/42",
                 title="[owner/repo] Feature X",
-                labels=frozenset(["crewflow:review", "crewflow:reviewed", "crewflow:feature"]),
+                labels=frozenset(["flow:review-waiting", "flow:reviewed", "flow:feature"]),
             ),
-            current_state=State.REVIEW,
+            current_state=State.REVIEW_WAITING,
             modifiers=frozenset([Modifier.REVIEWED]),
             dispatch_candidate=False,
             spec_valid=None,
@@ -294,9 +294,9 @@ class TestAutoMergeIntegration:
             item=WorkItem(
                 key="https://github.com/owner/repo/issues/42",
                 title="[owner/repo] Feature X",
-                labels=frozenset(["crewflow:review", "crewflow:reviewed", "crewflow:feature"]),
+                labels=frozenset(["flow:review-waiting", "flow:reviewed", "flow:feature"]),
             ),
-            current_state=State.REVIEW,
+            current_state=State.REVIEW_WAITING,
             modifiers=frozenset([Modifier.REVIEWED]),
             dispatch_candidate=False,
             spec_valid=None,
@@ -322,7 +322,7 @@ class TestAutoMergeIntegration:
             mock.patch("flow.adapters.github_client.merge_pull_request",
                        return_value={"merged": True}),
             mock.patch("flow.adapters.github_client.get_work_item",
-                       return_value={"labels": ["crewflow:review", "crewflow:reviewed", "crewflow:feature"]}),
+                       return_value={"labels": ["flow:review-waiting", "flow:reviewed", "flow:feature"]}),
             mock.patch("flow.adapters.github_client.set_labels"),
             mock.patch("flow.adapters.github_client.upsert_pr_review_comment"),
             mock.patch("flow.adapters.github_client.get_state_comment", return_value=state_body),
@@ -947,8 +947,8 @@ class TestReviewerPrompt:
 
         prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
 
-        assert "crewflow:review-ok" in prompt
-        assert "crewflow:review-fail" in prompt
+        assert "flow:review-approved" in prompt
+        assert "flow:review-refused" in prompt
 
     def test_contem_regra_nunca_merge(self) -> None:
         from deployment.deployment import _reviewer_prompt
@@ -1031,7 +1031,7 @@ class TestReviewerPrompt:
         assert "# review: myrepo PR #99 (issue #42)" in prompt
         assert "gh issue view 42 --repo owner/myrepo" in prompt
         assert "gh pr diff 99 --repo owner/myrepo" in prompt
-        assert "crewflow:review-ok" in prompt
+        assert "flow:review-approved" in prompt
         assert "NUNCA mergeie" in prompt
 
     def test_exemplar_do_pr_derivado_do_helper(self) -> None:
@@ -1154,7 +1154,7 @@ class TestDispatchReviewerFunction:
 
 
 class TestRunDispatchReviewer:
-    """Integração: run() despacha sessão one-shot do reviewer quando crewflow:review."""
+    """Integração: run() despacha sessão one-shot do reviewer quando flow:review-waiting."""
 
     def _make_ctx(self) -> mock.MagicMock:
         ctx = mock.MagicMock()
@@ -1164,7 +1164,7 @@ class TestRunDispatchReviewer:
         return ctx
 
     def _make_review_scan_result(self) -> object:
-        """ScanResult em crewflow:review sem crewflow:reviewed (antes do dispatch)."""
+        """ScanResult em flow:review-waiting sem flow:reviewed (antes do dispatch)."""
         from flow.domain.gates import WorkItem
         from flow.domain.state import State
         from flow.scan.scanner import ScanResult
@@ -1173,9 +1173,9 @@ class TestRunDispatchReviewer:
             item=WorkItem(
                 key="https://github.com/owner/repo/issues/42",
                 title="[owner/repo] Feature X",
-                labels=frozenset(["crewflow:review", "crewflow:feature"]),
+                labels=frozenset(["flow:review-waiting", "flow:feature"]),
             ),
-            current_state=State.REVIEW,
+            current_state=State.REVIEW_WAITING,
             modifiers=frozenset(),
             dispatch_candidate=False,
             spec_valid=None,
@@ -1184,7 +1184,7 @@ class TestRunDispatchReviewer:
         )
 
     def test_despacha_reviewer_quando_review_sem_reviewed(self) -> None:
-        """Quando issue está em crewflow:review, run() chama _dispatch_reviewer."""
+        """Quando issue está em flow:review-waiting, run() chama _dispatch_reviewer."""
         ctx = self._make_ctx()
         result = self._make_review_scan_result()
 
@@ -1463,8 +1463,8 @@ def _make_dispatch_scan_result(
     from flow.scan.scanner import ScanResult
 
     return ScanResult(
-        item=WorkItem(key=key, title=title, labels=frozenset(["crewflow:todo", "crewflow:feature"])),
-        current_state=State.TODO,
+        item=WorkItem(key=key, title=title, labels=frozenset(["flow:develop-waiting", "flow:feature"])),
+        current_state=State.DEVELOP_WAITING,
         modifiers=frozenset(),
         dispatch_candidate=True,
         spec_valid=None,
@@ -2418,7 +2418,7 @@ class TestStageActionsCobertura:
     _TRANSVERSAL = frozenset({
         "skip",           # silêncio — sem ação
         "notify_human",   # transversal: notifica humano em qualquer estágio
-        "block",          # transversal: marca crewflow:blocked
+        "block",          # transversal: marca flow:blocked
         "rebrand",        # transversal: troca de template (GATE 0 hotfix)
     })
 
@@ -2453,7 +2453,7 @@ class TestStageActionsCobertura:
 
         assert "dispatch_conflict_resolver" in _STAGE_ACTIONS[_STAGE_CONFLITO], (
             "dispatch_conflict_resolver deve estar em _STAGE_CONFLITO — "
-            "despachado quando crewflow:conflito já foi aplicado na issue."
+            "despachado quando flow:merge-conflict já foi aplicado na issue."
         )
 
     def test_dispatch_rework_no_estagio_conflito(self) -> None:
@@ -2480,7 +2480,7 @@ class TestStageActionsCobertura:
 
 
 class TestRunStageMarkConflito:
-    """_run_stage no estágio reviewer executa mark_conflito (aplica crewflow:conflito)."""
+    """_run_stage no estágio reviewer executa mark_conflito (aplica flow:merge-conflict)."""
 
     def _make_ctx(self) -> mock.MagicMock:
         ctx = mock.MagicMock()
@@ -2490,7 +2490,7 @@ class TestRunStageMarkConflito:
         return ctx
 
     def _make_conflicting_pr_scan_result(self) -> object:
-        """ScanResult em crewflow:review com PR em estado CONFLICTING."""
+        """ScanResult em flow:review-waiting com PR em estado CONFLICTING."""
         from flow.domain.gates import WorkItem
         from flow.domain.state import State
         from flow.scan.scanner import ScanResult
@@ -2499,9 +2499,9 @@ class TestRunStageMarkConflito:
             item=WorkItem(
                 key="https://github.com/owner/repo/issues/99",
                 title="[owner/repo] Feature Y",
-                labels=frozenset(["crewflow:review", "crewflow:feature"]),
+                labels=frozenset(["flow:review-waiting", "flow:feature"]),
             ),
-            current_state=State.REVIEW,
+            current_state=State.REVIEW_WAITING,
             modifiers=frozenset(),
             dispatch_candidate=False,
             spec_valid=None,
@@ -2510,7 +2510,7 @@ class TestRunStageMarkConflito:
         )
 
     def test_mark_conflito_aplica_label_no_estagio_reviewer(self) -> None:
-        """_run_stage(reviewer) aplica crewflow:conflito quando PR está CONFLICTING."""
+        """_run_stage(reviewer) aplica flow:merge-conflict quando PR está CONFLICTING."""
         from deployment.deployment import _run_stage
 
         ctx = self._make_ctx()
@@ -2545,12 +2545,12 @@ class TestRunStageMarkConflito:
 
             _run_stage(ctx, "reviewer")
 
-        # set_labels deve ter sido chamado com crewflow:conflito
+        # set_labels deve ter sido chamado com flow:merge-conflict
         mock_provider.set_labels.assert_called_once()
         call_args = mock_provider.set_labels.call_args
         labels_set = call_args[0][2] if len(call_args[0]) >= 3 else call_args[1].get("labels", [])
-        assert "crewflow:conflito" in labels_set, (
-            f"crewflow:conflito não foi adicionado. Labels: {labels_set}"
+        assert "flow:merge-conflict" in labels_set, (
+            f"flow:merge-conflict não foi adicionado. Labels: {labels_set}"
         )
 
 
@@ -2565,7 +2565,7 @@ class TestRunStageConflictResolver:
         return ctx
 
     def _make_conflito_scan_result(self) -> object:
-        """ScanResult em crewflow:review com crewflow:conflito aplicado."""
+        """ScanResult em flow:review-waiting com flow:merge-conflict aplicado."""
         from flow.domain.gates import WorkItem
         from flow.domain.state import Modifier, State
         from flow.scan.scanner import ScanResult
@@ -2574,18 +2574,18 @@ class TestRunStageConflictResolver:
             item=WorkItem(
                 key="https://github.com/owner/repo/issues/99",
                 title="[owner/repo] Feature Y",
-                labels=frozenset(["crewflow:review", "crewflow:conflito", "crewflow:feature"]),
+                labels=frozenset(["flow:review-waiting", "flow:merge-conflict", "flow:feature"]),
             ),
-            current_state=State.REVIEW,
-            modifiers=frozenset([Modifier.CONFLITO]),
+            current_state=State.REVIEW_WAITING,
+            modifiers=frozenset([Modifier.MERGE_CONFLICT]),
             dispatch_candidate=False,
             spec_valid=None,
             changed=True,
-            reason="PR com crewflow:conflito",
+            reason="PR com flow:merge-conflict",
         )
 
     def test_dispatch_conflict_resolver_no_estagio_conflito(self) -> None:
-        """_run_stage(conflito) despacha sessão de resolução quando crewflow:conflito presente."""
+        """_run_stage(conflito) despacha sessão de resolução quando flow:merge-conflict presente."""
         from deployment.deployment import _run_stage
 
         ctx = self._make_ctx()

@@ -1,8 +1,8 @@
 """Testes do ciclo de conflito de merge (issue #89).
 
 Cobre:
-  - Modifier.CONFLITO existe e está em Modifier StrEnum
-  - parse_modifiers reconhece crewflow:conflito
+  - Modifier.MERGE_CONFLICT existe e está em Modifier StrEnum
+  - parse_modifiers reconhece flow:merge-conflict
   - Executor: REVIEW + CONFLITO → DISPATCH_CONFLICT_RESOLVER
   - Executor: REVIEW + PR CONFLICTING (sem label) → MARK_CONFLITO
   - Executor: REVIEW normal (sem conflito) → DISPATCH_REVIEWER
@@ -25,10 +25,10 @@ def _result(
     key: str = "https://github.com/owner/repo/issues/1",
     title: str = "[repo] Fix",
     labels: list[str] | None = None,
-    state: State = State.REVIEW,
+    state: State = State.REVIEW_WAITING,
     modifiers: set[Modifier] | None = None,
 ) -> ScanResult:
-    lbl_set = frozenset(labels or ["crewflow:review", "crewflow:feature"])
+    lbl_set = frozenset(labels or ["flow:review-waiting", "flow:feature"])
     return ScanResult(
         item=WorkItem(key=key, title=title, labels=lbl_set),
         current_state=state,
@@ -41,30 +41,30 @@ def _result(
 
 
 # ---------------------------------------------------------------------------
-# Modifier.CONFLITO — existência e parsing
+# Modifier.MERGE_CONFLICT — existência e parsing
 # ---------------------------------------------------------------------------
 
 class TestConflitoParsing:
     def test_conflito_esta_em_modifier(self) -> None:
-        """Modifier.CONFLITO deve existir com o valor correto."""
-        assert Modifier.CONFLITO == "crewflow:conflito"
+        """Modifier.MERGE_CONFLICT deve existir com o valor correto."""
+        assert Modifier.MERGE_CONFLICT == "flow:merge-conflict"
 
     def test_parse_modifiers_reconhece_conflito(self) -> None:
-        """parse_modifiers deve extrair crewflow:conflito."""
-        labels = frozenset({"crewflow:review", "crewflow:conflito", "crewflow:feature"})
+        """parse_modifiers deve extrair flow:merge-conflict."""
+        labels = frozenset({"flow:review-waiting", "flow:merge-conflict", "flow:feature"})
         mods = parse_modifiers(labels)
-        assert Modifier.CONFLITO in mods
+        assert Modifier.MERGE_CONFLICT in mods
 
     def test_parse_modifiers_sem_conflito(self) -> None:
         """Labels sem conflito não devem incluir o modificador."""
-        labels = frozenset({"crewflow:review", "crewflow:feature"})
+        labels = frozenset({"flow:review-waiting", "flow:feature"})
         mods = parse_modifiers(labels)
-        assert Modifier.CONFLITO not in mods
+        assert Modifier.MERGE_CONFLICT not in mods
 
     def test_conflito_nao_e_stop_modifier(self) -> None:
         """CONFLITO não deve estar em STOP_MODIFIERS (não impede dispatch de conflito)."""
         from flow.domain.state import STOP_MODIFIERS
-        assert Modifier.CONFLITO not in STOP_MODIFIERS
+        assert Modifier.MERGE_CONFLICT not in STOP_MODIFIERS
 
 
 # ---------------------------------------------------------------------------
@@ -73,46 +73,48 @@ class TestConflitoParsing:
 
 class TestConflitoCycle:
     def test_conflito_label_despacha_resolver(self) -> None:
-        """REVIEW + crewflow:conflito → DISPATCH_CONFLICT_RESOLVER."""
+        """REVIEW + flow:merge-conflict → DISPATCH_CONFLICT_RESOLVER."""
         r = _result(
-            labels=["crewflow:review", "crewflow:conflito", "crewflow:feature"],
-            modifiers={Modifier.CONFLITO},
+            labels=["flow:review-waiting", "flow:merge-conflict", "flow:feature"],
+            modifiers={Modifier.MERGE_CONFLICT},
         )
         d = decide(r)
         assert d.action is ActionKind.DISPATCH_CONFLICT_RESOLVER
 
     def test_conflito_resolver_adiciona_running(self) -> None:
-        """Dispatch conflict resolver deve adicionar crewflow:running."""
+        """Dispatch conflict resolver deve adicionar flow:develop-running."""
         r = _result(
-            labels=["crewflow:review", "crewflow:conflito", "crewflow:feature"],
-            modifiers={Modifier.CONFLITO},
+            labels=["flow:review-waiting", "flow:merge-conflict", "flow:feature"],
+            modifiers={Modifier.MERGE_CONFLICT},
         )
         d = decide(r)
         assert d.action is ActionKind.DISPATCH_CONFLICT_RESOLVER
-        assert "crewflow:running" in d.add_labels
+        # conflict resolver não muda o estado da issue — mantém review-waiting
+        # apenas remove o modificador de conflito
+        assert "flow:merge-conflict" not in d.add_labels
 
     def test_conflito_resolver_remove_conflito_label(self) -> None:
-        """Dispatch conflict resolver deve remover crewflow:conflito."""
+        """Dispatch conflict resolver deve remover flow:merge-conflict."""
         r = _result(
-            labels=["crewflow:review", "crewflow:conflito", "crewflow:feature"],
-            modifiers={Modifier.CONFLITO},
+            labels=["flow:review-waiting", "flow:merge-conflict", "flow:feature"],
+            modifiers={Modifier.MERGE_CONFLICT},
         )
         d = decide(r)
-        assert "crewflow:conflito" in d.remove_labels
+        assert "flow:merge-conflict" in d.remove_labels
 
     def test_pr_conflicting_marca_conflito(self) -> None:
         """REVIEW sem label conflito mas PR CONFLICTING → MARK_CONFLITO."""
         r = _result(
-            labels=["crewflow:review", "crewflow:feature"],
+            labels=["flow:review-waiting", "flow:feature"],
         )
         d = decide(r, pr_mergeable="CONFLICTING")
         assert d.action is ActionKind.MARK_CONFLITO
-        assert "crewflow:conflito" in d.add_labels
+        assert "flow:merge-conflict" in d.add_labels
 
     def test_pr_mergeable_nao_marca_conflito(self) -> None:
         """REVIEW com PR MERGEABLE → DISPATCH_REVIEWER (fluxo normal)."""
         r = _result(
-            labels=["crewflow:review", "crewflow:feature"],
+            labels=["flow:review-waiting", "flow:feature"],
         )
         d = decide(r, pr_mergeable="MERGEABLE")
         assert d.action is ActionKind.DISPATCH_REVIEWER
@@ -120,7 +122,7 @@ class TestConflitoCycle:
     def test_pr_unknown_nao_marca_conflito(self) -> None:
         """REVIEW com PR UNKNOWN → DISPATCH_REVIEWER (não trava no unknown)."""
         r = _result(
-            labels=["crewflow:review", "crewflow:feature"],
+            labels=["flow:review-waiting", "flow:feature"],
         )
         d = decide(r, pr_mergeable="UNKNOWN")
         assert d.action is ActionKind.DISPATCH_REVIEWER
@@ -128,7 +130,7 @@ class TestConflitoCycle:
     def test_sem_conflito_despacha_reviewer(self) -> None:
         """REVIEW normal sem conflito → DISPATCH_REVIEWER."""
         r = _result(
-            labels=["crewflow:review", "crewflow:feature"],
+            labels=["flow:review-waiting", "flow:feature"],
         )
         d = decide(r)
         assert d.action is ActionKind.DISPATCH_REVIEWER
@@ -136,22 +138,22 @@ class TestConflitoCycle:
     def test_conflito_tem_prioridade_sobre_reviewed(self) -> None:
         """CONFLITO + REVIEWED → DISPATCH_CONFLICT_RESOLVER (conflito tem prioridade)."""
         r = _result(
-            labels=["crewflow:review", "crewflow:conflito", "crewflow:reviewed",
-                    "crewflow:feature"],
-            modifiers={Modifier.CONFLITO, Modifier.REVIEWED},
+            labels=["flow:review-waiting", "flow:merge-conflict", "flow:reviewed",
+                    "flow:feature"],
+            modifiers={Modifier.MERGE_CONFLICT, Modifier.REVIEWED},
         )
         d = decide(r)
         assert d.action is ActionKind.DISPATCH_CONFLICT_RESOLVER
 
     def test_conflito_so_em_review(self) -> None:
-        """crewflow:conflito só dispara o resolver quando state é REVIEW."""
+        """flow:merge-conflict só dispara o resolver quando state é REVIEW."""
         r = _result(
-            labels=["crewflow:dev", "crewflow:conflito", "crewflow:feature"],
-            state=State.DEV,
-            modifiers={Modifier.CONFLITO},
+            labels=["flow:develop-running", "flow:merge-conflict", "flow:feature"],
+            state=State.DEVELOP_RUNNING,
+            modifiers={Modifier.MERGE_CONFLICT},
         )
         d = decide(r)
-        # Em DEV, o executor não processa crewflow:conflito como DISPATCH_CONFLICT_RESOLVER
+        # Em DEV, o executor não processa flow:merge-conflict como DISPATCH_CONFLICT_RESOLVER
         assert d.action is ActionKind.SKIP
 
 

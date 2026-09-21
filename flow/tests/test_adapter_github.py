@@ -45,9 +45,9 @@ class TestNormalization:
         assert "url" in item
 
     def test_labels_extraidas_como_lista_de_strings(self) -> None:
-        raw = _raw_issue(labels=["crewflow:todo", "phase-1"])
+        raw = _raw_issue(labels=["flow:develop-waiting", "phase-1"])
         item = norm.normalize_item(raw)
-        assert item["labels"] == ["crewflow:todo", "phase-1"]
+        assert item["labels"] == ["flow:develop-waiting", "phase-1"]
 
     def test_state_comment_extraido_do_primeiro_comentario_com_marcador(self) -> None:
         raw = _raw_issue()
@@ -68,13 +68,13 @@ class TestNormalization:
         assert item["parent_key"] is None
 
     def test_labels_hash_e_deterministico(self) -> None:
-        h1 = norm.labels_hash(["crewflow:todo", "phase-1"])
-        h2 = norm.labels_hash(["phase-1", "crewflow:todo"])  # ordem diferente
+        h1 = norm.labels_hash(["flow:develop-waiting", "phase-1"])
+        h2 = norm.labels_hash(["phase-1", "flow:develop-waiting"])  # ordem diferente
         assert h1 == h2
 
     def test_labels_hash_difere_para_conjuntos_diferentes(self) -> None:
-        h1 = norm.labels_hash(["crewflow:todo"])
-        h2 = norm.labels_hash(["crewflow:dev"])
+        h1 = norm.labels_hash(["flow:develop-waiting"])
+        h2 = norm.labels_hash(["flow:develop-running"])
         assert h1 != h2
 
     def test_extract_justification_retorna_none_sem_comentario(self) -> None:
@@ -87,7 +87,7 @@ class TestNormalization:
             "### Exceções\n"
             "| Exceção | Justificativa | Quem | Quando |\n"
             "|---------|---------------|------|--------|\n"
-            "| `crewflow:hml-bypass` | Checkout fora do ar | @elias | 2026-09-15 |\n"
+            "| `flow:blocked` | Checkout fora do ar | @elias | 2026-09-15 |\n"
             f"{norm.STATE_COMMENT_CLOSE}"
         )
         j = norm.extract_justification_from_state_comment(body)
@@ -125,12 +125,12 @@ class TestTransportErrors:
 
 class TestGetWorkItem:
     def test_retorna_item_normalizado(self) -> None:
-        raw = _raw_issue(42, "[api-gw2] Fix", ["crewflow:dev"])
+        raw = _raw_issue(42, "[api-gw2] Fix", ["flow:develop-running"])
         with mock.patch.object(github_transport, "get_issue", return_value=raw):
             item = github_client.get_work_item("owner/repo", "42")
 
         assert item["title"] == "[api-gw2] Fix"
-        assert "crewflow:dev" in item["labels"]
+        assert "flow:develop-running" in item["labels"]
 
     def test_aceita_chave_com_hash(self) -> None:
         raw = _raw_issue(99)
@@ -151,24 +151,24 @@ class TestGetWorkItem:
 
 class TestListByState:
     def test_retorna_lista_normalizada(self) -> None:
-        raw_list = [_raw_issue(1, "[gw] Fix 1", ["crewflow:todo"])]
+        raw_list = [_raw_issue(1, "[gw] Fix 1", ["flow:develop-waiting"])]
         with mock.patch.object(github_transport, "list_issues_by_label", return_value=raw_list):
-            items = github_client.list_by_state("owner/repo", "crewflow:todo")
+            items = github_client.list_by_state("owner/repo", "flow:develop-waiting")
 
         assert len(items) == 1
-        assert "crewflow:todo" in items[0]["labels"]
+        assert "flow:develop-waiting" in items[0]["labels"]
 
     def test_retorna_lista_vazia_sem_issues(self) -> None:
         with mock.patch.object(github_transport, "list_issues_by_label", return_value=[]):
-            items = github_client.list_by_state("owner/repo", "crewflow:todo")
+            items = github_client.list_by_state("owner/repo", "flow:develop-waiting")
         assert items == []
 
 
 class TestSetLabels:
     def test_chama_transport_com_numero_correto(self) -> None:
         with mock.patch.object(github_transport, "set_issue_labels") as m:
-            github_client.set_labels("owner/repo", "42", ["crewflow:review"])
-            m.assert_called_once_with("owner/repo", 42, ["crewflow:review"])
+            github_client.set_labels("owner/repo", "42", ["flow:review-waiting"])
+            m.assert_called_once_with("owner/repo", 42, ["flow:review-waiting"])
 
 
 class TestUpsertStateComment:

@@ -103,7 +103,7 @@ def _make_pr(number: int = 42, labels: list[str] | None = None) -> dict:
 
 class TestHandlePushForRepo:
     def test_remove_reviewed_quando_presente(self) -> None:
-        pr = _make_pr(labels=["crewflow:review", "crewflow:reviewed", "phase-1"])
+        pr = _make_pr(labels=["flow:review-waiting", "flow:reviewed", "phase-1"])
         with (
             mock.patch.object(handler, "_find_open_pr_for_branch", return_value=pr),
             mock.patch.object(handler.github_client, "set_labels") as mock_set,
@@ -116,11 +116,11 @@ class TestHandlePushForRepo:
         mock_set.assert_called_once_with(
             "owner/repo",
             "42",
-            ["crewflow:review", "phase-1"],
+            ["flow:review-waiting", "phase-1"],
         )
 
     def test_nao_remove_se_reviewed_ausente(self) -> None:
-        pr = _make_pr(labels=["crewflow:review", "phase-1"])
+        pr = _make_pr(labels=["flow:review-waiting", "phase-1"])
         with mock.patch.object(handler, "_find_open_pr_for_branch", return_value=pr):
             result = handle_push_for_repo("owner/repo", "feat/issue-41")
 
@@ -135,7 +135,7 @@ class TestHandlePushForRepo:
     def test_loga_e_retorna_false_em_provider_error(self) -> None:
         from flow.ports.issue_provider import ProviderError
 
-        pr = _make_pr(labels=["crewflow:review", "crewflow:reviewed"])
+        pr = _make_pr(labels=["flow:review-waiting", "flow:reviewed"])
         with (
             mock.patch.object(handler, "_find_open_pr_for_branch", return_value=pr),
             mock.patch.object(
@@ -150,7 +150,7 @@ class TestHandlePushForRepo:
 
     def test_auditoria_best_effort_nao_bloqueia(self) -> None:
         """Mesmo com erro na auditoria, o retorno deve ser True."""
-        pr = _make_pr(labels=["crewflow:review", "crewflow:reviewed"])
+        pr = _make_pr(labels=["flow:review-waiting", "flow:reviewed"])
         with (
             mock.patch.object(handler, "_find_open_pr_for_branch", return_value=pr),
             mock.patch.object(handler.github_client, "set_labels"),
@@ -166,10 +166,10 @@ class TestHandlePushForRepo:
 
     def test_preserva_outras_labels(self) -> None:
         pr = _make_pr(labels=[
-            "crewflow:review",
-            "crewflow:reviewed",
+            "flow:review-waiting",
+            "flow:reviewed",
             "phase-1",
-            "crewflow:feature",
+            "flow:feature",
         ])
         captured: list[list[str]] = []
         with (
@@ -184,7 +184,7 @@ class TestHandlePushForRepo:
         ):
             handle_push_for_repo("owner/repo", "feat/issue-41")
 
-        assert captured[0] == ["crewflow:review", "phase-1", "crewflow:feature"]
+        assert captured[0] == ["flow:review-waiting", "phase-1", "flow:feature"]
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ class TestWebhookRoute:
 
     def test_push_com_reviewed_retorna_removed(self) -> None:
         app = create_app(webhook_secret="")
-        pr = _make_pr(labels=["crewflow:review", "crewflow:reviewed"])
+        pr = _make_pr(labels=["flow:review-waiting", "flow:reviewed"])
         with (
             mock.patch.object(handler, "_find_open_pr_for_branch", return_value=pr),
             mock.patch.object(handler.github_client, "set_labels"),

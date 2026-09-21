@@ -48,17 +48,17 @@ def _item(
 
 class TestScanCandidates:
     def test_retorna_candidato_em_todo(self, config: SquadScanConfig, conn: sqlite3.Connection) -> None:
-        item = _item("VGAT-1", labels=["crewflow:todo", "crewflow:feature"])
+        item = _item("VGAT-1", labels=["flow:develop-waiting", "flow:feature"])
         provider = mock.MagicMock()
         # list_by_state é chamado para cada estado — só "todo" retorna algo
-        provider.list_by_state.side_effect = lambda project, s: [item] if s == "crewflow:todo" else []
+        provider.list_by_state.side_effect = lambda project, s: [item] if s == "flow:develop-waiting" else []
 
         results = scan_candidates(config, provider, conn)
         candidates = [r for r in results if r.dispatch_candidate]
 
         assert len(candidates) == 1
         assert candidates[0].item.key == "VGAT-1"
-        assert candidates[0].current_state is State.TODO
+        assert candidates[0].current_state is State.DEVELOP_WAITING
 
     def test_ignora_issue_sem_label_crewflow(self, config: SquadScanConfig, conn: sqlite3.Connection) -> None:
         item = _item("VGAT-1", labels=["bug", "phase-1"])
@@ -69,9 +69,9 @@ class TestScanCandidates:
         assert results == []
 
     def test_nao_despacha_com_blocked(self, config: SquadScanConfig, conn: sqlite3.Connection) -> None:
-        item = _item("VGAT-1", labels=["crewflow:todo", "crewflow:blocked"])
+        item = _item("VGAT-1", labels=["flow:develop-waiting", "flow:blocked"])
         provider = mock.MagicMock()
-        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:todo" else []
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "flow:develop-waiting" else []
 
         results = scan_candidates(config, provider, conn)
         candidates = [r for r in results if r.dispatch_candidate]
@@ -82,34 +82,34 @@ class TestScanCandidates:
         assert all(not r.dispatch_candidate for r in results if r.item.key == "VGAT-1")
 
     def test_nao_despacha_com_running(self, config: SquadScanConfig, conn: sqlite3.Connection) -> None:
-        item = _item("VGAT-1", labels=["crewflow:todo", "crewflow:running"])
+        item = _item("VGAT-1", labels=["flow:develop-waiting", "flow:develop-running"])
         provider = mock.MagicMock()
-        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:todo" else []
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "flow:develop-waiting" else []
 
         results = scan_candidates(config, provider, conn)
         assert all(not r.dispatch_candidate for r in results)
 
     def test_skip_se_labels_nao_mudaram(self, config: SquadScanConfig, conn: sqlite3.Connection) -> None:
-        labels = ["crewflow:dev"]
+        labels = ["flow:develop-running"]
         item = _item("VGAT-1", labels=labels)
         # Simula cache já populado com o mesmo hash
         set_hash(conn, "VGAT-1", compute_hash(labels))
 
         provider = mock.MagicMock()
-        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:dev" else []
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "flow:develop-running" else []
 
         results = scan_candidates(config, provider, conn)
         # dev não é candidato E hash não mudou → skip
         assert results == []
 
     def test_inclui_se_labels_mudaram(self, config: SquadScanConfig, conn: sqlite3.Connection) -> None:
-        labels_novos = ["crewflow:todo"]
+        labels_novos = ["flow:develop-waiting"]
         item = _item("VGAT-1", labels=labels_novos)
         # Cache tinha hash diferente (era dev antes)
-        set_hash(conn, "VGAT-1", compute_hash(["crewflow:dev"]))
+        set_hash(conn, "VGAT-1", compute_hash(["flow:develop-running"]))
 
         provider = mock.MagicMock()
-        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:todo" else []
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "flow:develop-waiting" else []
 
         results = scan_candidates(config, provider, conn)
         candidates = [r for r in results if r.dispatch_candidate]
@@ -125,12 +125,12 @@ class TestScanCandidates:
             projects=("owner/repo-a", "owner/repo-b"),
             repos=frozenset({"api-gateway2"}),
         )
-        item_b = _item("B-1", labels=["crewflow:todo"])
+        item_b = _item("B-1", labels=["flow:develop-waiting"])
 
         def list_by_state(project: str, state: str) -> list[dict]:
             if project == "owner/repo-a":
                 raise ProviderError("repo-a inacessível")
-            return [item_b] if state == "crewflow:todo" else []
+            return [item_b] if state == "flow:develop-waiting" else []
 
         provider = mock.MagicMock()
         provider.list_by_state.side_effect = list_by_state
@@ -141,37 +141,37 @@ class TestScanCandidates:
 
     def test_valida_spec_zero_token(self, config: SquadScanConfig, conn: sqlite3.Connection) -> None:
         """Issue em spec com título sem repo válido é flagrada (spec_valid=False)."""
-        item = _item("VGAT-1", title="Fix sem colchete de repo", labels=["crewflow:spec"])
+        item = _item("VGAT-1", title="Fix sem colchete de repo", labels=["flow:briefing"])
         provider = mock.MagicMock()
-        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:spec" else []
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "flow:briefing" else []
 
         results = scan_candidates(config, provider, conn)
 
-        spec_results = [r for r in results if r.current_state is State.SPEC]
+        spec_results = [r for r in results if r.current_state is State.BRIEFING]
         assert len(spec_results) == 1
         assert spec_results[0].spec_valid is False
 
     def test_spec_valida_com_repo_correto(self, config: SquadScanConfig, conn: sqlite3.Connection) -> None:
-        item = _item("VGAT-1", title="[api-gateway2] Fix", labels=["crewflow:spec"])
+        item = _item("VGAT-1", title="[api-gateway2] Fix", labels=["flow:briefing"])
         provider = mock.MagicMock()
-        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:spec" else []
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "flow:briefing" else []
 
         results = scan_candidates(config, provider, conn)
 
-        spec_results = [r for r in results if r.current_state is State.SPEC]
+        spec_results = [r for r in results if r.current_state is State.BRIEFING]
         assert len(spec_results) == 1
         assert spec_results[0].spec_valid is True
 
     def test_scan_result_tem_campos_corretos(self, config: SquadScanConfig, conn: sqlite3.Connection) -> None:
-        item = _item("VGAT-1", labels=["crewflow:todo"])
+        item = _item("VGAT-1", labels=["flow:develop-waiting"])
         provider = mock.MagicMock()
-        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:todo" else []
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "flow:develop-waiting" else []
 
         results = scan_candidates(config, provider, conn)
         assert len(results) == 1
         r = results[0]
         assert isinstance(r, ScanResult)
-        assert r.current_state is State.TODO
+        assert r.current_state is State.DEVELOP_WAITING
         assert r.modifiers == frozenset()
         assert r.dispatch_candidate is True
         assert r.changed is True  # primeiro ciclo
@@ -185,10 +185,10 @@ class TestScanCandidates:
             projects=("owner/repo-a", "owner/repo-b"),
             repos=frozenset({"api-gateway2"}),
         )
-        item = _item("VGAT-1", labels=["crewflow:todo", "crewflow:feature"])
+        item = _item("VGAT-1", labels=["flow:develop-waiting", "flow:feature"])
         provider = mock.MagicMock()
-        # AMBOS os projetos retornam a MESMA issue em crewflow:todo
-        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:todo" else []
+        # AMBOS os projetos retornam a MESMA issue em flow:develop-waiting
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "flow:develop-waiting" else []
 
         results = scan_candidates(config_dois, provider, conn)
 
@@ -202,9 +202,9 @@ class TestScanCandidates:
             projects=("owner/repo-a", "owner/repo-b"),
             repos=frozenset({"api-gateway2"}),
         )
-        item = _item("VGAT-1", labels=["crewflow:todo"])
+        item = _item("VGAT-1", labels=["flow:develop-waiting"])
         provider = mock.MagicMock()
-        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:todo" else []
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "flow:develop-waiting" else []
 
         with mock.patch("flow.scan.scanner.logger") as mock_logger:
             scan_candidates(config_dois, provider, conn)
@@ -217,10 +217,10 @@ class TestScanCandidates:
 
     def test_issues_distintas_nao_sao_deduplicadas(self, config: SquadScanConfig, conn: sqlite3.Connection) -> None:
         """Dedup é por key: issues diferentes não colidem."""
-        item_a = _item("VGAT-1", labels=["crewflow:todo"])
-        item_b = _item("VGAT-2", labels=["crewflow:todo"])
+        item_a = _item("VGAT-1", labels=["flow:develop-waiting"])
+        item_b = _item("VGAT-2", labels=["flow:develop-waiting"])
         provider = mock.MagicMock()
-        provider.list_by_state.side_effect = lambda p, s: [item_a, item_b] if s == "crewflow:todo" else []
+        provider.list_by_state.side_effect = lambda p, s: [item_a, item_b] if s == "flow:develop-waiting" else []
 
         results = scan_candidates(config, provider, conn)
         keys = {r.item.key for r in results if r.dispatch_candidate}
@@ -236,60 +236,60 @@ class TestScanCandidates:
 class TestAlwaysIncludeStates:
     def test_always_include_states_contem_review_e_qa(self) -> None:
         """ALWAYS_INCLUDE_STATES deve cobrir REVIEW e QA."""
-        assert State.REVIEW in ALWAYS_INCLUDE_STATES
-        assert State.QA in ALWAYS_INCLUDE_STATES
+        assert State.REVIEW_WAITING in ALWAYS_INCLUDE_STATES
+        assert State.QA_WAITING in ALWAYS_INCLUDE_STATES
 
     def test_review_incluida_sem_mudanca_de_labels(
         self, config: SquadScanConfig, conn: sqlite3.Connection
     ) -> None:
-        """Issue em crewflow:review aparece no scan mesmo quando o hash não muda."""
-        labels = ["crewflow:review"]
+        """Issue em flow:review-waiting aparece no scan mesmo quando o hash não muda."""
+        labels = ["flow:review-waiting"]
         item = _item("VGAT-1", labels=labels)
         # Pré-popula o cache com o hash atual — simula segundo ciclo
         set_hash(conn, "VGAT-1", compute_hash(labels))
 
         provider = mock.MagicMock()
-        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:review" else []
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "flow:review-waiting" else []
 
         results = scan_candidates(config, provider, conn)
 
         assert len(results) == 1
         assert results[0].item.key == "VGAT-1"
-        assert results[0].current_state is State.REVIEW
+        assert results[0].current_state is State.REVIEW_WAITING
         assert results[0].changed is False  # hash igual — mas ainda incluída
 
     def test_qa_incluida_sem_mudanca_de_labels(
         self, config: SquadScanConfig, conn: sqlite3.Connection
     ) -> None:
-        """Issue em crewflow:qa aparece no scan mesmo quando o hash não muda."""
-        labels = ["crewflow:qa"]
+        """Issue em flow:qa-waiting aparece no scan mesmo quando o hash não muda."""
+        labels = ["flow:qa-waiting"]
         item = _item("VGAT-1", labels=labels)
         set_hash(conn, "VGAT-1", compute_hash(labels))
 
         provider = mock.MagicMock()
-        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:qa" else []
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "flow:qa-waiting" else []
 
         results = scan_candidates(config, provider, conn)
 
         assert len(results) == 1
-        assert results[0].current_state is State.QA
+        assert results[0].current_state is State.QA_WAITING
         assert results[0].changed is False
 
     def test_todo_sem_mudanca_ainda_filtrado(
         self, config: SquadScanConfig, conn: sqlite3.Connection
     ) -> None:
-        """Issue em crewflow:todo sem mudança de labels e sem dispatch NÃO aparece.
+        """Issue em flow:develop-waiting sem mudança de labels e sem dispatch NÃO aparece.
 
         Garante que ALWAYS_INCLUDE_STATES não regride o filtro para outros estados:
         TODO só deve aparecer quando changed=True ou quando é dispatch_candidate.
         """
         # TODO com running não é dispatch_candidate, e hash está no cache
-        labels = ["crewflow:todo", "crewflow:running"]
+        labels = ["flow:develop-waiting", "flow:develop-running"]
         item = _item("VGAT-1", labels=labels)
         set_hash(conn, "VGAT-1", compute_hash(labels))
 
         provider = mock.MagicMock()
-        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:todo" else []
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "flow:develop-waiting" else []
 
         results = scan_candidates(config, provider, conn)
 
@@ -299,10 +299,10 @@ class TestAlwaysIncludeStates:
         self, config: SquadScanConfig, conn: sqlite3.Connection
     ) -> None:
         """Simula três ciclos consecutivos: issue em REVIEW deve aparecer nos três."""
-        labels = ["crewflow:review"]
+        labels = ["flow:review-waiting"]
         item = _item("VGAT-1", labels=labels)
         provider = mock.MagicMock()
-        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:review" else []
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "flow:review-waiting" else []
 
         for ciclo in range(1, 4):
             results = scan_candidates(config, provider, conn)
@@ -313,12 +313,12 @@ class TestAlwaysIncludeStates:
         self, config: SquadScanConfig, conn: sqlite3.Connection
     ) -> None:
         """dispatch_candidate deve continuar False para REVIEW — não é gatilho."""
-        labels = ["crewflow:review"]
+        labels = ["flow:review-waiting"]
         item = _item("VGAT-1", labels=labels)
         set_hash(conn, "VGAT-1", compute_hash(labels))
 
         provider = mock.MagicMock()
-        provider.list_by_state.side_effect = lambda p, s: [item] if s == "crewflow:review" else []
+        provider.list_by_state.side_effect = lambda p, s: [item] if s == "flow:review-waiting" else []
 
         results = scan_candidates(config, provider, conn)
 

@@ -4,13 +4,19 @@ Recebe um ScanResult e retorna uma ExecutorDecision.
 Não executa I/O — apenas decide.
 
 Os 4 templates fixos da Fase 1:
-  feature — fluxo completo (Versão C)
+  feature — fluxo completo
   bug     — investigação shift-left na entrada
   hotfix  — fluxo comprimido, bypass auditado
   debt    — autoridade TL, pré-condição COV
 
 O executor não é um `if` sobre labels — ele INTERPRETA o template.
 Cada template tem comportamentos diferentes no MESMO motor.
+
+Namespace flow:* (migrado de crewflow:*)
+-----------------------------------------
+Estados de gatilho: flow:develop-waiting
+Reprovações humanas (gates): flow:review-refused, flow:qa-refused
+  → NUNCA despacham automaticamente — apenas notificam o TL.
 """
 
 from __future__ import annotations
@@ -28,10 +34,10 @@ class ActionKind(StrEnum):
     DISPATCH_REWORK           = "dispatch_rework"           # dispara sessão dev de re-trabalho (pós-review com pedidos)
     DISPATCH_CONFLICT_RESOLVER = "dispatch_conflict_resolver"  # dispara sessão de resolução de conflito
     NOTIFY_HUMAN              = "notify_human"              # avisa humano (TL, QA, Dev)
-    BLOCK                     = "block"                     # marca crewflow:blocked + motivo
+    BLOCK                     = "block"                     # marca flow:blocked + motivo
     REBRAND                   = "rebrand"                   # troca de template (GATE 0 do hotfix)
     MERGE_PR                  = "merge_pr"                  # merge squash automático (reviewer aprovado, zero comentários)
-    MARK_CONFLITO             = "mark_conflito"             # aplica crewflow:conflito na PR com conflito de merge
+    MARK_CONFLITO             = "mark_conflito"             # aplica flow:merge-conflict na PR com conflito de merge
     SKIP                      = "skip"                      # nada a fazer neste ciclo
 
 
@@ -51,7 +57,7 @@ class ExecutorDecision:
 
     Campos:
       action       — qual ação tomar (ver ActionKind)
-      reason       — motivo legível (vai para o comentário de auditoria #8)
+      reason       — motivo legível (vai para o comentário de auditoria)
       notify_role  — para NOTIFY_HUMAN: quem deve agir
       block_reason — para BLOCK: motivo detalhado
       new_template — para REBRAND: o template para o qual trocar
@@ -78,12 +84,16 @@ def _detect_template(labels: frozenset[str]) -> str:
     Quando uma SquadConfig é passada para decide(), usa squad.resolve_workflow()
     que é declarativo e configurável. Este fallback mantém compatibilidade
     com chamadas que não têm squad disponível.
+
+    Suporta tanto o namespace novo (flow:*) quanto o legado (crewflow:*) durante
+    a coexistência.
     """
-    if "crewflow:hotfix" in labels:
+    # Namespace novo flow:*
+    if "flow:hotfix" in labels or "crewflow:hotfix" in labels:
         return "hotfix"
-    if "crewflow:bug" in labels:
+    if "flow:bug" in labels or "crewflow:bug" in labels:
         return "bug"
-    if "crewflow:debt" in labels:
+    if "flow:debt" in labels or "crewflow:debt" in labels:
         return "debt"
     return "feature"
 
@@ -142,12 +152,12 @@ def decide(
         pr_mergeable:          Estado de mergeabilidade do PR associado à issue (opcional).
                                Valores: "MERGEABLE", "CONFLICTING", "UNKNOWN".
                                Quando "CONFLICTING", o executor emite MARK_CONFLITO para
-                               que o driving adapter aplique crewflow:conflito na issue.
+                               que o driving adapter aplique flow:merge-conflict na issue.
                                Deve ser obtido via get_pr_for_issue() — o executor não
                                faz I/O.
         auto_merge_on_approve: Quando True (ou None com squad.workflow_params.auto_merge_on_approve=True),
                                reviewer aprovado sem comentários → MERGE_PR automático.
-                               Quando False, para em SKIP mantendo crewflow:reviewed para
+                               Quando False, para em SKIP mantendo flow:review-approved para
                                merge manual. None usa a configuração da squad (se disponível)
                                ou False como default seguro.
 
@@ -190,8 +200,8 @@ def decide(
                     action=ActionKind.REBRAND,
                     reason=f"GATE 0: {verdict.result.reason}",
                     new_template=new_t,
-                    add_labels=(f"crewflow:{new_t}",),
-                    remove_labels=("crewflow:hotfix",),
+                    add_labels=(f"flow:{new_t}",),
+                    remove_labels=("flow:hotfix", "crewflow:hotfix"),
                 )
             return ExecutorDecision(
                 action=ActionKind.NOTIFY_HUMAN,
@@ -200,7 +210,7 @@ def decide(
             )
 
     # ── GATE de entrada do débito técnico ──────────────────────────────
-    if template == "debt" and current_state is State.TODO:
+    if template == "debt" and current_state is State.DEVELOP_WAITING:
         # Verifica se o TL já aprovou via comentário de estado
         from flow.audit.state_comment import parse as _parse_comment
         sc = _parse_comment(state_comment) if state_comment else None
@@ -218,27 +228,24 @@ def decide(
                 notify_role=HumanRole.TL,
             )
 
-    # ── Cron de conflito: crewflow:conflito ───────────────────────────
+    # ── Cron de conflito: flow:merge-conflict ─────────────────────────
     # Quando a PR tem conflito de merge ou base desatualizada, o reviewer
-    # (ou qualquer estágio) aplica crewflow:conflito. O cron de conflito
+    # (ou qualquer estágio) aplica flow:merge-conflict. O cron de conflito
     # localiza a branch feat/issue-N, faz rebase/resolve e atualiza a mesma
     # branch — NUNCA abre PR nova.
-    if Modifier.CONFLITO in modifiers and current_state is State.REVIEW:
+    if Modifier.MERGE_CONFLICT in modifiers and current_state is State.REVIEW_WAITING:
         return ExecutorDecision(
             action=ActionKind.DISPATCH_CONFLICT_RESOLVER,
-            reason="crewflow:conflito detectado — despachando sessão de resolução de conflito",
-            add_labels=("crewflow:running",),
-            remove_labels=("crewflow:conflito",),
+            reason="flow:merge-conflict detectado — despachando sessão de resolução de conflito",
+            add_labels=(),
+            remove_labels=("flow:merge-conflict",),
         )
 
-    # ── Ciclo de re-trabalho pós-review: crewflow:review-fail ─────────
-    # Quando o reviewer reprovou (marcou review-fail), o motor despacha uma
-    # sessão dev de re-trabalho que:
-    #   - lê os pedidos de mudança do PR
-    #   - aplica os ajustes na MESMA branch/PR
-    #   - volta a issue para crewflow:review
-    # Antes de despachar, verifica o teto de iterações (anti-loop infinito).
-    if Modifier.REVIEW_FAIL in modifiers:
+    # ── GATE HUMANO: flow:review-refused ──────────────────────────────
+    # Reviewer reprovou → NÃO despacha automaticamente.
+    # Apenas notifica TL e aguarda decisão manual.
+    # O humano move manualmente para flow:develop-waiting ou flow:develop-running.
+    if current_state is State.REVIEW_REFUSED:
         from flow.audit.state_comment import get_review_iterations_from_comment
         iterations = get_review_iterations_from_comment(state_comment)
         _max_iter = (
@@ -253,27 +260,40 @@ def decide(
                 reason=f"TETO DE ITERAÇÕES: {iter_result.reason}",
                 notify_role=HumanRole.TL,
             )
+        # Gate humano — apenas notifica, não redespacha
         return ExecutorDecision(
-            action=ActionKind.DISPATCH_REWORK,
+            action=ActionKind.NOTIFY_HUMAN,
             reason=(
-                f"reviewer reprovou — despachando sessão de re-trabalho "
-                f"(iteração {iterations + 1}/{_max_iter})"
+                "flow:review-refused — gate humano. "
+                "TL/dev deve mover manualmente para flow:develop-waiting ou flow:develop-running."
             ),
-            add_labels=("crewflow:running",),
-            remove_labels=("crewflow:review-fail",),
+            notify_role=HumanRole.TL,
         )
 
-    # ── Resultado aprovado: crewflow:review-ok ────────────────────────
-    # Reviewer aprovou sem comentários. Label review-ok já implica o resultado —
+    # ── GATE HUMANO: flow:qa-refused ──────────────────────────────────
+    # QA reprovou → NÃO despacha automaticamente.
+    # Apenas notifica TL e aguarda decisão manual.
+    if current_state is State.QA_REFUSED:
+        return ExecutorDecision(
+            action=ActionKind.NOTIFY_HUMAN,
+            reason=(
+                "flow:qa-refused — gate humano. "
+                "TL/dev deve mover manualmente para flow:develop-waiting ou flow:develop-running."
+            ),
+            notify_role=HumanRole.TL,
+        )
+
+    # ── Resultado aprovado pelo reviewer: flow:review-approved ────────
+    # Reviewer aprovou. Label review-approved já implica o resultado —
     # não é necessário ler o state_comment para decidir.
     # - auto_merge_on_approve=True  → MERGE_PR automático
     # - auto_merge_on_approve=False → SKIP aguardando merge manual
-    if Modifier.REVIEW_OK in modifiers:
+    if current_state is State.REVIEW_APPROVED:
         if not auto_merge_on_approve:
             return ExecutorDecision(
                 action=ActionKind.SKIP,
                 reason=(
-                    "reviewer aprovado (crewflow:review-ok) — aguardando merge manual "
+                    "flow:review-approved — aguardando merge manual "
                     "(auto_merge_on_approve=false). "
                     "Ative a flag no squad config para merge automático."
                 ),
@@ -281,16 +301,25 @@ def decide(
         return ExecutorDecision(
             action=ActionKind.MERGE_PR,
             reason="reviewer aprovado sem pedidos de mudança — merge squash automático",
-            add_labels=("crewflow:done",),
-            remove_labels=("crewflow:review-ok",),
+            add_labels=("flow:qa-waiting",),
+            remove_labels=("flow:review-approved",),
         )
 
-    # ── Lock anti-loop: crewflow:reviewed (interno) ───────────────────
-    # crewflow:reviewed é agora apenas lock interno anti-loop de SHA —
-    # não carrega resultado de negócio. Quando presente em REVIEW, indica
-    # que o reviewer ainda está rodando ou acabou de processar mas ainda não
-    # atualizou as labels semânticas (review-ok / review-fail).
-    if current_state is State.REVIEW and Modifier.REVIEWED in modifiers:
+    # ── QA aprovou: flow:qa-approved → gatilho merge final ───────────
+    if current_state is State.QA_APPROVED:
+        return ExecutorDecision(
+            action=ActionKind.MERGE_PR,
+            reason="QA aprovou — merge squash final e fechamento da issue",
+            add_labels=("flow:done",),
+            remove_labels=("flow:qa-approved",),
+        )
+
+    # ── Lock anti-loop: flow:reviewed (interno) ───────────────────────
+    # flow:reviewed é lock interno anti-loop de SHA —
+    # não carrega resultado de negócio. Quando presente em REVIEW_WAITING,
+    # indica que o reviewer ainda está rodando ou acabou de processar mas
+    # ainda não atualizou as labels semânticas.
+    if current_state is State.REVIEW_WAITING and Modifier.REVIEWED in modifiers:
         from flow.audit.state_comment import get_reviewer_result_from_comment
         reviewer_result = get_reviewer_result_from_comment(state_comment)
 
@@ -298,7 +327,7 @@ def decide(
             # Reviewer ainda não postou resultado — aguardar
             return ExecutorDecision(
                 action=ActionKind.SKIP,
-                reason="crewflow:reviewed presente mas resultado do reviewer ainda não disponível — aguardando",
+                reason="flow:reviewed presente mas resultado do reviewer ainda não disponível — aguardando",
             )
 
         # Verifica se houve push após a review: SHA do PR HEAD vs SHA do reviewer.
@@ -314,13 +343,12 @@ def decide(
                     f"SHA divergiu após review: PR HEAD={pr_head_sha[:8]} "
                     f"vs reviewer SHA={reviewer_result.sha[:8]} — re-revisão necessária"
                 ),
-                add_labels=("crewflow:reviewed",),
-                remove_labels=("crewflow:reviewed",),
+                add_labels=("flow:reviewed",),
+                remove_labels=("flow:reviewed",),
             )
 
         if reviewer_result.is_auto_mergeable:
             if not auto_merge_on_approve:
-                # Flag desativada: aguarda merge manual; reviewer deve ter posto review-ok.
                 return ExecutorDecision(
                     action=ActionKind.SKIP,
                     reason=(
@@ -332,42 +360,29 @@ def decide(
             return ExecutorDecision(
                 action=ActionKind.MERGE_PR,
                 reason="reviewer aprovado sem pedidos de mudança — merge squash automático",
-                add_labels=("crewflow:done",),
-                remove_labels=("crewflow:review", "crewflow:reviewed"),
+                add_labels=("flow:qa-waiting",),
+                remove_labels=("flow:review-waiting", "flow:reviewed"),
             )
 
-        # Reviewer tem comentários — aplica review-fail para disparar re-trabalho
-        # no próximo ciclo do scan.
+        # Reviewer tem comentários — move para review-refused (gate humano)
         comments_text = "; ".join(reviewer_result.comments) if reviewer_result.comments else "(ver comentário na issue)"
         return ExecutorDecision(
             action=ActionKind.NOTIFY_HUMAN,
             reason=f"reviewer retornou pedidos de mudança: {comments_text}",
             notify_role=HumanRole.TL,
-            add_labels=("crewflow:review-fail",),
-            remove_labels=("crewflow:reviewed", "crewflow:review"),
+            add_labels=("flow:review-refused",),
+            remove_labels=("flow:reviewed", "flow:review-waiting"),
         )
 
     # ── Pré-condição COV (débito técnico em dev) ───────────────────────
-    if template == "debt" and current_state is State.DEV:
+    if template == "debt" and current_state is State.DEVELOP_RUNNING:
         # Verifica se há teste de equivalência — Fase 1: verifica via estado
-        # Em Fase 2: o executor vai consultar o CI ou o comentário de estado
         cov_result = gates.has_equivalence_test(item, test_exists=_has_equivalence_test_signal(state_comment))
         if cov_result.failed:
             return ExecutorDecision(
                 action=ActionKind.NOTIFY_HUMAN,
                 reason=f"PRÉ-CONDIÇÃO COV: {cov_result.reason}",
                 notify_role=HumanRole.DEV,
-            )
-
-    # ── Bypass do HML: bloqueia merge sem justificativa ───────────────
-    if Modifier.HML_BYPASS in modifiers:
-        justification = _extract_justification(state_comment)
-        bypass_result = gates.validate_hml_bypass(item, justification)
-        if bypass_result.failed:
-            return ExecutorDecision(
-                action=ActionKind.BLOCK,
-                reason="crewflow:hml-bypass sem justificativa",
-                block_reason=bypass_result.reason,
             )
 
     # ── Ações por estado ───────────────────────────────────────────────
@@ -385,65 +400,77 @@ def _decide_by_state(
 
     s: State = current_state  # type: ignore[assignment]
 
-    if s is State.TODO:
+    if s is State.DEVELOP_WAITING:
         return ExecutorDecision(
             action=ActionKind.DISPATCH_DEV,
             reason=f"template {template}: issue pronta para implementação",
-            add_labels=("crewflow:dev", "crewflow:running"),
-            remove_labels=("crewflow:todo",),
+            add_labels=("flow:develop-running",),
+            remove_labels=("flow:develop-waiting",),
         )
 
-    if s is State.REVIEW:
+    if s is State.REVIEW_WAITING:
         # Detecção de conflito de merge: se o PR está CONFLICTING, aplica
-        # crewflow:conflito para que o cron de conflito resolva antes do review.
+        # flow:merge-conflict para que o cron de conflito resolva antes do review.
         if pr_mergeable == "CONFLICTING":
             return ExecutorDecision(
                 action=ActionKind.MARK_CONFLITO,
-                reason="PR com conflito de merge — aplicando crewflow:conflito para resolução",
-                add_labels=("crewflow:conflito",),
+                reason="PR com conflito de merge — aplicando flow:merge-conflict para resolução",
+                add_labels=("flow:merge-conflict",),
             )
         # kiro-reviewer: dispara análise automatizada de code review
         return ExecutorDecision(
             action=ActionKind.DISPATCH_REVIEWER,
             reason="issue em review: disparando análise automatizada de code review",
-            add_labels=("crewflow:reviewed",),
+            add_labels=("flow:reviewed",),
         )
 
-    if s is State.DEV:
+    if s is State.DEVELOP_RUNNING:
         # Ainda em dev — aguarda o agente de implementação terminar
         return ExecutorDecision(
             action=ActionKind.SKIP,
             reason="em desenvolvimento; aguardando sessão one-shot encerrar",
         )
 
-    if s is State.QA:
-        # Avisa Dev para fazer o deploy HML se necessário
-        # (em Fase 1, o aviso é informativo — o Dev decide)
+    if s is State.QA_WAITING:
+        # Avisa Dev/QA para iniciar os testes em HML
         return ExecutorDecision(
             action=ActionKind.NOTIFY_HUMAN,
-            reason="crewflow:qa: aguardando validação em HML pelo QA",
+            reason="flow:qa-waiting: aguardando QA iniciar testes em HML",
             notify_role=HumanRole.QA,
         )
 
-    if s is State.SPEC:
-        # Avisa PM/TL que a spec precisa de atenção
+    if s is State.QA_TESTING:
+        # QA testando — aguardar resultado
+        return ExecutorDecision(
+            action=ActionKind.SKIP,
+            reason="flow:qa-testing: QA está testando — aguardando resultado",
+        )
+
+    if s is State.BRIEFING:
+        # Avisa PM/TL que a demanda precisa de atenção
         return ExecutorDecision(
             action=ActionKind.NOTIFY_HUMAN,
-            reason="crewflow:spec: aguardando aprovação da spec pelo TL",
+            reason="flow:briefing: aguardando TL/PM fechar o briefing",
             notify_role=HumanRole.TL,
         )
 
-    if s is State.READY:
+    if s is State.PLANNING_SPECS:
+        return ExecutorDecision(
+            action=ActionKind.SKIP,
+            reason="flow:planning-specs: dev montando spec — aguardando",
+        )
+
+    if s is State.PLANNING_REVIEW:
         return ExecutorDecision(
             action=ActionKind.NOTIFY_HUMAN,
-            reason="crewflow:ready: aguardando priorização",
+            reason="flow:planning-review: aguardando revisão do TL/PM",
             notify_role=HumanRole.TL,
         )
 
     if s is State.DONE:
         return ExecutorDecision(
             action=ActionKind.SKIP,
-            reason="crewflow:done: concluída",
+            reason="flow:done: concluída",
         )
 
     # Estado desconhecido

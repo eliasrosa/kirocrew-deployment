@@ -19,10 +19,10 @@ Depende do Kiro Crew rodando (loopback interno). NÃO é standalone.
 Em vez de um único cron monolítico, a esteira pode ser dividida em 4 crons
 independentes, cada um responsável por um estágio do fluxo:
 
-    run_dev(ctx)       — issues crewflow:todo → dispatch dev (modelo mais forte)
-    run_reviewer(ctx)  — PRs crewflow:review → dispatch reviewer (modelo mais rápido)
-    run_merge(ctx)     — crewflow:review-ok → merge squash
-    run_conflito(ctx)  — crewflow:review-fail → dispatch rework
+    run_dev(ctx)       — issues flow:develop-waiting → dispatch dev (modelo mais forte)
+    run_reviewer(ctx)  — PRs flow:review-waiting → dispatch reviewer (modelo mais rápido)
+    run_merge(ctx)     — flow:review-approved / flow:qa-approved → merge squash
+    run_conflito(ctx)  — flow:review-refused → gate humano + flow:merge-conflict → resolução
 
 Vantagens:
   - Observabilidade: cada cron tem log/histórico isolado
@@ -174,10 +174,9 @@ from flow.scan.cache import (  # noqa: E402
 from flow.scan.scanner import ScanResult, scan_candidates  # noqa: E402
 
 # ── Labels (mantidas para o prompt de dispatch) ───────────────────────────
-LABEL_DEV     = "crewflow:dev"
-LABEL_REVIEW  = "crewflow:review"
-LABEL_RUNNING = "crewflow:running"
-LABEL_BLOCKED = "crewflow:blocked"
+LABEL_DEV     = "flow:develop-running"
+LABEL_REVIEW  = "flow:review-waiting"
+LABEL_BLOCKED = "flow:blocked"
 
 
 # ── Helper de transição atômica de estado ─────────────────────────────────
@@ -511,37 +510,36 @@ def _recover_dead_session(
     chat_id: str,
     conn: sqlite3.Connection,
 ) -> None:
-    """Recupera issue com sessão morta: volta para crewflow:todo e notifica.
+    """Recupera issue com sessão morta: remove flow:develop-running e notifica.
 
     Operação fail-safe: erro na recuperação é logado mas não propaga.
     Preferimos não redespachar automaticamente — apenas notificamos o TL
     para que ele decida. O redespacho ocorre no próximo ciclo quando o
-    TL ou o cron ler o estado limpo (crewflow:todo sem running).
+    TL ou o cron mover a issue para flow:develop-waiting.
     """
     vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
     issue_url = f"https://github.com/{repo}/issues/{issue_number}"
 
     try:
-        # Remove crewflow:running da issue via provider
-        # (o provider é o objeto com .set_labels, .get_work_item etc.)
+        # Remove flow:develop-running da issue via provider
         _prov = provider  # type: ignore[assignment]
         item_data = _prov.get_work_item(repo, str(issue_number))  # type: ignore[attr-defined]
         current_labels = list(item_data.get("labels", []))
-        if "crewflow:running" in current_labels:
-            current_labels.remove("crewflow:running")
+        if "flow:develop-running" in current_labels:
+            current_labels.remove("flow:develop-running")
         _prov.set_labels(repo, str(issue_number), current_labels)  # type: ignore[attr-defined]
 
         # Limpa running_since no cache (import no topo do módulo)
         clear_running_since(conn, issue_url)
 
         logger.info(
-            "deployment: sessão morta recuperada — %s#%s voltou para crewflow:todo",
+            "deployment: sessão morta recuperada — %s#%s removeu flow:develop-running",
             repo, issue_number,
         )
         ctx.notify(  # type: ignore[attr-defined]
             f"⚠️ KiroCrew Flow: sessão morta detectada e recuperada.{vm}\n"
-            f"  {repo}#{issue_number} foi encontrado com crewflow:running sem PR/worktree/lock.\n"
-            f"  crewflow:running removido. Issue voltará para crewflow:todo no próximo ciclo.\n"
+            f"  {repo}#{issue_number} foi encontrado com flow:develop-running sem PR/worktree/lock.\n"
+            f"  flow:develop-running removido. TL deve mover para flow:develop-waiting para redespachar.\n"
             f"  Verifique: {issue_url}"
         )
     except Exception as exc:
@@ -701,15 +699,15 @@ _DEV_PROMPT_FALLBACK = (
     "   Não pule esta etapa — as steerings têm convenções e gotchas críticos, e os\n"
     "   comentários podem conter adendos e decisões que refinam o escopo.\n"
     "2. ESCOPO: se a issue exige decisão de design não-tomada ou é vaga, NÃO implemente — "
-    "comente, marque `crewflow:blocked`, avise e ENCERRE.\n"
-    "3. Marque `crewflow:dev` + `crewflow:running` e REMOVA `crewflow:todo`. NÃO faça `git clone`. Use o clone em "
+    "comente, marque `flow:blocked`, avise e ENCERRE.\n"
+    "3. Marque `flow:develop-running` e REMOVA `flow:develop-waiting`. NÃO faça `git clone`. Use o clone em "
     "`{{dev_root}}/{{repo_short}}` como base e crie um WORKTREE ISOLADO.\n"
     "   A branch base é a DEFAULT DO REPO — descubra, não presuma:\n"
     "   `BASE=$(gh repo view {{repo}} --json defaultBranchRef --jq .defaultBranchRef.name)`\n"
     "   `cd {{dev_root}}/{{repo_short}} && git fetch origin && git worktree add -b "
     "feat/issue-{{issue_number}} {{worktree_path}} \"origin/$BASE\"`\n"
     "   Para trocar o estado, use SEMPRE a forma atômica que remove todos os estados anteriores:\n"
-    "   `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"crewflow:dev,crewflow:running\" --remove-label \"crewflow:todo\"`\n"
+    "   `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"flow:develop-running\" --remove-label \"flow:develop-waiting\"`\n"
     "   Trabalhe DENTRO do worktree; remova-o ao fim. NUNCA toque em outros worktrees.\n"
     "4. Implemente EXATAMENTE o escopo — nada além.\n"
     "5. DOCS: atualize README, steerings e docs/ se a mudança afeta comportamento, "
@@ -721,22 +719,21 @@ _DEV_PROMPT_FALLBACK = (
     "   python3 -m pytest flow/tests/ --cov=flow --cov-fail-under=75\n"
     "   ```\n"
     "   Para outros repos, descubra os comandos via README/Makefile/pyproject — **não presuma**.\n"
-    "   Se qualquer check falhar e você não conseguir corrigir, marque `crewflow:blocked` e ENCERRE. "
+    "   Se qualquer check falhar e você não conseguir corrigir, marque `flow:blocked` e ENCERRE. "
     "**Não abra PR com CI vermelho.**\n"
-    "7. Abra PR com 'Closes #{{issue_number}}' e troque a label para `crewflow:review` REMOVENDO `crewflow:dev`. "
+    "7. Abra PR com 'Closes #{{issue_number}}' e troque a label para `flow:review-waiting` REMOVENDO `flow:develop-running`. "
     "Após abrir o PR, ATUALIZE o título da sessão adicionando o número do PR: "
     "`{{repo_short}} #{{issue_number}} #<N-PR>: {{issue_title}}`. "
     "**NUNCA mergeie. NUNCA faça deploy.** Ambos são ações humanas manuais.\n"
     "   Use SEMPRE a forma atômica que remove todos os estados anteriores:\n"
-    "   `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"crewflow:review\" --remove-label \"crewflow:dev,crewflow:todo,crewflow:running\"`\n"
+    "   `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"flow:review-waiting\" --remove-label \"flow:develop-running,flow:develop-waiting\"`\n"
     "8. Ao terminar: {{notify_step}}\n\n"
-    "   remova `crewflow:running` (mantenha `crewflow:review`), e ENCERRE.\n"
-    "   `gh issue edit {{issue_number}} --repo {{repo}} --remove-label \"crewflow:running\"`\n\n"
+    "   ENCERRE.\n\n"
     "{{vault_step}}\n\n"
     "### Regras críticas\n\n"
     "- UMA passada. Terminou, acabou. NÃO entre em loop.\n"
     "- NUNCA mergeie. NUNCA faça deploy.\n"
-    "- Se bloquear, marque `crewflow:blocked`, avise, e pare.\n\n"
+    "- Se bloquear, marque `flow:blocked`, avise, e pare.\n\n"
     "{{prompt_extra}}"
 )
 
@@ -1029,10 +1026,10 @@ def _build_implicit_to_explicit_map() -> dict:
     from flow.scan.scanner import ImplicitState
 
     return {
-        ImplicitState.TODO:      State.TODO,
-        ImplicitState.DEV:       State.DEV,
-        ImplicitState.REVIEW:    State.REVIEW,
-        ImplicitState.REVIEW_OK: State.REVIEW,  # REVIEW_OK está no estado REVIEW com modificador
+        ImplicitState.TODO:      State.DEVELOP_WAITING,
+        ImplicitState.DEV:       State.DEVELOP_RUNNING,
+        ImplicitState.REVIEW:    State.REVIEW_WAITING,
+        ImplicitState.REVIEW_OK: State.REVIEW_APPROVED,
         ImplicitState.DONE:      State.DONE,
     }
 
@@ -1290,14 +1287,14 @@ def run(ctx: object) -> None:
         raise Skip() from exc
 
     # ── Rastreia running_since no cache (detecção de sessão morta) ────────
-    # Para cada issue com crewflow:running: registra quando foi visto pela 1ª vez.
-    # Para issues sem crewflow:running: limpa o timestamp (issue saiu do estado running).
+    # Para cada issue com flow:develop-running: registra quando foi visto pela 1ª vez.
+    # Para issues sem flow:develop-running: limpa o timestamp (issue saiu do estado running).
     from datetime import UTC
 
     from flow.domain.state import Modifier as _Modifier
     _now_iso = __import__("datetime").datetime.now(tz=UTC).isoformat()
     for _r in scan_results:
-        if _Modifier.RUNNING in _r.modifiers:
+        if _r.current_state is not None and _r.current_state.value == "flow:develop-running":
             set_running_since(conn, _r.item.key, _now_iso)
         else:
             clear_running_since(conn, _r.item.key)
@@ -1327,13 +1324,12 @@ def run(ctx: object) -> None:
     merge_prs: list[tuple[str, dict, str | None]] = []   # (repo, issue, state_comment) — merge squash automático
     dead_session_candidates: list[ScanResult] = []       # issues dev+running sem sinais de vida
 
-    # Conjunto de issues em crewflow:dev + crewflow:running: usadas para calcular
+    # Conjunto de issues em flow:develop-running: usadas para calcular
     # o cap de concorrência por estado (sem depender de locks de arquivo).
     _running_dev_count = sum(
         1 for _r in scan_results
         if _r.current_state is not None
-        and _r.current_state.value == "crewflow:dev"
-        and _Modifier.RUNNING in _r.modifiers
+        and _r.current_state.value == "flow:develop-running"
     )
 
     for result in scan_results:
@@ -1347,13 +1343,12 @@ def run(ctx: object) -> None:
         # chamada de I/O quando o estado pode precisar dele
         from flow.domain.state import Modifier, State
         needs_comment = (
-            Modifier.HML_BYPASS in result.modifiers
-            or (hasattr(result.current_state, "__eq__") and result.current_state is State.DEV)
-            or (result.current_state is State.TODO and "crewflow:debt" in result.item.labels)
-            # GATE 2: lê o resultado do reviewer quando em review+reviewed
-            or (result.current_state is State.REVIEW and Modifier.REVIEWED in result.modifiers)
+            (hasattr(result.current_state, "__eq__") and result.current_state is State.DEVELOP_RUNNING)
+            or (result.current_state is State.DEVELOP_WAITING and "flow:debt" in result.item.labels)
+            # GATE 2: lê o resultado do reviewer quando em review_waiting+reviewed
+            or (result.current_state is State.REVIEW_WAITING and Modifier.REVIEWED in result.modifiers)
             # Ciclo de re-trabalho: lê iterações para checar teto
-            or (Modifier.CHANGES_REQUESTED in result.modifiers)
+            or (result.current_state is State.REVIEW_REFUSED)
         )
         state_comment: str | None = None
         if needs_comment:
@@ -1365,12 +1360,12 @@ def run(ctx: object) -> None:
                     result.item.key,
                 )
 
-        # Busca o SHA do HEAD do PR quando em review+reviewed para que o
+        # Busca o SHA do HEAD do PR quando em review_waiting+reviewed para que o
         # executor possa detectar push pós-review sem fazer I/O ele mesmo.
-        # Também lê mergeability para detecção de conflito (crewflow:conflito).
+        # Também lê mergeability para detecção de conflito (flow:merge-conflict).
         pr_head_sha: str | None = None
         pr_mergeable: str | None = None
-        if result.current_state is State.REVIEW:
+        if result.current_state is State.REVIEW_WAITING:
             import contextlib
             with contextlib.suppress(Exception):
                 _repo = (
@@ -1441,8 +1436,7 @@ def run(ctx: object) -> None:
     for _r_ds in scan_results:
         if (
             _r_ds.current_state is not None
-            and _r_ds.current_state.value == "crewflow:dev"
-            and _Modifier.RUNNING in _r_ds.modifiers
+            and _r_ds.current_state.value == "flow:develop-running"
         ):
             _repo_ds = _r_ds.item.key.split("/issues/")[0].replace("https://github.com/", "") or (repos[0] if repos else "")
             _num_str_ds = _r_ds.item.key.split("/issues/")[-1] if "/issues/" in _r_ds.item.key else "0"
@@ -1734,24 +1728,24 @@ def run(ctx: object) -> None:
     if merge_prs:
         _execute_auto_merges(ctx, merge_prs, chat_id, provider)
 
-    # ── Aplica crewflow:conflito nas PRs com conflito detectado ──────────
+    # ── Aplica flow:merge-conflict nas PRs com conflito detectado ──────────
     if mark_conflitos:
         for result in mark_conflitos:
             try:
                 _repo_mc = result.item.key.split("/issues/")[0].replace("https://github.com/", "") or (repos[0] if repos else "")
                 current_labels = list(result.item.labels)
-                for lbl in ("crewflow:conflito",):
+                for lbl in ("flow:merge-conflict",):
                     if lbl not in current_labels:
                         current_labels.append(lbl)
                 provider.set_labels(_repo_mc, result.item.key, current_labels)
-                logger.info("deployment: crewflow:conflito aplicado em %s", result.item.key)
+                logger.info("deployment: flow:merge-conflict aplicado em %s", result.item.key)
             except Exception as exc:
                 logger.error("deployment: erro ao aplicar conflito em %s: %s", result.item.key, exc)
         vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
         linhas_mc = "\n".join(f"  - {r.item.key}: {r.item.title}" for r in mark_conflitos)
         ctx.notify(  # type: ignore[attr-defined]
             f"KiroCrew Flow: {len(mark_conflitos)} PR(s) com conflito de merge detectado — "
-            f"crewflow:conflito aplicado.{vm}\n{linhas_mc}"
+            f"flow:merge-conflict aplicado.{vm}\n{linhas_mc}"
         )
 
     # ── Cron de conflito: resolve rebase na branch existente ─────────────
@@ -1798,7 +1792,7 @@ def run(ctx: object) -> None:
                     repo, issue_number_cr,
                 )
                 ctx.notify(  # type: ignore[attr-defined]
-                    f"KiroCrew Flow: crewflow:conflito mas PR não localizado — "
+                    f"KiroCrew Flow: flow:merge-conflict mas PR não localizado — "
                     f"{repo}#{issue_number_cr}.{vm}"
                 )
                 continue
@@ -2030,9 +2024,9 @@ def _reviewer_prompt(repo: str, pr_number: int, issue_number: int, head_sha: str
         "   — não {{head_sha}} hardcoded, pois a PR pode ter avançado entre o dispatch e a execução.\n"
         "   IMPORTANTE: o ReviewerResult PERMANECE na issue — é o que o scan lê pra decidir MERGE_PR.\n"
         "10. Se aprovado (zero comentários + CI verde): troque as labels da issue:\n"
-        "    `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"crewflow:review-ok\" --remove-label \"crewflow:review,crewflow:reviewed\"`\n"
-        "11. Se tem comentários ou CI vermelho: troque as labels da issue:\n"
-        "    `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"crewflow:review-fail\" --remove-label \"crewflow:review,crewflow:reviewed\"`\n"
+        "    `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"flow:review-approved\" --remove-label \"flow:review-waiting,flow:reviewed\"`\n"
+        "11. Se tem comentários ou CI vermelho: troque as labels da issue (gate humano):\n"
+        "    `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"flow:review-refused\" --remove-label \"flow:review-waiting,flow:reviewed\"`\n"
         "12. ENCERRE.\n\n"
         "### Regras críticas\n\n"
         "- UMA passada. Terminou, acabou. NÃO entre em loop.\n"
@@ -2088,7 +2082,7 @@ _REWORK_PROMPT_FALLBACK = (
     "2. ESCOPO: aplique APENAS os pedidos de mudança listados pelo reviewer.\n"
     "   - NÃO adicione features extras.\n"
     "   - NÃO refatore código não mencionado.\n"
-    "   - Se um pedido for ambíguo, comente na PR pedindo esclarecimento, marque `crewflow:blocked` e ENCERRE.\n"
+    "   - Se um pedido for ambíguo, comente na PR pedindo esclarecimento, marque `flow:blocked` e ENCERRE.\n"
     "3. USE O WORKTREE E BRANCH EXISTENTES — NÃO crie branch nova, NÃO abra PR novo.\n"
     "   A branch feat/issue-{{issue_number}} já existe. Use-a:\n"
     "   `cd {{worktree_path}}`\n"
@@ -2103,20 +2097,20 @@ _REWORK_PROMPT_FALLBACK = (
     "   python3 -m pytest flow/tests/ --cov=flow --cov-fail-under=75\n"
     "   ```\n"
     "   Para outros repos, descubra os comandos via README/Makefile/pyproject — **não presuma**.\n"
-    "   Se qualquer check falhar e você não conseguir corrigir, marque `crewflow:blocked` e ENCERRE. "
+    "   Se qualquer check falhar e você não conseguir corrigir, marque `flow:blocked` e ENCERRE. "
     "**Não faça push com CI vermelho.**\n"
     "6. Faça commit e push na branch existente:\n"
     "   `git add -A && git commit -m \"fix: aplicar pedidos de mudança do reviewer (iteração {{iteration}})\" && git push origin feat/issue-{{issue_number}}`\n"
-    "   Isso remove automaticamente `crewflow:reviewed` (novo SHA invalida o lock anti-loop).\n"
+    "   Isso invalida `flow:reviewed` automaticamente (novo SHA).\n"
     "7. Atualize o state_comment da issue incrementando `review_iterations`:\n"
     "   - Leia o comentário atual: `gh issue view {{issue_number}} --repo {{repo}} --comments`\n"
     "   - Incremente o campo `**Iterações de review:**` (ou adicione-o se ausente)\n"
     "   - Adicione uma linha no histórico: `| <data> | rework → review | kiro-dev |`\n"
     "   - Atualize via `gh issue comment {{issue_number}} --repo {{repo}} --body \"...\"` (editando o comentário existente)\n"
     "8. Troque a label de volta para review:\n"
-    "   `gh issue edit {{issue_number}} --repo {{repo}} --remove-label \"crewflow:running,crewflow:review-fail\" --add-label \"crewflow:review\"`\n"
+    "   `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"flow:review-waiting\" --remove-label \"flow:develop-running,flow:review-refused\"`\n"
     "9. Ao terminar: {{notify_step}}\n\n"
-    "   remova `crewflow:running`, mantenha `crewflow:review`, e ENCERRE.\n\n"
+    "   e ENCERRE.\n\n"
     "{{vault_step}}\n\n"
     "### Regras críticas\n\n"
     "- UMA passada. Terminou, acabou. NÃO entre em loop.\n"
@@ -2294,7 +2288,7 @@ _CONFLICT_PROMPT_FALLBACK = (
     "  `git fetch origin && git rebase origin/{{base_branch}}`\n"
     "  Resolva conflitos manualmente se necessário, depois:\n"
     "  `git push origin feat/issue-{{issue_number}} --force-with-lease`\n\n"
-    "Remove `crewflow:conflito` e `crewflow:running` da issue.\n\n"
+    "Remove `flow:merge-conflict` da issue, mantém `flow:review-waiting`.\n\n"
     "### Regras críticas\n\n"
     "NUNCA mergeie. NUNCA faça deploy. NUNCA abra PR novo.\n\n"
     "{{prompt_extra}}"
@@ -2726,7 +2720,7 @@ def _execute_auto_merges(
                 new_labels = _apply_state_transition(
                     item_data.get("labels", []),
                     State.DONE,
-                    remove_modifiers=("crewflow:review-ok", "crewflow:reviewed", "crewflow:running"),
+                    remove_modifiers=("flow:review-approved", "flow:reviewed"),
                 )
                 gh_client.set_labels(repo, str(issue_number), new_labels)
             except Exception as exc:
@@ -2933,7 +2927,7 @@ def _run_stage(ctx: object, stage: str) -> None:
     from flow.domain.state import Modifier, State
 
     for _r in scan_results:
-        if Modifier.RUNNING in _r.modifiers:
+        if _r.current_state is not None and _r.current_state.value == "flow:develop-running":
             set_running_since(conn, _r.item.key, _now_iso_stage)
         else:
             clear_running_since(conn, _r.item.key)
@@ -2952,8 +2946,7 @@ def _run_stage(ctx: object, stage: str) -> None:
     _running_dev_count_stage = sum(
         1 for _r in scan_results
         if _r.current_state is not None
-        and _r.current_state.value == "crewflow:dev"
-        and Modifier.RUNNING in _r.modifiers
+        and _r.current_state.value == "flow:develop-running"
     )
 
     # Filtra pelo conjunto de ações deste estágio
@@ -2977,11 +2970,10 @@ def _run_stage(ctx: object, stage: str) -> None:
             continue
 
         needs_comment = (
-            Modifier.HML_BYPASS in result.modifiers
-            or (result.current_state is State.DEV)
-            or (result.current_state is State.TODO and "crewflow:debt" in result.item.labels)
-            or (result.current_state is State.REVIEW and Modifier.REVIEWED in result.modifiers)
-            or (Modifier.REVIEW_FAIL in result.modifiers)
+            (result.current_state is State.DEVELOP_RUNNING)
+            or (result.current_state is State.DEVELOP_WAITING and "flow:debt" in result.item.labels)
+            or (result.current_state is State.REVIEW_WAITING and Modifier.REVIEWED in result.modifiers)
+            or (result.current_state is State.REVIEW_REFUSED)
         )
         state_comment: str | None = None
         if needs_comment:
@@ -2995,7 +2987,7 @@ def _run_stage(ctx: object, stage: str) -> None:
 
         pr_head_sha: str | None = None
         pr_mergeable: str | None = None
-        if result.current_state is State.REVIEW:
+        if result.current_state is State.REVIEW_WAITING:
             import contextlib
             with contextlib.suppress(Exception):
                 _repo = (
@@ -3068,8 +3060,7 @@ def _run_stage(ctx: object, stage: str) -> None:
         for _r_ds in scan_results:
             if (
                 _r_ds.current_state is not None
-                and _r_ds.current_state.value == "crewflow:dev"
-                and Modifier.RUNNING in _r_ds.modifiers
+                and _r_ds.current_state.value == "flow:develop-running"
             ):
                 _repo_ds = _r_ds.item.key.split("/issues/")[0].replace("https://github.com/", "") or (repos[0] if repos else "")
                 _num_str_ds = _r_ds.item.key.split("/issues/")[-1] if "/issues/" in _r_ds.item.key else "0"
@@ -3224,22 +3215,22 @@ def _run_stage(ctx: object, stage: str) -> None:
                     repo, issue_number, exc,
                 )
 
-        # Aplica crewflow:conflito nas PRs com conflito detectado
+        # Aplica flow:merge-conflict nas PRs com conflito detectado
         if mark_conflitos:
             for result in mark_conflitos:
                 try:
                     _repo_mc = result.item.key.split("/issues/")[0].replace("https://github.com/", "") or (repos[0] if repos else "")
                     current_labels = list(result.item.labels)
-                    if "crewflow:conflito" not in current_labels:
-                        current_labels.append("crewflow:conflito")
+                    if "flow:merge-conflict" not in current_labels:
+                        current_labels.append("flow:merge-conflict")
                     provider.set_labels(_repo_mc, result.item.key, current_labels)
-                    logger.info("deployment[reviewer]: crewflow:conflito aplicado em %s", result.item.key)
+                    logger.info("deployment[reviewer]: flow:merge-conflict aplicado em %s", result.item.key)
                 except Exception as exc:
                     logger.error("deployment[reviewer]: erro ao aplicar conflito em %s: %s", result.item.key, exc)
             linhas_mc = "\n".join(f"  - {r.item.key}: {r.item.title}" for r in mark_conflitos)
             ctx.notify(  # type: ignore[attr-defined]
                 f"KiroCrew Flow [reviewer]: {len(mark_conflitos)} PR(s) com conflito de merge detectado — "
-                f"crewflow:conflito aplicado.{vm}\n{linhas_mc}"
+                f"flow:merge-conflict aplicado.{vm}\n{linhas_mc}"
             )
 
     elif stage == _STAGE_MERGE:
@@ -3283,7 +3274,7 @@ def _run_stage(ctx: object, stage: str) -> None:
                 )
             if pr_number_cr is None:
                 ctx.notify(  # type: ignore[attr-defined]
-                    f"KiroCrew Flow [conflito]: crewflow:conflito mas PR não localizado — "
+                    f"KiroCrew Flow [conflito]: flow:merge-conflict mas PR não localizado — "
                     f"{repo}#{issue_number_cr}.{vm}"
                 )
                 continue
@@ -3356,13 +3347,13 @@ def _run_stage(ctx: object, stage: str) -> None:
 def run_dev(ctx: object) -> None:
     """Entrypoint do cron de implementação.
 
-    Processa issues em ``crewflow:todo`` e despacha sessões one-shot de dev.
+    Processa issues em ``flow:develop-waiting`` e despacha sessões one-shot de dev.
     Ideal com um modelo forte (ex: sonnet-4.5) e intervalo de 600s.
 
     Configure o modelo via ``stage_models.dev`` na deployment.config.yaml.
 
     Registro (uma vez):
-        cron_add(name="crewflow-dev",
+        cron_add(name="flow-dev",
                  script="~/.kiro/crew/crons/deployment.py:run_dev",
                  every=600)
     """
@@ -3372,14 +3363,14 @@ def run_dev(ctx: object) -> None:
 def run_reviewer(ctx: object) -> None:
     """Entrypoint do cron de code review.
 
-    Processa PRs em ``crewflow:review`` (sem ``crewflow:reviewed``) e
+    Processa PRs em ``flow:review-waiting`` (sem ``flow:reviewed``) e
     despacha sessões one-shot do kiro-reviewer.
     Ideal com um modelo mais rápido e intervalo de 300s.
 
     Configure o modelo via ``stage_models.reviewer`` na deployment.config.yaml.
 
     Registro (uma vez):
-        cron_add(name="crewflow-reviewer",
+        cron_add(name="flow-reviewer",
                  script="~/.kiro/crew/crons/deployment.py:run_reviewer",
                  every=300)
     """
@@ -3389,13 +3380,13 @@ def run_reviewer(ctx: object) -> None:
 def run_merge(ctx: object) -> None:
     """Entrypoint do cron de merge.
 
-    Processa PRs aprovados (``crewflow:review-ok``) e executa o merge squash
-    automático. Intervalo curto recomendado: 120s.
+    Processa PRs aprovados (``flow:review-approved`` ou ``flow:qa-approved``) e
+    executa o merge squash automático. Intervalo curto recomendado: 120s.
 
     Configure o modelo via ``stage_models.merge`` na deployment.config.yaml.
 
     Registro (uma vez):
-        cron_add(name="crewflow-merge",
+        cron_add(name="flow-merge",
                  script="~/.kiro/crew/crons/deployment.py:run_merge",
                  every=120)
     """
@@ -3403,16 +3394,17 @@ def run_merge(ctx: object) -> None:
 
 
 def run_conflito(ctx: object) -> None:
-    """Entrypoint do cron de re-trabalho (conflito pós-review).
+    """Entrypoint do cron de conflito de merge.
 
-    Processa issues com ``crewflow:review-fail`` e despacha sessões
-    one-shot de rework para aplicar os pedidos do reviewer na mesma PR.
+    Processa issues com ``flow:merge-conflict`` e despacha sessões
+    one-shot de resolução de conflito (rebase na mesma branch/PR).
+    ``flow:review-refused`` é gate humano — apenas notifica TL, não redespacha.
     Intervalo recomendado: 300s.
 
     Configure o modelo via ``stage_models.conflito`` na deployment.config.yaml.
 
     Registro (uma vez):
-        cron_add(name="crewflow-conflito",
+        cron_add(name="flow-conflito",
                  script="~/.kiro/crew/crons/deployment.py:run_conflito",
                  every=300)
     """

@@ -6,10 +6,31 @@ Duas dimensões independentes:
     MODIFICADOR — 0..N, sobrepõem ao estado; os de parada têm prioridade
 
 Regra central: ``is_dispatchable()`` respeita a prioridade de parada.
-Uma issue em ``crewflow:todo`` + ``crewflow:blocked`` NÃO é candidata a
+Uma issue em ``flow:develop-waiting`` + ``flow:blocked`` NÃO é candidata a
 dispatch, mesmo estando no estado gatilho.
 
 Todo este módulo é puro Python sem I/O — testável sem mock.
+
+Migração crewflow:* → flow:*
+-----------------------------
+| crewflow           | flow                   |
+|--------------------|------------------------|
+| crewflow:spec      | flow:briefing          |
+| crewflow:ready     | flow:planning-specs    |
+| crewflow:todo      | flow:develop-waiting   |
+| crewflow:dev       | flow:develop-running   |
+| crewflow:review    | flow:review-waiting    |
+| crewflow:review-ok | flow:review-approved   |
+| crewflow:review-fail | flow:review-refused  |
+| crewflow:qa        | flow:qa-waiting        |
+| crewflow:done      | flow:done              |
+| crewflow:blocked   | flow:blocked           |
+| crewflow:conflito  | flow:merge-conflict    |
+Novos: flow:planning-review, flow:qa-approved, flow:qa-refused,
+       flow:develop-waiting, flow:develop-running
+Removidos: crewflow:reviewed (lock vira interno), crewflow:changes-requested,
+           crewflow:running (modificador absorvido em develop-running),
+           crewflow:hml-bypass, labels de tipo e prioridade.
 """
 
 from __future__ import annotations
@@ -23,20 +44,26 @@ from enum import StrEnum
 class State(StrEnum):
     """Estados da esteira.  Exatamente um por issue.
 
-    A ordem dos membros É a ordem canônica — ``State.SPEC < State.DONE`` é
-    verdadeiro e ``list(State)`` retorna na sequência certa.
+    A ordem dos membros É a ordem canônica — ``State.BRIEFING < State.DONE``
+    é verdadeiro e ``list(State)`` retorna na sequência certa.
 
-    Prefixo ``crewflow:`` é o nome em Jira/GitHub; o nome do membro é o
+    Prefixo ``flow:`` é o nome em Jira/GitHub; o nome do membro é o
     nome de código.
     """
 
-    SPEC   = "crewflow:spec"    # PM especificando
-    READY  = "crewflow:ready"   # spec pronta, aguardando priorização
-    TODO   = "crewflow:todo"    # priorizado — GATILHO da esteira
-    DEV    = "crewflow:dev"     # em desenvolvimento
-    REVIEW = "crewflow:review"  # PR aberto: review + TL aprova (ANTES do QA)
-    QA     = "crewflow:qa"      # deploy HML manual + QA testa (DEPOIS do review)
-    DONE   = "crewflow:done"    # concluído
+    BRIEFING         = "flow:briefing"          # TL/PM criou demanda + briefing
+    PLANNING_SPECS   = "flow:planning-specs"    # Dev montando spec/critérios/sub-tasks
+    PLANNING_REVIEW  = "flow:planning-review"   # Dev pediu revisão ao TL/PM
+    DEVELOP_WAITING  = "flow:develop-waiting"   # Aguardando agente pegar — GATILHO
+    DEVELOP_RUNNING  = "flow:develop-running"   # Agente implementando
+    REVIEW_WAITING   = "flow:review-waiting"    # PR aberta, aguardando reviewer
+    REVIEW_APPROVED  = "flow:review-approved"   # Reviewer aprovou
+    REVIEW_REFUSED   = "flow:review-refused"    # Reviewer reprovou — gate humano
+    QA_WAITING       = "flow:qa-waiting"        # Aguardando QA
+    QA_TESTING       = "flow:qa-testing"        # QA testando
+    QA_APPROVED      = "flow:qa-approved"       # QA aprovou — gatilho merge
+    QA_REFUSED       = "flow:qa-refused"        # QA reprovou — gate humano
+    DONE             = "flow:done"              # Concluído
 
     def __lt__(self, other: object) -> bool:
         if not isinstance(other, State):
@@ -67,28 +94,25 @@ class Modifier(StrEnum):
     """Modificadores que se sobrepõem ao estado (0..N por issue).
 
     Os de parada (``STOP_MODIFIERS``) têm prioridade: mesmo que o estado
-    seja o gatilho ``TODO``, a issue não é despachável se um deles estiver
-    presente.
+    seja o gatilho ``DEVELOP_WAITING``, a issue não é despachável se um
+    deles estiver presente.
     """
 
-    BLOCKED           = "crewflow:blocked"           # para tudo — dependência ou espera humana
-    RUNNING           = "crewflow:running"            # trabalho em andamento no estado atual
-    REVIEWED          = "crewflow:reviewed"           # lock anti-loop interno: já analisado neste SHA (não é resultado externo)
-    HML_BYPASS        = "crewflow:hml-bypass"         # exceção auditada: hotfix pulou o HML
-    CHANGES_REQUESTED = "crewflow:changes-requested"  # DEPRECATED — mantido por compatibilidade; use REVIEW_FAIL
-    CONFLITO          = "crewflow:conflito"           # PR tem conflito de merge ou base desatualizada
-    REVIEW_OK         = "crewflow:review-ok"          # reviewer aprovou — pronto para merge (substitui review+reviewed)
-    REVIEW_FAIL       = "crewflow:review-fail"        # reviewer reprovou — aguarda rework (substitui review+changes-requested)
+    BLOCKED        = "flow:blocked"         # para tudo — dependência ou espera humana
+    MERGE_CONFLICT = "flow:merge-conflict"  # PR tem conflito de merge ou base desatualizada
+
+    # Modificador interno de lock anti-loop (não exposto como label de negócio)
+    # Mantido como enum para uso interno pelo executor/deployment.
+    REVIEWED       = "flow:reviewed"        # lock anti-loop interno: já analisado neste SHA
 
 
 # Modificadores que impedem dispatch mesmo com o estado correto.
 STOP_MODIFIERS: frozenset[Modifier] = frozenset({
     Modifier.BLOCKED,
-    Modifier.RUNNING,
 })
 
 # Estado que é o gatilho da esteira
-DISPATCH_TRIGGER: State = State.TODO
+DISPATCH_TRIGGER: State = State.DEVELOP_WAITING
 
 
 # ---------------------------------------------------------------------------
@@ -157,10 +181,10 @@ def is_dispatchable(state: State | None, modifiers: frozenset[Modifier]) -> bool
     """Decide se a issue é candidata a dispatch.
 
     Condição necessária e suficiente:
-      1. O estado é ``crewflow:todo`` (o gatilho)
+      1. O estado é ``flow:develop-waiting`` (o gatilho)
       2. Nenhum modificador de parada está presente
 
-    Modificadores de parada: ``crewflow:blocked``, ``crewflow:running``
+    Modificadores de parada: ``flow:blocked``
     """
     if state is None:
         return False
@@ -185,9 +209,8 @@ def transition_state(
 
     Garante exclusividade mútua: retorna o conjunto de labels com
     **exatamente 1** estado (``new_state``), removendo todos os outros
-    estados anteriores.  Modificadores (``blocked``, ``running``,
-    ``reviewed``, …) e labels de tipo/prioridade/outros sistemas são
-    preservados intactos.
+    estados anteriores.  Modificadores (``blocked``, ``merge-conflict``,
+    …) e labels de tipo/prioridade/outros sistemas são preservados intactos.
 
     Esta é a fonte única de verdade para qualquer troca de estado — use
     esta função sempre que a esteira precisar aplicar um novo estado, seja
@@ -204,10 +227,10 @@ def transition_state(
 
     Example::
 
-        labels = {"crewflow:todo", "crewflow:running", "crewflow:bug", "phase-1"}
-        result = transition_state(labels, State.DEV)
-        # → frozenset({"crewflow:dev", "crewflow:running", "crewflow:bug", "phase-1"})
-        # crewflow:todo foi removido; crewflow:dev foi adicionado.
+        labels = {"flow:develop-waiting", "flow:blocked", "phase-1"}
+        result = transition_state(labels, State.DEVELOP_RUNNING)
+        # → frozenset({"flow:develop-running", "flow:blocked", "phase-1"})
+        # flow:develop-waiting foi removido; flow:develop-running foi adicionado.
     """
     # Remove TODOS os estados anteriores, adiciona o novo
     without_states = frozenset(lbl for lbl in labels if lbl not in _STATE_VALUES)
@@ -221,22 +244,26 @@ def transition_state(
 def can_transition(de: State, para: State) -> bool:
     """Verifica se a transição entre dois estados é válida.
 
-    As transições válidas seguem a ordem canônica com duas exceções:
-    - Qualquer estado pode voltar para ``DEV`` (reprovar gate)
-    - ``TODO`` pode pular para ``DEV`` (a esteira pegou)
+    As transições válidas seguem a ordem canônica com exceções:
+    - Qualquer estado pós-DEVELOP_RUNNING pode voltar para DEVELOP_WAITING
+      (reprovação de gate human: review-refused, qa-refused)
+    - DEVELOP_WAITING pode ir diretamente para DEVELOP_RUNNING (esteira pega)
 
-    Transições inválidas: pular mais de um passo à frente (ex: SPEC → DEV),
-    ou ir para trás exceto para DEV.
+    Transições inválidas: pular mais de um passo à frente (ex: BRIEFING → DEVELOP_RUNNING).
     """
     ordem = list(State)
     idx_de = ordem.index(de)
     idx_para = ordem.index(para)
 
-    # Avançar um passo é sempre válido (exceto de DONE que é terminal)
+    # DONE é terminal
     if de is State.DONE:
         return False
+
+    # Avançar um passo é sempre válido
     if idx_para == idx_de + 1:
         return True
 
-    # Voltar para DEV é sempre válido (reprovar gate)
-    return para is State.DEV and de not in (State.SPEC, State.READY, State.TODO, State.DEV)
+    # Voltar para DEVELOP_WAITING é válido após gates humanos (review-refused, qa-refused)
+    return para is State.DEVELOP_WAITING and de not in (
+        State.BRIEFING, State.PLANNING_SPECS, State.PLANNING_REVIEW, State.DEVELOP_WAITING, State.DEVELOP_RUNNING
+    )

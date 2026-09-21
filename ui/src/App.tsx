@@ -15,17 +15,21 @@ interface Issue {
   labels: string[]
   blocked: boolean
   running: boolean
-  implicit_state?: string | null
 }
 
 interface Columns {
-  spec: Issue[]
-  ready: Issue[]
-  todo: Issue[]
-  dev: Issue[]
-  review: Issue[]
-  review_ok: Issue[]
-  reviewed: Issue[]
+  briefing: Issue[]
+  planning_specs: Issue[]
+  planning_review: Issue[]
+  develop_waiting: Issue[]
+  develop_running: Issue[]
+  review_waiting: Issue[]
+  review_approved: Issue[]
+  review_refused: Issue[]
+  qa_waiting: Issue[]
+  qa_testing: Issue[]
+  qa_approved: Issue[]
+  qa_refused: Issue[]
   done: Issue[]
   blocked: Issue[]
 }
@@ -52,13 +56,18 @@ function repoShort(repo: string): string {
 
 function emptyColumns(): Columns {
   return {
-    spec: [],
-    ready: [],
-    todo: [],
-    dev: [],
-    review: [],
-    review_ok: [],
-    reviewed: [],
+    briefing: [],
+    planning_specs: [],
+    planning_review: [],
+    develop_waiting: [],
+    develop_running: [],
+    review_waiting: [],
+    review_approved: [],
+    review_refused: [],
+    qa_waiting: [],
+    qa_testing: [],
+    qa_approved: [],
+    qa_refused: [],
     done: [],
     blocked: [],
   }
@@ -72,55 +81,35 @@ const MOCK_RESPONSE: ApiResponse = {
   squad_name: 'KiroCrew Flow (demo)',
   project: 'eliasrosa/kirocrew-flow',
   columns: {
-    spec: [
-      { number: 95, title: 'Exemplo: feature sendo especificada', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 240, labels: ['crewflow:spec', 'crewflow:feature'], blocked: false, running: false },
+    briefing: [
+      { number: 95, title: 'Exemplo: demanda sendo especificada', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 240, labels: ['flow:briefing'], blocked: false, running: false },
     ],
-    ready: [
-      { number: 97, title: 'Exemplo: spec pronta, aguardando priorização', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 120, labels: ['crewflow:ready', 'crewflow:feature'], blocked: false, running: false },
+    planning_specs: [
+      { number: 97, title: 'Exemplo: dev montando spec/critérios', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 120, labels: ['flow:planning-specs'], blocked: false, running: false },
     ],
-    todo: [
-      { number: 99, title: 'Exemplo: feature aguardando dev', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 45, labels: ['crewflow:feature', 'crewflow:p2'], blocked: false, running: false },
+    planning_review: [],
+    develop_waiting: [
+      { number: 99, title: 'Exemplo: aguardando agente', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 45, labels: ['flow:develop-waiting'], blocked: false, running: false },
     ],
-    dev: [
-      { number: 100, title: 'Exemplo: issue em implementação', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 120, labels: ['crewflow:bug', 'crewflow:p1'], blocked: false, running: true },
-      { number: 104, title: 'Exemplo: divergência — label=dev mas sem branch', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 30, labels: ['crewflow:feature'], blocked: false, running: false, implicit_state: 'todo' },
+    develop_running: [
+      { number: 100, title: 'Exemplo: agente implementando', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 120, labels: ['flow:develop-running'], blocked: false, running: true },
     ],
-    review: [
-      { number: 101, title: 'Exemplo: PR aguardando review', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 30, labels: ['crewflow:feature'], blocked: false, running: false, implicit_state: 'review' },
+    review_waiting: [
+      { number: 101, title: 'Exemplo: PR aguardando reviewer', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 30, labels: ['flow:review-waiting'], blocked: false, running: false },
     ],
-    review_ok: [
-      { number: 103, title: 'Exemplo: PR aprovado, aguardando merge', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 15, labels: ['crewflow:feature', 'crewflow:review-ok'], blocked: false, running: false },
+    review_approved: [
+      { number: 103, title: 'Exemplo: reviewer aprovou — aguardando merge', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 15, labels: ['flow:review-approved'], blocked: false, running: false },
     ],
-    reviewed: [],
+    review_refused: [],
+    qa_waiting: [],
+    qa_testing: [],
+    qa_approved: [],
+    qa_refused: [],
     done: [],
     blocked: [
-      { number: 102, title: 'Exemplo: issue bloqueada', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 240, labels: ['crewflow:debt'], blocked: true, running: false },
+      { number: 102, title: 'Exemplo: issue bloqueada', repo: 'eliasrosa/kirocrew-flow', url: '', age_min: 240, labels: ['flow:blocked'], blocked: true, running: false },
     ],
   },
-}
-
-// ---------------------------------------------------------------------------
-// Shadow mode — mapeamento coluna → implicit_state equivalente
-// ---------------------------------------------------------------------------
-
-// Mapa de coluna kanban → nome de implicit_state equivalente
-// (para detectar divergência entre onde a issue está e o que as evidências indicam)
-const COLUMN_TO_IMPLICIT: Record<string, string> = {
-  todo: 'todo',
-  dev: 'dev',
-  review: 'review',
-  reviewed: 'review',  // QA está na coluna reviewed; implicit equivalente é review/review_ok
-  done: 'done',
-  blocked: '',
-}
-
-function hasDivergence(issue: Issue, column: string): boolean {
-  if (!issue.implicit_state) return false
-  const expected = COLUMN_TO_IMPLICIT[column] ?? ''
-  if (!expected) return false
-  // review_ok está na coluna review — não é divergência
-  if (column === 'review' && issue.implicit_state === 'review_ok') return false
-  return issue.implicit_state !== expected
 }
 
 // ---------------------------------------------------------------------------
@@ -132,11 +121,9 @@ interface IssueCardProps {
   showDispatch?: boolean
   onDispatch?: (repo: string, number: number | string) => Promise<void>
   dispatching?: boolean
-  column?: string
 }
 
-function IssueCard({ issue, showDispatch, onDispatch, dispatching, column = '' }: IssueCardProps) {
-  const divergent = hasDivergence(issue, column)
+function IssueCard({ issue, showDispatch, onDispatch, dispatching }: IssueCardProps) {
   return (
     <Card style={{ marginBottom: 8, padding: '10px 12px' }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
@@ -156,22 +143,6 @@ function IssueCard({ issue, showDispatch, onDispatch, dispatching, column = '' }
             )}
             {issue.running && (
               <span style={{ color: '#f97316' }}>● running</span>
-            )}
-            {divergent && issue.implicit_state && (
-              <span
-                title={`Estado implícito: ${issue.implicit_state} · Label atual: ${column}`}
-                style={{
-                  color: '#dc2626',
-                  fontWeight: 700,
-                  background: '#fee2e2',
-                  borderRadius: 4,
-                  padding: '1px 5px',
-                  fontSize: 10,
-                  letterSpacing: '0.02em',
-                }}
-              >
-                ⚠ impl: {issue.implicit_state}
-              </span>
             )}
           </div>
         </div>
@@ -202,7 +173,7 @@ function IssueCard({ issue, showDispatch, onDispatch, dispatching, column = '' }
 }
 
 // ---------------------------------------------------------------------------
-// SubColumn — coluna dentro de um painel (ex: Aguardando / Trabalhando)
+// SubColumn — coluna dentro de um painel
 // ---------------------------------------------------------------------------
 
 interface SubColumnProps {
@@ -212,10 +183,9 @@ interface SubColumnProps {
   showDispatch?: boolean
   onDispatch?: (repo: string, number: number | string) => Promise<void>
   dispatchingKey?: string
-  columnKey?: string
 }
 
-function SubColumn({ title, issues, color, showDispatch, onDispatch, dispatchingKey, columnKey = '' }: SubColumnProps) {
+function SubColumn({ title, issues, color, showDispatch, onDispatch, dispatchingKey }: SubColumnProps) {
   return (
     <div style={{ flex: 1, minWidth: 160 }}>
       <div style={{
@@ -255,7 +225,6 @@ function SubColumn({ title, issues, color, showDispatch, onDispatch, dispatching
               showDispatch={showDispatch}
               onDispatch={onDispatch}
               dispatching={dispatchingKey === key}
-              column={columnKey}
             />
           )
         })
@@ -265,39 +234,41 @@ function SubColumn({ title, issues, color, showDispatch, onDispatch, dispatching
 }
 
 // ---------------------------------------------------------------------------
-// WaitingSection — seção de espera humana (SPEC ou READY)
+// PlanningSection — fase de planning (briefing → planning-review)
 // ---------------------------------------------------------------------------
 
-interface WaitingSectionProps {
-  title: string
-  subtitle: string
-  issues: Issue[]
+interface PlanningSectionProps {
+  columns: Columns
   accentColor: string
 }
 
-function WaitingSection({ title, subtitle, issues, accentColor }: WaitingSectionProps) {
+function PlanningSection({ columns, accentColor }: PlanningSectionProps) {
+  const total = columns.briefing.length + columns.planning_specs.length + columns.planning_review.length
   return (
     <div style={{
-      flex: 1,
       border: `1px solid ${accentColor}33`,
       borderRadius: 10,
       padding: '14px 16px',
       background: `${accentColor}08`,
-      minWidth: 220,
+      flex: 1,
+      minWidth: 260,
     }}>
-      <div style={{ marginBottom: 10 }}>
-        <div style={{ fontWeight: 700, fontSize: 13, color: accentColor, marginBottom: 2 }}>
-          {title}
-        </div>
-        <div style={{ fontSize: 11, opacity: 0.5 }}>{subtitle}</div>
+      <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ fontWeight: 700, fontSize: 13, color: accentColor }}>Planning</div>
+        <span style={{
+          background: accentColor + '33',
+          color: accentColor,
+          borderRadius: 10,
+          padding: '1px 7px',
+          fontSize: 11,
+          fontWeight: 700,
+        }}>{total}</span>
       </div>
-      {issues.length === 0 ? (
-        <div style={{ fontSize: 12, opacity: 0.3, textAlign: 'center', padding: '12px 0' }}>—</div>
-      ) : (
-        issues.map((issue) => (
-          <IssueCard key={`${issue.repo}#${issue.number}`} issue={issue} />
-        ))
-      )}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <SubColumn title="Briefing" issues={columns.briefing} color="#f59e0b" />
+        <SubColumn title="Specs" issues={columns.planning_specs} color="#fbbf24" />
+        <SubColumn title="Revisão TL" issues={columns.planning_review} color="#d97706" />
+      </div>
     </div>
   )
 }
@@ -313,6 +284,7 @@ interface AgentsPanelProps {
 }
 
 function AgentsPanel({ columns, onDispatch, dispatchingKey }: AgentsPanelProps) {
+  const refusedCount = columns.review_refused.length + columns.qa_refused.length
   return (
     <div style={{
       border: '1px solid rgba(128,128,128,0.15)',
@@ -346,24 +318,22 @@ function AgentsPanel({ columns, onDispatch, dispatchingKey }: AgentsPanelProps) 
               fontSize: 11,
               fontWeight: 700,
             }}>
-              {columns.todo.length + columns.dev.length}
+              {columns.develop_waiting.length + columns.develop_running.length}
             </span>
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <SubColumn
               title="Aguardando"
-              issues={columns.todo}
+              issues={columns.develop_waiting}
               color="#16a34a"
               showDispatch
               onDispatch={onDispatch}
               dispatchingKey={dispatchingKey ?? undefined}
-              columnKey="todo"
             />
             <SubColumn
-              title="Trabalhando"
-              issues={columns.dev}
+              title="Implementando"
+              issues={columns.develop_running}
               color="#2563eb"
-              columnKey="dev"
             />
           </div>
         </div>
@@ -389,25 +359,77 @@ function AgentsPanel({ columns, onDispatch, dispatchingKey }: AgentsPanelProps) 
               fontSize: 11,
               fontWeight: 700,
             }}>
-              {columns.review.length + columns.review_ok.length}
+              {columns.review_waiting.length + columns.review_approved.length}
             </span>
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <SubColumn
               title="Aguardando"
-              issues={columns.review}
+              issues={columns.review_waiting}
               color="#8b5cf6"
-              columnKey="review"
             />
             <SubColumn
               title="Aprovado ✓"
-              issues={columns.review_ok}
+              issues={columns.review_approved}
               color="#22c55e"
-              columnKey="review_ok"
             />
           </div>
         </div>
+
+        {/* Painel: QA */}
+        <div style={{ flex: 1, minWidth: 300 }}>
+          <div style={{
+            fontWeight: 700,
+            fontSize: 13,
+            marginBottom: 12,
+            paddingBottom: 6,
+            borderBottom: '2px solid #0ea5e9',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}>
+            <span>QA</span>
+            <span style={{
+              background: '#0ea5e9',
+              color: '#fff',
+              borderRadius: 10,
+              padding: '1px 7px',
+              fontSize: 11,
+              fontWeight: 700,
+            }}>
+              {columns.qa_waiting.length + columns.qa_testing.length + columns.qa_approved.length}
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <SubColumn title="Aguardando" issues={columns.qa_waiting} color="#0ea5e9" />
+            <SubColumn title="Testando" issues={columns.qa_testing} color="#38bdf8" />
+            <SubColumn title="Aprovado ✓" issues={columns.qa_approved} color="#22c55e" />
+          </div>
+        </div>
       </div>
+
+      {/* Gates humanos reprovados — aviso em destaque */}
+      {refusedCount > 0 && (
+        <div style={{
+          marginTop: 16,
+          border: '1px solid #9333ea33',
+          borderRadius: 8,
+          padding: '10px 14px',
+          background: '#9333ea08',
+        }}>
+          <div style={{ fontWeight: 700, fontSize: 12, color: '#9333ea', marginBottom: 8 }}>
+            🚫 Gates humanos — aguardando decisão manual do TL/dev
+          </div>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            {columns.review_refused.length > 0 && (
+              <SubColumn title="Review reprovado" issues={columns.review_refused} color="#9333ea" />
+            )}
+            {columns.qa_refused.length > 0 && (
+              <SubColumn title="QA reprovado" issues={columns.qa_refused} color="#9333ea" />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -482,12 +504,18 @@ export default function CrewFlow() {
   const title = project ? `Flow - ${squadName} / ${project.split('/').pop()}` : squadName
 
   const totalActive = (
-    columns.spec.length +
-    columns.ready.length +
-    columns.todo.length +
-    columns.dev.length +
-    columns.review.length +
-    columns.review_ok.length +
+    columns.briefing.length +
+    columns.planning_specs.length +
+    columns.planning_review.length +
+    columns.develop_waiting.length +
+    columns.develop_running.length +
+    columns.review_waiting.length +
+    columns.review_approved.length +
+    columns.review_refused.length +
+    columns.qa_waiting.length +
+    columns.qa_testing.length +
+    columns.qa_approved.length +
+    columns.qa_refused.length +
     columns.blocked.length
   )
 
@@ -521,23 +549,12 @@ export default function CrewFlow() {
         }
       />
 
-      {/* Seções de espera humana */}
+      {/* Fase de planning */}
       <div style={{ display: 'flex', gap: 16, marginTop: 20, flexWrap: 'wrap' }}>
-        <WaitingSection
-          title="Aguardando SPEC"
-          subtitle="PM especificando"
-          issues={columns.spec}
-          accentColor="#f59e0b"
-        />
-        <WaitingSection
-          title="Aguardando definição de produto/TL"
-          subtitle="Spec pronta, aguardando priorização"
-          issues={columns.ready}
-          accentColor="#fbbf24"
-        />
+        <PlanningSection columns={columns} accentColor="#f59e0b" />
       </div>
 
-      {/* Seção de agentes */}
+      {/* Seção de agentes (dev + review + QA) */}
       <AgentsPanel
         columns={columns}
         onDispatch={handleDispatch}

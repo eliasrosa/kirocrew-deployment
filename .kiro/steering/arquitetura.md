@@ -118,7 +118,7 @@ deployment.py  →  set_labels() + upsert_state_comment() + _dispatch()
 Use `StrEnum` (não `str, Enum`):
 ```python
 class State(StrEnum):
-    TODO = "crewflow:todo"
+    DEVELOP_WAITING = "flow:develop-waiting"
 ```
 
 ### Dataclasses
@@ -240,10 +240,10 @@ python3 -m ruff check flow/ && python3 -m mypy flow/ --ignore-missing-imports &&
   cada dispatch. Use `max_concurrent_tasks` na config (alias de `max_concurrent`).
 - **Concorrência orientada ao estado da issue:** o dispatch decide se há sessão ativa
   pelo ESTADO real — worktree presente + PR aberto + backstop lock curto (2min),
-  não por timeout de arquivo de 2h. Cap primário = issues em `crewflow:dev + running`
+  não por timeout de arquivo de 2h. Cap primário = issues em `flow:develop-running + running`
   no scan (sem depender de locks). Sessão morta (running >40min sem sinais de vida)
   é detectada por `_is_dead_session()` e recuperada via `_recover_dead_session()` que
-  remove `crewflow:running` e notifica o TL — nunca redespacha sozinho (fail-closed).
+  remove `flow:develop-running` e notifica o TL — nunca redespacha sozinho (fail-closed).
 
 ## Prompts externalizados — `flow/prompts/`
 
@@ -254,22 +254,22 @@ Os prompts das sessões one-shot (dev e reviewer) vivem em arquivos MD editávei
 
 | Arquivo | Sessão | Quando é usado |
 |---|---|---|
-| `dev.md` | implementação inicial | `DISPATCH_DEV` — issue em `crewflow:todo` |
-| `reviewer.md` | code review | `DISPATCH_REVIEWER` — issue em `crewflow:review` |
-| `rework.md` | re-trabalho pós-review | `DISPATCH_REWORK` — issue com `crewflow:review-fail` |
+| `dev.md` | implementação inicial | `DISPATCH_DEV` — issue em `flow:develop-waiting` |
+| `reviewer.md` | code review | `DISPATCH_REVIEWER` — issue em `flow:review-waiting` |
+| `rework.md` | re-trabalho pós-review | `DISPATCH_REWORK` — issue com `flow:review-refused` |
 | `conflict.md` | resolução de conflito | `DISPATCH_CONFLICT_RESOLVER` — issue com `crewflow:conflito` |
 
-### Ciclo de re-trabalho (crewflow:review-fail)
+### Ciclo de re-trabalho (flow:review-refused)
 
-Quando o reviewer reprova, o motor adiciona `crewflow:review-fail` à issue (removendo
-`crewflow:review` e `crewflow:reviewed`) e despacha uma sessão `rework` que:
+Quando o reviewer reprova, o motor adiciona `flow:review-refused` à issue (removendo
+`flow:review-waiting` e `crewflow:reviewed`) e despacha uma sessão `rework` que:
 1. Lê os pedidos de mudança nos comentários do PR
 2. Aplica as correções na **mesma branch/PR** (nunca cria PR novo)
 3. Commita e faz push (o novo SHA invalida `crewflow:reviewed` automaticamente)
-4. Volta a issue para `crewflow:review` (remove `crewflow:review-fail`)
+4. Volta a issue para `flow:review-waiting` (remove `flow:review-refused`)
 
-Quando o reviewer aprova, o motor adiciona `crewflow:review-ok` (removendo
-`crewflow:review` e `crewflow:reviewed`). O cron `run_merge` lê `review-ok`
+Quando o reviewer aprova, o motor adiciona `flow:review-waiting-ok` (removendo
+`flow:review-waiting` e `crewflow:reviewed`). O cron `run_merge` lê `review-ok`
 e executa o merge squash, sem precisar ler o state_comment.
 
 Teto de iterações: `gates.exceeded_review_iterations()` controla o cap (default 3).

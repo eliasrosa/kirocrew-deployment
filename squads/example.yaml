@@ -47,12 +47,12 @@ workflow_params:
 # Avaliadas em ordem; a primeira que casar é usada.
 # O "default" é o fallback quando nenhuma regra casar.
 routing:
-  - match: {labels: ["crewflow:hotfix"]}
+  - match: {labels: ["flow:hotfix"]}
     workflow: hotfix-flow
-  - match: {labels: ["crewflow:bug"]}
+  - match: {labels: ["flow:bug"]}
     workflow: bug-flow
-  - match: {labels: ["crewflow:debt"]}
+  - match: {labels: ["flow:debt"]}
     workflow: debt-flow
-  - match: {labels: ["crewflow:feature"]}
+  - match: {labels: ["flow:feature"]}
     workflow: feature-flow
   - default: feature-flow

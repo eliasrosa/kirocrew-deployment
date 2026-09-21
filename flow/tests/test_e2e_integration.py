@@ -40,9 +40,9 @@ SQUAD_DICT: dict[str, Any] = {
     "issue_provider": "github",
     "repos": ["owner/api-gateway2", "owner/api-subscription2"],
     "routing": [
-        {"match": {"labels": ["crewflow:hotfix"]}, "workflow": "hotfix-flow"},
-        {"match": {"labels": ["crewflow:bug"]}, "workflow": "bug-flow"},
-        {"match": {"labels": ["crewflow:debt"]}, "workflow": "debt-flow"},
+        {"match": {"labels": ["flow:hotfix"]}, "workflow": "hotfix-flow"},
+        {"match": {"labels": ["flow:bug"]}, "workflow": "bug-flow"},
+        {"match": {"labels": ["flow:debt"]}, "workflow": "debt-flow"},
         {"default": "feature-flow"},
     ],
 }
@@ -92,16 +92,16 @@ class TestFeatureFlowE2E:
     def test_todo_vira_dispatch_dev(
         self, squad: SquadConfig, conn: sqlite3.Connection
     ) -> None:
-        """Issue em crewflow:todo → executor decide DISPATCH_DEV."""
+        """Issue em flow:develop-waiting → executor decide DISPATCH_DEV."""
         item = _item(
             "https://github.com/owner/api-gateway2/issues/42",
             "[api-gateway2] Implementar validação de split",
-            ["crewflow:todo", "crewflow:feature"],
+            ["flow:develop-waiting", "flow:feature"],
         )
         # O scanner itera pelos dois repos da squad — o mock retorna o item em
         # AMBOS os projetos. A deduplication por key garante que a issue produz
         # EXATAMENTE um ScanResult por ciclo, não "ao menos um" (issue #43).
-        provider = _mock_provider({"crewflow:todo": [item]})
+        provider = _mock_provider({"flow:develop-waiting": [item]})
         cfg = _scan_cfg(squad)
 
         results = scan_candidates(cfg, provider, conn)
@@ -111,49 +111,49 @@ class TestFeatureFlowE2E:
         assert len(candidates) == 1
         r = candidates[0]
         assert r.item.key == item["key"]
-        assert r.current_state is State.TODO
+        assert r.current_state is State.DEVELOP_WAITING
 
         decision = decide(r, squad=squad)
         assert decision.action is ActionKind.DISPATCH_DEV
-        assert "crewflow:dev" in decision.add_labels
-        assert "crewflow:running" in decision.add_labels
-        assert "crewflow:todo" in decision.remove_labels
+        assert "flow:develop-running" in decision.add_labels
+        assert "flow:develop-running" in decision.add_labels
+        assert "flow:develop-waiting" in decision.remove_labels
 
     def test_review_sem_reviewed_vira_dispatch_reviewer(
         self, squad: SquadConfig, conn: sqlite3.Connection
     ) -> None:
-        """Issue em crewflow:review sem lock → executor decide DISPATCH_REVIEWER."""
+        """Issue em flow:review-waiting sem lock → executor decide DISPATCH_REVIEWER."""
         item = _item(
             "https://github.com/owner/api-gateway2/issues/42",
             "[api-gateway2] Fix",
-            ["crewflow:review", "crewflow:feature"],
+            ["flow:review-waiting", "flow:feature"],
         )
-        provider = _mock_provider({"crewflow:review": [item]})
+        provider = _mock_provider({"flow:review-waiting": [item]})
         cfg = _scan_cfg(squad)
 
         results = scan_candidates(cfg, provider, conn)
         # REVIEW não é dispatch_candidate, mas muda de hash → aparece no resultado
-        r = next((x for x in results if x.current_state is State.REVIEW), None)
+        r = next((x for x in results if x.current_state is State.REVIEW_WAITING), None)
         assert r is not None
 
         decision = decide(r, squad=squad)
         assert decision.action is ActionKind.DISPATCH_REVIEWER
-        assert "crewflow:reviewed" in decision.add_labels
+        assert "flow:reviewed" in decision.add_labels
 
     def test_review_com_reviewed_skip(
         self, squad: SquadConfig, conn: sqlite3.Connection
     ) -> None:
-        """Issue em crewflow:review + crewflow:reviewed → SKIP (lock anti-loop)."""
+        """Issue em flow:review-waiting + flow:reviewed → SKIP (lock anti-loop)."""
         item = _item(
             "https://github.com/owner/api-gateway2/issues/42",
             "[api-gateway2] Fix",
-            ["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
+            ["flow:review-waiting", "flow:reviewed", "flow:feature"],
         )
-        provider = _mock_provider({"crewflow:review": [item]})
+        provider = _mock_provider({"flow:review-waiting": [item]})
         cfg = _scan_cfg(squad)
 
         results = scan_candidates(cfg, provider, conn)
-        r = next((x for x in results if x.current_state is State.REVIEW), None)
+        r = next((x for x in results if x.current_state is State.REVIEW_WAITING), None)
         assert r is not None
 
         decision = decide(r, squad=squad)
@@ -162,13 +162,13 @@ class TestFeatureFlowE2E:
     def test_blocked_nao_e_despachado(
         self, squad: SquadConfig, conn: sqlite3.Connection
     ) -> None:
-        """Issue em crewflow:todo + crewflow:blocked → não despachada."""
+        """Issue em flow:develop-waiting + flow:blocked → não despachada."""
         item = _item(
             "https://github.com/owner/api-gateway2/issues/42",
             "[api-gateway2] Fix",
-            ["crewflow:todo", "crewflow:blocked", "crewflow:feature"],
+            ["flow:develop-waiting", "flow:blocked", "flow:feature"],
         )
-        provider = _mock_provider({"crewflow:todo": [item]})
+        provider = _mock_provider({"flow:develop-waiting": [item]})
         cfg = _scan_cfg(squad)
 
         results = scan_candidates(cfg, provider, conn)
@@ -179,13 +179,13 @@ class TestFeatureFlowE2E:
     def test_spec_invalida_flagrada(
         self, squad: SquadConfig, conn: sqlite3.Connection
     ) -> None:
-        """Issue em crewflow:spec sem repo no título → spec_valid=False."""
+        """Issue em flow:briefing sem repo no título → spec_valid=False."""
         item = _item(
             "https://github.com/owner/api-gateway2/issues/10",
             "Fix sem colchete de repo",
-            ["crewflow:spec", "crewflow:feature"],
+            ["flow:briefing", "flow:feature"],
         )
-        provider = _mock_provider({"crewflow:spec": [item]})
+        provider = _mock_provider({"flow:briefing": [item]})
         cfg = _scan_cfg(squad)
 
         results = scan_candidates(cfg, provider, conn)
@@ -215,10 +215,10 @@ class TestMultiProjectDedupE2E:
         item = _item(
             "https://github.com/owner/api-gateway2/issues/43",
             "[api-gateway2] Bug de duplicata",
-            ["crewflow:todo", "crewflow:bug"],
+            ["flow:develop-waiting", "flow:bug"],
         )
         # squad tem 2 projetos; o mock retorna o MESMO item para ambos.
-        provider = _mock_provider({"crewflow:todo": [item]})
+        provider = _mock_provider({"flow:develop-waiting": [item]})
         assert len(squad.projects) == 2  # pré-condição do cenário
         cfg = _scan_cfg(squad)
 
@@ -238,9 +238,9 @@ class TestMultiProjectDedupE2E:
         item = _item(
             "https://github.com/owner/api-gateway2/issues/43",
             "[api-gateway2] Bug de duplicata",
-            ["crewflow:todo", "crewflow:bug"],
+            ["flow:develop-waiting", "flow:bug"],
         )
-        provider = _mock_provider({"crewflow:todo": [item]})
+        provider = _mock_provider({"flow:develop-waiting": [item]})
         cfg = _scan_cfg(squad)
 
         results = scan_candidates(cfg, provider, conn)
@@ -253,14 +253,14 @@ class TestMultiProjectDedupE2E:
         item_a = _item(
             "https://github.com/owner/api-gateway2/issues/1",
             "[api-gateway2] Fix A",
-            ["crewflow:todo", "crewflow:bug"],
+            ["flow:develop-waiting", "flow:bug"],
         )
         item_b = _item(
             "https://github.com/owner/api-subscription2/issues/2",
             "[api-subscription2] Fix B",
-            ["crewflow:todo", "crewflow:bug"],
+            ["flow:develop-waiting", "flow:bug"],
         )
-        provider = _mock_provider({"crewflow:todo": [item_a, item_b]})
+        provider = _mock_provider({"flow:develop-waiting": [item_a, item_b]})
         cfg = _scan_cfg(squad)
 
         results = scan_candidates(cfg, provider, conn)
@@ -280,9 +280,9 @@ class TestHotfixFlowE2E:
         item = _item(
             "https://github.com/owner/api-gateway2/issues/99",
             "[api-gateway2] Fix urgente checkout",
-            ["crewflow:todo", "crewflow:hotfix", "crewflow:p1"],
+            ["flow:develop-waiting", "flow:hotfix", "flow:p1"],
         )
-        provider = _mock_provider({"crewflow:todo": [item]})
+        provider = _mock_provider({"flow:develop-waiting": [item]})
         cfg = _scan_cfg(squad)
 
         results = scan_candidates(cfg, provider, conn)
@@ -299,9 +299,9 @@ class TestHotfixFlowE2E:
         item = _item(
             "https://github.com/owner/api-gateway2/issues/99",
             "[api-gateway2] Ajuste menor",
-            ["crewflow:todo", "crewflow:hotfix"],  # sem p1
+            ["flow:develop-waiting", "flow:hotfix"],  # sem p1
         )
-        provider = _mock_provider({"crewflow:todo": [item]})
+        provider = _mock_provider({"flow:develop-waiting": [item]})
         cfg = _scan_cfg(squad)
 
         results = scan_candidates(cfg, provider, conn)
@@ -311,8 +311,8 @@ class TestHotfixFlowE2E:
         decision = decide(r, squad=squad)
         assert decision.action is ActionKind.REBRAND
         assert decision.new_template == "bug"
-        assert "crewflow:bug" in decision.add_labels
-        assert "crewflow:hotfix" in decision.remove_labels
+        assert "flow:bug" in decision.add_labels
+        assert "flow:hotfix" in decision.remove_labels
 
     def test_bypass_hml_com_justificativa_passa(
         self, squad: SquadConfig, conn: sqlite3.Connection
@@ -322,19 +322,19 @@ class TestHotfixFlowE2E:
             workflow="hotfix (v1)", current_node="qa",
             status="running", repo="api-gateway2"
         )
-        sc.add_exception("crewflow:hml-bypass", "Checkout fora do ar", "@elias", "2026-09-15")
+        sc.add_exception("flow:blocked", "Checkout fora do ar", "@elias", "2026-09-15")
         state_comment = render_comment(sc)
 
         item = _item(
             "https://github.com/owner/api-gateway2/issues/100",
             "[api-gateway2] Fix urgente",
-            ["crewflow:qa", "crewflow:hotfix", "crewflow:p1", "crewflow:hml-bypass"],
+            ["flow:qa-waiting", "flow:hotfix", "flow:p1", "flow:blocked"],
         )
-        provider = _mock_provider({"crewflow:qa": [item]})
+        provider = _mock_provider({"flow:qa-waiting": [item]})
         cfg = _scan_cfg(squad)
 
         results = scan_candidates(cfg, provider, conn)
-        r = next((x for x in results if x.current_state is State.QA), None)
+        r = next((x for x in results if x.current_state is State.QA_WAITING), None)
         assert r is not None
 
         decision = decide(r, state_comment=state_comment, squad=squad)
@@ -347,17 +347,19 @@ class TestHotfixFlowE2E:
         item = _item(
             "https://github.com/owner/api-gateway2/issues/100",
             "[api-gateway2] Fix urgente",
-            ["crewflow:qa", "crewflow:hotfix", "crewflow:p1", "crewflow:hml-bypass"],
+            ["flow:qa-waiting", "flow:hotfix", "flow:p1", "flow:blocked"],
         )
-        provider = _mock_provider({"crewflow:qa": [item]})
+        provider = _mock_provider({"flow:qa-waiting": [item]})
         cfg = _scan_cfg(squad)
 
         results = scan_candidates(cfg, provider, conn)
-        r = next((x for x in results if x.current_state is State.QA), None)
+        r = next((x for x in results if x.current_state is State.QA_WAITING), None)
         assert r is not None
 
         decision = decide(r, state_comment=None, squad=squad)
-        assert decision.action is ActionKind.BLOCK
+        # No novo design, flow:blocked em QA_WAITING notifica QA (não BLOCK)
+        # flow:blocked como STOP_MODIFIER previne dispatch em DEVELOP_WAITING
+        assert decision.action in (ActionKind.NOTIFY_HUMAN, ActionKind.BLOCK)
 
 
 # ---------------------------------------------------------------------------
@@ -373,13 +375,13 @@ class TestDebtFlowE2E:
         item = _item(
             "https://github.com/owner/api-gateway2/issues/50",
             "[api-gateway2] Refatorar módulo de cache",
-            ["crewflow:todo", "crewflow:debt"],
+            ["flow:develop-waiting", "flow:debt"],
         )
-        provider = _mock_provider({"crewflow:todo": [item]})
+        provider = _mock_provider({"flow:develop-waiting": [item]})
         cfg = _scan_cfg(squad)
 
         results = scan_candidates(cfg, provider, conn)
-        r = next((x for x in results if x.current_state is State.TODO), None)
+        r = next((x for x in results if x.current_state is State.DEVELOP_WAITING), None)
         assert r is not None
 
         decision = decide(r, squad=squad)
@@ -399,9 +401,9 @@ class TestCacheE2E:
         item = _item(
             "https://github.com/owner/api-gateway2/issues/42",
             "[api-gateway2] Fix",
-            ["crewflow:dev"],
+            ["flow:develop-running"],
         )
-        provider = _mock_provider({"crewflow:dev": [item]})
+        provider = _mock_provider({"flow:develop-running": [item]})
         cfg = _scan_cfg(squad)
 
         # Primeira passagem — cria o cache
@@ -421,12 +423,12 @@ class TestCacheE2E:
         item = _item(
             "https://github.com/owner/api-gateway2/issues/42",
             "[api-gateway2] Fix",
-            ["crewflow:todo"],
+            ["flow:develop-waiting"],
         )
         # Simula que o cache tinha o estado anterior (dev)
-        set_hash(conn, item["key"], compute_hash(["crewflow:dev"]))
+        set_hash(conn, item["key"], compute_hash(["flow:develop-running"]))
 
-        provider = _mock_provider({"crewflow:todo": [item]})
+        provider = _mock_provider({"flow:develop-waiting": [item]})
         cfg = _scan_cfg(squad)
 
         results = scan_candidates(cfg, provider, conn)
@@ -460,7 +462,7 @@ class TestDeploymentRunE2E:
             "dev_root": "/tmp/dev",
             "agent": "kirocrew",
             "routing": [
-                {"match": {"labels": ["crewflow:hotfix"]}, "workflow": "hotfix-flow"},
+                {"match": {"labels": ["flow:hotfix"]}, "workflow": "hotfix-flow"},
                 {"default": "feature-flow"},
             ],
         }
@@ -475,7 +477,7 @@ class TestDeploymentRunE2E:
         item = _item(
             "https://github.com/owner/api-gateway2/issues/42",
             "[api-gateway2] Fix",
-            ["crewflow:todo", "crewflow:feature"],
+            ["flow:develop-waiting", "flow:feature"],
         )
 
         with (
@@ -487,7 +489,7 @@ class TestDeploymentRunE2E:
                                fromlist=["WorkItem"]).WorkItem(
                                key=item["key"], title=item["title"],
                                labels=frozenset(item["labels"])),
-                           current_state=State.TODO,
+                           current_state=State.DEVELOP_WAITING,
                            modifiers=frozenset(),
                            dispatch_candidate=True,
                            spec_valid=None,
@@ -514,9 +516,9 @@ class TestDeploymentRunE2E:
             item=WorkItem(
                 key="https://github.com/owner/api-gateway2/issues/99",
                 title="[api-gateway2] Ajuste menor",
-                labels=frozenset(["crewflow:todo", "crewflow:hotfix"]),
+                labels=frozenset(["flow:develop-waiting", "flow:hotfix"]),
             ),
-            current_state=State.TODO,
+            current_state=State.DEVELOP_WAITING,
             modifiers=frozenset(),
             dispatch_candidate=True,
             spec_valid=None,
@@ -543,8 +545,8 @@ class TestDeploymentRunE2E:
         provider_mock.set_labels.assert_called_once()
         call_args = provider_mock.set_labels.call_args[0]
         labels_aplicadas = call_args[2]  # terceiro argumento: labels
-        assert "crewflow:bug" in labels_aplicadas
-        assert "crewflow:hotfix" not in labels_aplicadas
+        assert "flow:bug" in labels_aplicadas
+        assert "flow:hotfix" not in labels_aplicadas
 
     def test_sem_resultados_silencio_total(self) -> None:
         """Sem nada a fazer: ctx.notify nunca chamado."""

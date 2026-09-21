@@ -28,7 +28,6 @@ Execute UMA vez, do início ao fim, e PARE:
 2. SINALIZE O INÍCIO IMEDIATAMENTE (após confirmar que a issue está OPEN):
    - Comente na issue que você está iniciando a resolução de conflito:
      `gh issue comment {{issue_number}} --repo {{repo}} --body "🔵 kiro-dev iniciando resolução de conflito. Analisando diff e base."`
-   A transição de label já foi feita pelo motor (add crewflow:running).
    Este comentário torna o trabalho visível de imediato.
 3. CONTEXTO — leia antes de agir:
    - `.kiro/steering/*.md` (steerings do projeto)
@@ -54,16 +53,16 @@ Execute UMA vez, do início ao fim, e PARE:
    Se o rebase falhar irrecuperavelmente, tente merge da base:
    `git merge origin/{{base_branch}}` e resolva os conflitos.
 6. Valide que o código ainda funciona após o rebase (build/testes relevantes).
-   Se falhar e não conseguir corrigir, pare em `crewflow:blocked`.
+   Se falhar e não conseguir corrigir, pare em `flow:blocked`.
 7. Faça push na branch existente (force-with-lease é seguro após rebase):
    `git push origin feat/issue-{{issue_number}} --force-with-lease`
-   Isso invalida `crewflow:reviewed` automaticamente (novo SHA).
+   Isso invalida `flow:reviewed` automaticamente (novo SHA).
 8. Verifique que o PR voltou para estado mergeable:
    `gh pr view {{pr_number}} --repo {{repo}} --json mergeable,mergeStateStatus`
-9. Troque as labels: remove `crewflow:conflito` e `crewflow:running`, mantém `crewflow:review`:
-   `gh issue edit {{issue_number}} --repo {{repo}} --remove-label "crewflow:conflito,crewflow:running"`
+9. Troque as labels: remove `flow:merge-conflict`, mantém `flow:review-waiting`:
+   `gh issue edit {{issue_number}} --repo {{repo}} --remove-label "flow:merge-conflict"`
 10. Comente na issue o que foi feito:
-   `gh issue comment {{issue_number}} --repo {{repo}} --body "Conflito resolvido via rebase em {{base_branch}}. Branch atualizada em {{worktree_path}}."`
+   `gh issue comment {{issue_number}} --repo {{repo}} --body "Conflito resolvido via rebase em {{base_branch}}. Branch atualizada."`
 11. Ao terminar: {{notify_step}}
 
    e ENCERRE.
@@ -76,6 +75,6 @@ Execute UMA vez, do início ao fim, e PARE:
 - NUNCA mergeie. NUNCA faça deploy.
 - NUNCA abra PR novo — use a branch `feat/issue-{{issue_number}}` existente.
 - Resolva APENAS o conflito de merge/rebase. Não adicione features ou refatorações.
-- Se bloquear, marque `crewflow:blocked`, avise, e pare.
+- Se bloquear, marque `flow:blocked`, avise, e pare.
 
 {{prompt_extra}}

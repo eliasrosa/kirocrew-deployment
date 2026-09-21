@@ -30,19 +30,19 @@ def tmp_conn() -> sqlite3.Connection:
 
 class TestComputeHash:
     def test_hash_deterministico(self) -> None:
-        h1 = compute_hash(["crewflow:todo", "phase-1"])
-        h2 = compute_hash(["phase-1", "crewflow:todo"])
+        h1 = compute_hash(["flow:develop-waiting", "phase-1"])
+        h2 = compute_hash(["phase-1", "flow:develop-waiting"])
         assert h1 == h2
 
     def test_hash_difere_para_labels_diferentes(self) -> None:
-        assert compute_hash(["crewflow:todo"]) != compute_hash(["crewflow:dev"])
+        assert compute_hash(["flow:develop-waiting"]) != compute_hash(["flow:develop-running"])
 
     def test_hash_lista_vazia(self) -> None:
         h = compute_hash([])
         assert isinstance(h, str) and len(h) == 16
 
     def test_hash_tem_16_chars(self) -> None:
-        assert len(compute_hash(["crewflow:todo"])) == 16
+        assert len(compute_hash(["flow:develop-waiting"])) == 16
 
 
 class TestCacheOperations:

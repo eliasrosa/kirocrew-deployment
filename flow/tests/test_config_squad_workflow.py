@@ -50,9 +50,9 @@ workflow_params:
   review_position: before_qa
   allow_hml_bypass: true
 routing:
-  - match: {labels: ["crewflow:hotfix"]}
+  - match: {labels: ["flow:hotfix"]}
     workflow: hotfix-flow
-  - match: {labels: ["crewflow:bug"]}
+  - match: {labels: ["flow:bug"]}
     workflow: bug-flow
   - default: feature-flow
 """
@@ -75,11 +75,11 @@ workflow_params:
 routing:
   - match:
       labels:
-        - crewflow:hotfix
+        - flow:hotfix
     workflow: hotfix-flow
   - match:
       labels:
-        - crewflow:bug
+        - flow:bug
     workflow: bug-flow
   - default: feature-flow
 """
@@ -124,7 +124,7 @@ class TestParseSquad:
     def test_routing_parseado(self) -> None:
         d = _minimal_squad_dict()
         d["routing"] = [
-            {"match": {"labels": ["crewflow:hotfix"]}, "workflow": "hotfix-flow"},
+            {"match": {"labels": ["flow:hotfix"]}, "workflow": "hotfix-flow"},
             {"default": "feature-flow"},
         ]
         sc = _parse_squad(d)
@@ -157,24 +157,24 @@ class TestResolveWorkflow:
     def _squad(self) -> SquadConfig:
         d = _minimal_squad_dict()
         d["routing"] = [
-            {"match": {"labels": ["crewflow:hotfix"]}, "workflow": "hotfix-flow"},
-            {"match": {"labels": ["crewflow:bug"]}, "workflow": "bug-flow"},
-            {"match": {"labels": ["crewflow:debt"]}, "workflow": "debt-flow"},
+            {"match": {"labels": ["flow:hotfix"]}, "workflow": "hotfix-flow"},
+            {"match": {"labels": ["flow:bug"]}, "workflow": "bug-flow"},
+            {"match": {"labels": ["flow:debt"]}, "workflow": "debt-flow"},
             {"default": "feature-flow"},
         ]
         return _parse_squad(d)
 
     def test_hotfix(self) -> None:
         s = self._squad()
-        assert s.resolve_workflow(frozenset({"crewflow:hotfix", "crewflow:p1"})) == "hotfix-flow"
+        assert s.resolve_workflow(frozenset({"flow:hotfix", "flow:p1"})) == "hotfix-flow"
 
     def test_bug(self) -> None:
         s = self._squad()
-        assert s.resolve_workflow(frozenset({"crewflow:bug"})) == "bug-flow"
+        assert s.resolve_workflow(frozenset({"flow:bug"})) == "bug-flow"
 
     def test_default(self) -> None:
         s = self._squad()
-        assert s.resolve_workflow(frozenset({"crewflow:feature"})) == "feature-flow"
+        assert s.resolve_workflow(frozenset({"flow:feature"})) == "feature-flow"
 
     def test_sem_labels_usa_default(self) -> None:
         s = self._squad()
@@ -183,7 +183,7 @@ class TestResolveWorkflow:
     def test_hotfix_tem_prioridade_sobre_bug(self) -> None:
         s = self._squad()
         # hotfix vem antes de bug nas regras
-        assert s.resolve_workflow(frozenset({"crewflow:hotfix", "crewflow:bug"})) == "hotfix-flow"
+        assert s.resolve_workflow(frozenset({"flow:hotfix", "flow:bug"})) == "hotfix-flow"
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +228,7 @@ class TestMiniYaml:
     def test_routing_inline(self) -> None:
         yaml = (
             "routing:\n"
-            '  - match: {labels: ["crewflow:hotfix"]}\n'
+            '  - match: {labels: ["flow:hotfix"]}\n'
             "    workflow: hotfix-flow\n"
             "  - default: feature-flow\n"
         )
@@ -237,7 +237,7 @@ class TestMiniYaml:
             result = _mini_yaml(p)
             routing = result["routing"]
             assert len(routing) == 2
-            assert routing[0]["match"]["labels"] == ["crewflow:hotfix"]
+            assert routing[0]["match"]["labels"] == ["flow:hotfix"]
             assert routing[0]["workflow"] == "hotfix-flow"
             assert routing[1]["default"] == "feature-flow"
         finally:
@@ -248,11 +248,11 @@ class TestMiniYaml:
             "routing:\n"
             "  - match:\n"
             "      labels:\n"
-            "        - crewflow:hotfix\n"
+            "        - flow:hotfix\n"
             "    workflow: hotfix-flow\n"
             "  - match:\n"
             "      labels:\n"
-            "        - crewflow:bug\n"
+            "        - flow:bug\n"
             "    workflow: bug-flow\n"
             "  - default: feature-flow\n"
         )
@@ -261,9 +261,9 @@ class TestMiniYaml:
             result = _mini_yaml(p)
             routing = result["routing"]
             assert len(routing) == 3
-            assert routing[0]["match"]["labels"] == ["crewflow:hotfix"]
+            assert routing[0]["match"]["labels"] == ["flow:hotfix"]
             assert routing[0]["workflow"] == "hotfix-flow"
-            assert routing[1]["match"]["labels"] == ["crewflow:bug"]
+            assert routing[1]["match"]["labels"] == ["flow:bug"]
             assert routing[1]["workflow"] == "bug-flow"
             assert routing[2]["default"] == "feature-flow"
         finally:
@@ -274,16 +274,16 @@ class TestMiniYaml:
             "routing:\n"
             "  - match:\n"
             "      labels:\n"
-            "        - crewflow:bug\n"
-            "        - crewflow:p1\n"
+            "        - flow:bug\n"
+            "        - flow:p1\n"
             "    workflow: bug-flow\n"
         )
         p = self._write(yaml)
         try:
             result = _mini_yaml(p)
             labels = result["routing"][0]["match"]["labels"]
-            assert "crewflow:bug" in labels
-            assert "crewflow:p1" in labels
+            assert "flow:bug" in labels
+            assert "flow:p1" in labels
         finally:
             p.unlink()
 
@@ -325,9 +325,9 @@ class TestLoadSquad:
             assert sc.id == "my-squad"
             assert len(sc.routing) == 2
             assert sc.routing[0].workflow == "hotfix-flow"
-            assert "crewflow:hotfix" in sc.routing[0].labels
+            assert "flow:hotfix" in sc.routing[0].labels
             assert sc.routing[1].workflow == "bug-flow"
-            assert "crewflow:bug" in sc.routing[1].labels
+            assert "flow:bug" in sc.routing[1].labels
             assert sc.default_workflow == "feature-flow"
         finally:
             Path(tmp).unlink()
@@ -373,11 +373,11 @@ workflow_params:
 routing:
   - match:
       labels:
-        - crewflow:hotfix
+        - flow:hotfix
     workflow: hotfix-flow
   - match:
       labels:
-        - crewflow:bug
+        - flow:bug
     workflow: bug-flow
   - default: feature-flow
 """
@@ -423,9 +423,9 @@ class TestMiniYamlFallback:
         assert len(sc.routing) == 2
         assert sc.default_workflow == "feature-flow"
         # resolve_workflow usa as regras corretamente.
-        assert sc.resolve_workflow(frozenset({"crewflow:hotfix"})) == "hotfix-flow"
-        assert sc.resolve_workflow(frozenset({"crewflow:bug"})) == "bug-flow"
-        assert sc.resolve_workflow(frozenset({"crewflow:feature"})) == "feature-flow"
+        assert sc.resolve_workflow(frozenset({"flow:hotfix"})) == "hotfix-flow"
+        assert sc.resolve_workflow(frozenset({"flow:bug"})) == "bug-flow"
+        assert sc.resolve_workflow(frozenset({"flow:feature"})) == "feature-flow"
 
     def test_multiline_debt_routing_resolve(self, _no_pyyaml: None) -> None:
         # Exercita o template `debt` via routing multi-linha (issue de teste do motor).
@@ -437,7 +437,7 @@ class TestMiniYamlFallback:
             "routing:\n"
             "  - match:\n"
             "      labels:\n"
-            "        - crewflow:debt\n"
+            "        - flow:debt\n"
             "    workflow: debt-flow\n"
             "  - default: feature-flow\n"
         )
@@ -446,7 +446,7 @@ class TestMiniYamlFallback:
             sc = load_squad(tmp)
         finally:
             Path(tmp).unlink()
-        assert sc.resolve_workflow(frozenset({"crewflow:debt"})) == "debt-flow"
+        assert sc.resolve_workflow(frozenset({"flow:debt"})) == "debt-flow"
 
     def test_inline_routing_ainda_funciona_via_fallback(self, _no_pyyaml: None) -> None:
         # A forma inline `- match: {labels: [...]}` não pode regredir.
@@ -456,15 +456,15 @@ class TestMiniYamlFallback:
         finally:
             Path(tmp).unlink()
         assert len(sc.routing) == 2
-        assert sc.resolve_workflow(frozenset({"crewflow:hotfix"})) == "hotfix-flow"
-        assert sc.resolve_workflow(frozenset({"crewflow:bug"})) == "bug-flow"
+        assert sc.resolve_workflow(frozenset({"flow:hotfix"})) == "hotfix-flow"
+        assert sc.resolve_workflow(frozenset({"flow:bug"})) == "bug-flow"
 
     def test_fallback_estrutura_igual_ao_pyyaml(self, _no_pyyaml: None) -> None:
         # A estrutura crua produzida pelo fallback casa com a do example.yaml.
         example = Path(__file__).parent.parent.parent / "squads" / "example.yaml"
         raw = _mini_yaml(example)
         assert raw["routing"][0] == {
-            "match": {"labels": ["crewflow:hotfix"]},
+            "match": {"labels": ["flow:hotfix"]},
             "workflow": "hotfix-flow",
         }
         assert raw["routing"][-1] == {"default": "feature-flow"}
@@ -513,7 +513,7 @@ class TestMiniYamlIndentationRegressions:
             "routing:\n"
             "- match:\n"
             "    labels:\n"
-            "    - crewflow:bug\n"
+            "    - flow:bug\n"
             "  workflow: bug-flow\n"
             "- default: feature-flow\n"
         )
@@ -528,7 +528,7 @@ class TestMiniYamlIndentationRegressions:
             "routing:\n"
             "  - match:\n"
             "        labels:\n"
-            "          - crewflow:bug\n"
+            "          - flow:bug\n"
             "    workflow: bug-flow\n"
         )
         assert self._mini(text) == yaml.safe_load(text)
@@ -540,7 +540,7 @@ class TestMiniYamlIndentationRegressions:
             "routing:\n"
             "  - match:\n"
             "     labels:\n"
-            "      - crewflow:bug\n"
+            "      - flow:bug\n"
             "    workflow: bug-flow\n"
         )
         assert self._mini(text) == yaml.safe_load(text)

@@ -34,8 +34,8 @@ from flow.scan.cache import compute_hash, get_hash, set_hash
 # Estados que o executor precisa monitorar ativamente em todo ciclo, mesmo sem
 # mudança de labels.  O cache filtra issues inativas com zero custo, mas issues
 # nestes estados precisam aparecer no scan para que o motor possa tomar ação
-# (ex: redisparar o reviewer em REVIEW, avisar QA em QA).
-ALWAYS_INCLUDE_STATES: frozenset[State] = frozenset({State.REVIEW, State.QA})
+# (ex: redisparar o reviewer em REVIEW_WAITING, avisar QA em QA_WAITING).
+ALWAYS_INCLUDE_STATES: frozenset[State] = frozenset({State.REVIEW_WAITING, State.QA_WAITING})
 
 logger = logging.getLogger(__name__)
 
@@ -319,9 +319,9 @@ def _evaluate_item(
     # Verifica se é candidato a dispatch
     dispatch_candidate = is_dispatchable(current_state, modifiers)
 
-    # Validação zero-token do GATE 1: só para itens em crewflow:spec
+    # Validação zero-token do GATE 1: só para itens em flow:briefing
     spec_valid: bool | None = None
-    if current_state is State.SPEC:
+    if current_state is State.BRIEFING:
         spec_result = gates.can_leave_spec(item, squad)
         spec_valid = spec_result.ok
         if not spec_valid:
@@ -361,12 +361,12 @@ def _build_reason(
 
     if dispatch_candidate:
         parts.append("CANDIDATO A DISPATCH")
-    elif current_state == State.SPEC and spec_valid is False:
-        parts.append("SPEC SEM REPO — flagrada para correção humana")
+    elif current_state == State.BRIEFING and spec_valid is False:
+        parts.append("BRIEFING SEM REPO — flagrada para correção humana")
     elif Modifier.BLOCKED in modifiers:
-        parts.append(f"bloqueada em {current_state} (crewflow:blocked)")
-    elif Modifier.RUNNING in modifiers:
-        parts.append(f"em andamento em {current_state} (crewflow:running)")
+        parts.append(f"bloqueada em {current_state} (flow:blocked)")
+    elif current_state is not None and current_state.value == "flow:develop-running":
+        parts.append(f"em andamento em {current_state} (flow:develop-running)")
     else:
         parts.append(f"estado: {current_state}")
 

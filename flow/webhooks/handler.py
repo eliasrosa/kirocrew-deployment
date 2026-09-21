@@ -37,7 +37,7 @@ from flow.ports.issue_provider import ProviderError
 
 logger = logging.getLogger(__name__)
 
-LABEL_REVIEWED = "crewflow:reviewed"
+LABEL_REVIEWED = "flow:reviewed"
 
 
 # ---------------------------------------------------------------------------

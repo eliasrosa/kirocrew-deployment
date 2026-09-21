@@ -447,12 +447,20 @@ def _parse_approval_row(line: str) -> ApprovalEntry | None:
 # ---------------------------------------------------------------------------
 
 def extract_bypass_justification(comment_body: str | None) -> str | None:
-    """Atalho: retorna a justificativa do hml-bypass do comentário, ou None."""
+    """Atalho: retorna a justificativa de bypass/blocked do comentário, ou None.
+
+    Suporta tanto o namespace novo `flow:blocked` quanto o legado `crewflow:hml-bypass`
+    durante a coexistência.
+    """
     if not comment_body:
         return None
     sc = parse(comment_body)
     if sc is None:
         return None
+    # Namespace novo primeiro, depois legado
+    result = sc.get_justification("flow:blocked")
+    if result is not None:
+        return result
     return sc.get_justification("crewflow:hml-bypass")
 
 

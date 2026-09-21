@@ -164,7 +164,7 @@ class TestTriageHotfix:
         item = WorkItem(
             key="VGAT-200",
             title="[api-gateway2] Fix urgente",
-            labels=frozenset({"crewflow:hotfix", "crewflow:p1"}),
+            labels=frozenset({"flow:hotfix", "flow:p1"}),
         )
         verdict = triage_hotfix(item)
         assert verdict.result
@@ -175,14 +175,14 @@ class TestTriageHotfix:
         item = WorkItem(
             key="VGAT-201",
             title="[api-gateway2] Ajuste menor",
-            labels=frozenset({"crewflow:hotfix"}),
+            labels=frozenset({"flow:hotfix"}),
         )
         verdict = triage_hotfix(item)
         assert verdict.result.failed
         assert verdict.switch is TemplateSwitch.BUG
 
     def test_verdict_e_gateVerdict(self) -> None:
-        item = WorkItem(key="X", title="[api-gateway2] t", labels=frozenset({"crewflow:p1"}))
+        item = WorkItem(key="X", title="[api-gateway2] t", labels=frozenset({"flow:p1"}))
         assert isinstance(triage_hotfix(item), GateVerdict)
 
 
@@ -242,7 +242,7 @@ class TestValidateHmlBypass:
         item = WorkItem(
             key="VGAT-500",
             title="[api-gateway2] Fix",
-            labels=frozenset({"crewflow:hotfix", "crewflow:p1"}),
+            labels=frozenset({"flow:hotfix", "flow:p1"}),
         )
         result = validate_hml_bypass(item, justification=None)
         assert result
@@ -251,7 +251,7 @@ class TestValidateHmlBypass:
         item = WorkItem(
             key="VGAT-500",
             title="[api-gateway2] Fix urgente",
-            labels=frozenset({"crewflow:hotfix", "crewflow:hml-bypass"}),
+            labels=frozenset({"flow:hotfix", "flow:blocked"}),
         )
         result = validate_hml_bypass(item, justification="Checkout fora do ar, perda de receita")
         assert result
@@ -261,7 +261,7 @@ class TestValidateHmlBypass:
         item = WorkItem(
             key="VGAT-500",
             title="[api-gateway2] Fix urgente",
-            labels=frozenset({"crewflow:hotfix", "crewflow:hml-bypass"}),
+            labels=frozenset({"flow:hotfix", "flow:blocked"}),
         )
         result = validate_hml_bypass(item, justification=None)
         assert result.failed
@@ -271,7 +271,7 @@ class TestValidateHmlBypass:
         item = WorkItem(
             key="VGAT-501",
             title="[api-gateway2] Fix",
-            labels=frozenset({"crewflow:hml-bypass"}),
+            labels=frozenset({"flow:blocked"}),
         )
         result = validate_hml_bypass(item, justification="   ")  # só espaços
         assert result.failed
@@ -280,7 +280,7 @@ class TestValidateHmlBypass:
         item = WorkItem(
             key="VGAT-502",
             title="[api-gateway2] Fix",
-            labels=frozenset({"crewflow:hml-bypass"}),
+            labels=frozenset({"flow:blocked"}),
         )
         motivo = "Sistema de pagamento fora do ar"
         result = validate_hml_bypass(item, justification=motivo)

@@ -181,14 +181,14 @@ class TestHandleIssues:
 
     def test_returns_all_column_keys(self) -> None:
         body = self._run_with_mock_loader(_empty_columns())
-        for key in ("spec", "ready", "todo", "dev", "review", "review_ok", "reviewed", "done", "blocked"):
+        for key in ("briefing", "planning_specs", "develop_waiting", "develop_running", "review_waiting", "review_approved", "done", "blocked"):
             assert key in body["columns"], f"coluna '{key}' ausente no retorno"
 
     def test_returns_issues_in_correct_column(self) -> None:
         cols = _empty_columns()
         cols["todo"] = [
             {"number": 42, "title": "Test", "repo": "owner/repo", "url": "", "age_min": 10,
-             "labels": ["crewflow:todo"], "blocked": False, "running": False}
+             "labels": ["flow:develop-waiting"], "blocked": False, "running": False}
         ]
         body = self._run_with_mock_loader(cols)
         assert len(body["columns"]["todo"]) == 1
@@ -204,7 +204,7 @@ class TestHandleIssues:
             response = loop.run_until_complete(handle_issues(_make_request()))
         body = _parse_body(response)
         assert "columns" in body
-        for key in ("spec", "ready", "todo", "dev", "review", "review_ok", "reviewed", "done", "blocked"):
+        for key in ("briefing", "planning_specs", "develop_waiting", "develop_running", "review_waiting", "review_approved", "done", "blocked"):
             assert body["columns"][key] == []
 
     def test_status_500_on_error(self) -> None:
@@ -326,19 +326,19 @@ class TestAgeMinutes:
 class TestStateToColumn:
     def test_todo_maps_to_todo(self) -> None:
         from flow.domain.state import State
-        assert _state_to_column(State.TODO) == "todo"
+        assert _state_to_column(State.DEVELOP_WAITING) == "develop_waiting"
 
     def test_dev_maps_to_dev(self) -> None:
         from flow.domain.state import State
-        assert _state_to_column(State.DEV) == "dev"
+        assert _state_to_column(State.DEVELOP_RUNNING) == "develop_running"
 
     def test_review_maps_to_review(self) -> None:
         from flow.domain.state import State
-        assert _state_to_column(State.REVIEW) == "review"
+        assert _state_to_column(State.REVIEW_WAITING) == "review_waiting"
 
     def test_qa_maps_to_reviewed(self) -> None:
         from flow.domain.state import State
-        assert _state_to_column(State.QA) == "review_ok"
+        assert _state_to_column(State.QA_WAITING) == "qa_waiting"
 
     def test_done_maps_to_done(self) -> None:
         from flow.domain.state import State
@@ -346,11 +346,11 @@ class TestStateToColumn:
 
     def test_spec_maps_to_spec(self) -> None:
         from flow.domain.state import State
-        assert _state_to_column(State.SPEC) == "spec"
+        assert _state_to_column(State.BRIEFING) == "briefing"
 
     def test_ready_maps_to_ready(self) -> None:
         from flow.domain.state import State
-        assert _state_to_column(State.READY) == "ready"
+        assert _state_to_column(State.PLANNING_SPECS) == "planning_specs"
 
 
 class TestRepoFromKey:
@@ -367,7 +367,7 @@ class TestRepoFromKey:
 class TestEmptyColumns:
     def test_has_all_required_keys(self) -> None:
         cols = _empty_columns()
-        for key in ("spec", "ready", "todo", "dev", "review", "review_ok", "reviewed", "done", "blocked"):
+        for key in ("briefing", "planning_specs", "develop_waiting", "develop_running", "review_waiting", "review_approved", "done", "blocked"):
             assert key in cols
 
     def test_all_values_are_empty_lists(self) -> None:

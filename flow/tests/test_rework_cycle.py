@@ -30,10 +30,10 @@ def _result(
     key: str = "https://github.com/owner/repo/issues/1",
     title: str = "[repo] Fix",
     labels: list[str] | None = None,
-    state: State = State.REVIEW,
+    state: State = State.REVIEW_WAITING,
     modifiers: set[Modifier] | None = None,
 ) -> ScanResult:
-    lbl_set = frozenset(labels or ["crewflow:review", "crewflow:feature"])
+    lbl_set = frozenset(labels or ["flow:review-waiting", "flow:feature"])
     return ScanResult(
         item=WorkItem(key=key, title=title, labels=lbl_set),
         current_state=state,
@@ -137,43 +137,49 @@ class TestReviewIterations:
 
 class TestReworkCycle:
     def test_review_fail_despacha_rework(self) -> None:
-        """REVIEW + REVIEW_FAIL → DISPATCH_REWORK."""
+        """REVIEW_REFUSED → gate humano → NOTIFY_HUMAN TL (não redespacha automaticamente)."""
         r = _result(
-            labels=["crewflow:review-fail", "crewflow:feature"],
-            modifiers={Modifier.REVIEW_FAIL},
+            state=State.REVIEW_REFUSED,
+            labels=["flow:review-refused", "flow:feature"],
+            modifiers=None,
         )
         d = decide(r, state_comment=None)
-        assert d.action is ActionKind.DISPATCH_REWORK
+        assert d.action is ActionKind.NOTIFY_HUMAN
+        assert d.notify_role is HumanRole.TL
+        assert "gate humano" in d.reason
 
     def test_rework_adiciona_running_remove_review_fail(self) -> None:
-        """Ao despachar re-trabalho, adiciona running e remove review-fail."""
+        """Gate humano: não adiciona develop-running automaticamente — é responsabilidade do humano."""
         r = _result(
-            labels=["crewflow:review-fail", "crewflow:feature"],
-            modifiers={Modifier.REVIEW_FAIL},
+            state=State.REVIEW_REFUSED,
+            labels=["flow:review-refused", "flow:feature"],
+            modifiers=None,
         )
         d = decide(r, state_comment=None)
-        assert d.action is ActionKind.DISPATCH_REWORK
-        assert "crewflow:running" in d.add_labels
-        assert "crewflow:review-fail" in d.remove_labels
+        assert d.action is ActionKind.NOTIFY_HUMAN
+        # Gate humano — NÃO move automaticamente para develop-running
+        assert "flow:develop-running" not in d.add_labels
 
     def test_rework_registra_numero_de_iteracao(self) -> None:
-        """O reason do dispatch indica a iteração atual."""
+        """Quando iterations >= max, notifica TL com contagem."""
         state_comment = _state_comment_with_changes(iterations=1)
         r = _result(
-            labels=["crewflow:review-fail", "crewflow:feature"],
-            modifiers={Modifier.REVIEW_FAIL},
+            state=State.REVIEW_REFUSED,
+            labels=["flow:review-refused", "flow:feature"],
+            modifiers=None,
         )
         d = decide(r, state_comment=state_comment)
-        assert d.action is ActionKind.DISPATCH_REWORK
-        assert "iteração 2" in d.reason
+        # Abaixo do teto → notifica TL com gate humano
+        assert d.action is ActionKind.NOTIFY_HUMAN
 
     def test_teto_de_iteracoes_notifica_tl(self) -> None:
-        """Após atingir o teto, escala para NOTIFY_HUMAN TL em vez de despachar."""
+        """Após atingir o teto, escala para NOTIFY_HUMAN TL com mensagem de TETO."""
         # 3 iterações já feitas = teto atingido (default 3)
         state_comment = _state_comment_with_changes(iterations=3)
         r = _result(
-            labels=["crewflow:review-fail", "crewflow:feature"],
-            modifiers={Modifier.REVIEW_FAIL},
+            state=State.REVIEW_REFUSED,
+            labels=["flow:review-refused", "flow:feature"],
+            modifiers=None,
         )
         d = decide(r, state_comment=state_comment)
         assert d.action is ActionKind.NOTIFY_HUMAN
@@ -184,27 +190,29 @@ class TestReworkCycle:
         """max_review_iterations=1 faz escalar na segunda iteração."""
         state_comment = _state_comment_with_changes(iterations=1)
         r = _result(
-            labels=["crewflow:review-fail", "crewflow:feature"],
-            modifiers={Modifier.REVIEW_FAIL},
+            state=State.REVIEW_REFUSED,
+            labels=["flow:review-refused", "flow:feature"],
+            modifiers=None,
         )
         d = decide(r, state_comment=state_comment, max_review_iterations=1)
         assert d.action is ActionKind.NOTIFY_HUMAN
         assert d.notify_role is HumanRole.TL
 
     def test_review_fail_tem_prioridade_sobre_reviewed(self) -> None:
-        """REVIEW_FAIL é processado antes do lock REVIEWED."""
+        """REVIEW_REFUSED é processado como gate humano."""
         r = _result(
-            labels=["crewflow:review-fail", "crewflow:reviewed", "crewflow:feature"],
-            modifiers={Modifier.REVIEW_FAIL, Modifier.REVIEWED},
+            state=State.REVIEW_REFUSED,
+            labels=["flow:review-refused", "flow:reviewed", "flow:feature"],
+            modifiers={Modifier.REVIEWED},
         )
         d = decide(r, state_comment=None)
-        # REVIEW_FAIL deve ser processado primeiro (antes do lock REVIEWED)
-        assert d.action is ActionKind.DISPATCH_REWORK
+        # No novo design, REVIEW_REFUSED é sempre gate humano (NOTIFY_HUMAN)
+        assert d.action is ActionKind.NOTIFY_HUMAN
 
     def test_sem_review_fail_segue_fluxo_normal(self) -> None:
         """Sem REVIEW_FAIL, o fluxo normal (dispatch_reviewer) continua."""
         r = _result(
-            labels=["crewflow:review", "crewflow:feature"],
+            labels=["flow:review-waiting", "flow:feature"],
         )
         d = decide(r, state_comment=None)
         assert d.action is ActionKind.DISPATCH_REVIEWER
@@ -229,14 +237,14 @@ class TestNotifyHumanAddsReviewFail:
         """Reviewer reprovado com comentários: NOTIFY_HUMAN TL + add review-fail."""
         state_comment = self._make_review_result(["Falta teste", "Lógica errada"])
         r = _result(
-            labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
+            labels=["flow:review-waiting", "flow:reviewed", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
         d = decide(r, state_comment=state_comment)
         assert d.action is ActionKind.NOTIFY_HUMAN
         assert d.notify_role is HumanRole.TL
-        assert "crewflow:review-fail" in d.add_labels
-        assert "crewflow:reviewed" in d.remove_labels
+        assert "flow:review-refused" in d.add_labels
+        assert "flow:reviewed" in d.remove_labels
 
     def test_aprovado_sem_comentarios_nao_adiciona_review_fail(self) -> None:
         """Reviewer aprovado sem comentários: MERGE_PR (caminho feliz, sem review-fail)."""
@@ -245,12 +253,12 @@ class TestNotifyHumanAddsReviewFail:
         state_comment = render(sc)
 
         r = _result(
-            labels=["crewflow:review", "crewflow:reviewed", "crewflow:feature"],
+            labels=["flow:review-waiting", "flow:reviewed", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
         d = decide(r, state_comment=state_comment, auto_merge_on_approve=True)
         assert d.action is ActionKind.MERGE_PR
-        assert "crewflow:review-fail" not in d.add_labels
+        assert "flow:review-refused" not in d.add_labels
 
 
 # ---------------------------------------------------------------------------

@@ -46,18 +46,18 @@ class TestRender:
 
     def test_historico_renderizado(self) -> None:
         sc = _make_sc()
-        sc.add_transition("start", "crewflow:dev", "system", "2026-09-15 00:02")
+        sc.add_transition("start", "flow:develop-running", "system", "2026-09-15 00:02")
         text = render(sc)
         assert "### Histórico" in text
-        assert "start → crewflow:dev" in text
+        assert "start → flow:develop-running" in text
         assert "system" in text
 
     def test_excecoes_renderizadas(self) -> None:
         sc = _make_sc()
-        sc.add_exception("crewflow:hml-bypass", "Checkout fora do ar", "@elias", "2026-09-15")
+        sc.add_exception("flow:blocked", "Checkout fora do ar", "@elias", "2026-09-15")
         text = render(sc)
         assert "### Exceções" in text
-        assert "crewflow:hml-bypass" in text
+        assert "flow:blocked" in text
         assert "Checkout fora do ar" in text
 
     def test_sem_historico_nao_tem_secao(self) -> None:
@@ -101,26 +101,26 @@ class TestParse:
 
     def test_roundtrip_com_historico(self) -> None:
         sc = _make_sc()
-        sc.add_transition("start", "crewflow:dev", "system", "2026-09-15 00:02")
-        sc.add_transition("crewflow:dev", "crewflow:review", "kiro-dev", "2026-09-15 00:08")
+        sc.add_transition("start", "flow:develop-running", "system", "2026-09-15 00:02")
+        sc.add_transition("flow:develop-running", "flow:review-waiting", "kiro-dev", "2026-09-15 00:08")
         text = render(sc)
         parsed = parse(text)
         assert parsed is not None
         assert len(parsed.history) == 2
         assert parsed.history[0].from_state == "start"
-        assert parsed.history[0].to_state == "crewflow:dev"
+        assert parsed.history[0].to_state == "flow:develop-running"
         assert parsed.history[0].actor == "system"
-        assert parsed.history[1].from_state == "crewflow:dev"
+        assert parsed.history[1].from_state == "flow:develop-running"
 
     def test_roundtrip_com_excecao(self) -> None:
         sc = _make_sc()
-        sc.add_exception("crewflow:hml-bypass", "Checkout fora do ar", "@elias", "2026-09-15")
+        sc.add_exception("flow:blocked", "Checkout fora do ar", "@elias", "2026-09-15")
         text = render(sc)
         parsed = parse(text)
         assert parsed is not None
         assert len(parsed.exceptions) == 1
         exc = parsed.exceptions[0]
-        assert exc.label == "crewflow:hml-bypass"
+        assert exc.label == "flow:blocked"
         assert exc.justification == "Checkout fora do ar"
         assert exc.actor == "@elias"
 
@@ -151,12 +151,12 @@ class TestParse:
 class TestStateComment:
     def test_get_justification_presente(self) -> None:
         sc = _make_sc()
-        sc.add_exception("crewflow:hml-bypass", "Perda de receita", "@elias", "2026-09-15")
-        assert sc.get_justification("crewflow:hml-bypass") == "Perda de receita"
+        sc.add_exception("flow:blocked", "Perda de receita", "@elias", "2026-09-15")
+        assert sc.get_justification("flow:blocked") == "Perda de receita"
 
     def test_get_justification_ausente(self) -> None:
         sc = _make_sc()
-        assert sc.get_justification("crewflow:hml-bypass") is None
+        assert sc.get_justification("flow:blocked") is None
 
     def test_add_transition_usa_timestamp_automatico(self) -> None:
         sc = _make_sc()
@@ -183,7 +183,7 @@ class TestHelpers:
 
     def test_extract_bypass_encontra_justificativa(self) -> None:
         sc = _make_sc()
-        sc.add_exception("crewflow:hml-bypass", "Sistema fora do ar", "@elias", "2026-09-15")
+        sc.add_exception("flow:blocked", "Sistema fora do ar", "@elias", "2026-09-15")
         text = render(sc)
         j = extract_bypass_justification(text)
         assert j == "Sistema fora do ar"

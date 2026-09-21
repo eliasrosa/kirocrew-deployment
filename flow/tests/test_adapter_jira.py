@@ -61,8 +61,8 @@ class TestJiraNormalization:
         assert "/rest/api" not in item["url"]
 
     def test_labels_extraidas(self) -> None:
-        item = norm.normalize_item(_raw_issue(labels=["crewflow:todo", "phase-1"]))
-        assert "crewflow:todo" in item["labels"]
+        item = norm.normalize_item(_raw_issue(labels=["flow:develop-waiting", "phase-1"]))
+        assert "flow:develop-waiting" in item["labels"]
         assert "phase-1" in item["labels"]
 
     def test_subtarefa_tem_parent_key(self) -> None:
@@ -99,8 +99,8 @@ class TestJiraNormalization:
         assert item["state_comment"] is None
 
     def test_labels_hash_deterministico(self) -> None:
-        h1 = norm.labels_hash(["crewflow:todo", "phase-1"])
-        h2 = norm.labels_hash(["phase-1", "crewflow:todo"])
+        h1 = norm.labels_hash(["flow:develop-waiting", "phase-1"])
+        h2 = norm.labels_hash(["phase-1", "flow:develop-waiting"])
         assert h1 == h2
 
     def test_adf_to_plain_extrai_texto(self) -> None:
@@ -156,11 +156,11 @@ class TestJiraTransportErrors:
 
 class TestGetWorkItem:
     def test_retorna_item_normalizado(self) -> None:
-        raw = _raw_issue("VGAT-123", "[api-gateway2] Fix", ["crewflow:dev"])
+        raw = _raw_issue("VGAT-123", "[api-gateway2] Fix", ["flow:develop-running"])
         with mock.patch.object(jira_transport, "get_issue", return_value=raw):
             item = jira_client.get_work_item("VGAT", "VGAT-123")
         assert item["key"] == "VGAT-123"
-        assert "crewflow:dev" in item["labels"]
+        assert "flow:develop-running" in item["labels"]
 
     def test_issue_vazia_lanca_not_found(self) -> None:
         with mock.patch.object(jira_transport, "get_issue", return_value={}), \
@@ -170,25 +170,25 @@ class TestGetWorkItem:
 
 class TestListByState:
     def test_retorna_lista_normalizada(self) -> None:
-        raw = _raw_issue("VGAT-1", labels=["crewflow:todo"])
+        raw = _raw_issue("VGAT-1", labels=["flow:develop-waiting"])
         with mock.patch.object(jira_transport, "search_issues_by_label",
                                return_value=_search_result(raw)):
-            items = jira_client.list_by_state("VGAT", "crewflow:todo")
+            items = jira_client.list_by_state("VGAT", "flow:develop-waiting")
         assert len(items) == 1
-        assert "crewflow:todo" in items[0]["labels"]
+        assert "flow:develop-waiting" in items[0]["labels"]
 
     def test_lista_vazia_se_nenhuma_issue(self) -> None:
         with mock.patch.object(jira_transport, "search_issues_by_label",
                                return_value=_search_result()):
-            items = jira_client.list_by_state("VGAT", "crewflow:todo")
+            items = jira_client.list_by_state("VGAT", "flow:develop-waiting")
         assert items == []
 
 
 class TestSetLabels:
     def test_chama_transport_com_labels(self) -> None:
         with mock.patch.object(jira_transport, "update_issue_labels") as m:
-            jira_client.set_labels("VGAT", "VGAT-123", ["crewflow:review"])
-            m.assert_called_once_with("VGAT-123", ["crewflow:review"])
+            jira_client.set_labels("VGAT", "VGAT-123", ["flow:review-waiting"])
+            m.assert_called_once_with("VGAT-123", ["flow:review-waiting"])
 
 
 class TestUpsertStateComment:

@@ -89,8 +89,8 @@ def _make_scan_result(
         ),
         current_state=state,
         modifiers=mods,
-        dispatch_candidate=(state is State.TODO and not any(
-            m in labels_set for m in ("crewflow:blocked", "crewflow:running")
+        dispatch_candidate=(state is State.DEVELOP_WAITING and not any(
+            m in labels_set for m in ("flow:blocked", "flow:develop-running")
         )),
         spec_valid=None,
         changed=True,
@@ -429,7 +429,7 @@ class TestDispatchOrientadoAoEstado:
     def test_dispatch_quando_sem_sinais_de_sessao_ativa(self) -> None:
         """Issue em todo sem worktree/PR/lock → deve ser despachada."""
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:todo", issue_number=42)
+        result = _make_scan_result("flow:develop-waiting", issue_number=42)
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -457,7 +457,7 @@ class TestDispatchOrientadoAoEstado:
     def test_nao_despacha_quando_sessao_ativa_por_worktree(self) -> None:
         """Issue em todo mas com worktree existente → não despacha (sessão ativa)."""
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:todo", issue_number=42)
+        result = _make_scan_result("flow:develop-waiting", issue_number=42)
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -483,7 +483,7 @@ class TestDispatchOrientadoAoEstado:
     def test_nao_despacha_quando_sessao_ativa_por_pr(self) -> None:
         """Issue em todo com PR aberto na branch → não despacha (anti-duplo-dispatch)."""
         ctx = _make_ctx()
-        result = _make_scan_result("crewflow:todo", issue_number=42)
+        result = _make_scan_result("flow:develop-waiting", issue_number=42)
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -509,8 +509,8 @@ class TestDispatchOrientadoAoEstado:
     def test_duas_issues_diferentes_podem_ser_despachadas(self) -> None:
         """Duas issues em todo sem sessões ativas → ambas despachadas (dentro do cap)."""
         ctx = _make_ctx()
-        result1 = _make_scan_result("crewflow:todo", issue_number=42)
-        result2 = _make_scan_result("crewflow:todo", issue_number=43)
+        result1 = _make_scan_result("flow:develop-waiting", issue_number=42)
+        result2 = _make_scan_result("flow:develop-waiting", issue_number=43)
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -547,10 +547,10 @@ class TestRecuperacaoSessaoMorta:
     def test_sessao_morta_notifica_sem_redespachar(self) -> None:
         """Sessão morta detectada → remove running, notifica TL, NÃO redespacha."""
         ctx = _make_ctx()
-        # Issue em crewflow:dev + crewflow:running (sessão deveria estar em andamento)
+        # Issue em flow:develop-running + flow:develop-running (sessão deveria estar em andamento)
         result = _make_scan_result(
-            "crewflow:dev",
-            modifiers=["crewflow:running"],
+            "flow:develop-running",
+            modifiers=["flow:develop-running"],
             issue_number=42,
         )
         # running há mais que o timeout
@@ -593,8 +593,8 @@ class TestRecuperacaoSessaoMorta:
         """Issue em dev + running com worktree presente → NÃO é morta, não recupera."""
         ctx = _make_ctx()
         result = _make_scan_result(
-            "crewflow:dev",
-            modifiers=["crewflow:running"],
+            "flow:develop-running",
+            modifiers=["flow:develop-running"],
             issue_number=42,
         )
 
@@ -621,13 +621,13 @@ class TestRecuperacaoSessaoMorta:
         mock_recover.assert_not_called()
 
     def test_recover_dead_session_remove_label_running(self) -> None:
-        """_recover_dead_session remove crewflow:running da issue via provider."""
+        """_recover_dead_session remove flow:develop-running da issue via provider."""
         ctx = _make_ctx()
         conn = sqlite3.connect(":memory:")
 
         mock_provider = mock.MagicMock()
         mock_provider.get_work_item.return_value = {
-            "labels": ["crewflow:dev", "crewflow:running"]
+            "labels": ["flow:develop-running", "flow:feature", "flow:p1"]
         }
 
         with mock.patch(
@@ -637,12 +637,13 @@ class TestRecuperacaoSessaoMorta:
                 ctx, "owner/repo", 42, mock_provider, "chat-123", conn
             )
 
-        # remove crewflow:running
+        # remove flow:develop-running
         mock_provider.set_labels.assert_called_once()
         _call = mock_provider.set_labels.call_args
         labels_after = _call[0][2]  # terceiro argumento posicional
-        assert "crewflow:running" not in labels_after
-        assert "crewflow:dev" in labels_after
+        assert "flow:develop-running" not in labels_after
+        # Preserva outras labels
+        assert "flow:feature" in labels_after
 
         # limpa running_since no cache
         mock_clear.assert_called_once()
@@ -651,8 +652,6 @@ class TestRecuperacaoSessaoMorta:
         ctx.notify.assert_called_once()
         msg = ctx.notify.call_args[0][0]
         assert "morta" in msg.lower() or "sessão" in msg.lower()
-
-        conn.close()
 
     def test_recover_dead_session_fail_closed_em_erro(self) -> None:
         """_recover_dead_session não propaga exceção — notifica sobre falha."""
@@ -686,13 +685,13 @@ class TestAntiDuploDispatch:
         ctx = _make_ctx()
         # Duas issues em dev+running no scan (cap=2)
         running1 = _make_scan_result(
-            "crewflow:dev", modifiers=["crewflow:running"], issue_number=10
+            "flow:develop-running", modifiers=["flow:develop-running"], issue_number=10
         )
         running2 = _make_scan_result(
-            "crewflow:dev", modifiers=["crewflow:running"], issue_number=11
+            "flow:develop-running", modifiers=["flow:develop-running"], issue_number=11
         )
         # Uma issue em todo (candidata ao dispatch)
-        todo = _make_scan_result("crewflow:todo", issue_number=12)
+        todo = _make_scan_result("flow:develop-waiting", issue_number=12)
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -722,9 +721,9 @@ class TestAntiDuploDispatch:
         ctx = _make_ctx()
         # 1 issue em running no scan, mas 2 locks ativos (dispatch recente)
         running1 = _make_scan_result(
-            "crewflow:dev", modifiers=["crewflow:running"], issue_number=10
+            "flow:develop-running", modifiers=["flow:develop-running"], issue_number=10
         )
-        todo = _make_scan_result("crewflow:todo", issue_number=11)
+        todo = _make_scan_result("flow:develop-waiting", issue_number=11)
 
         with (
             mock.patch("deployment.deployment._load_config",
@@ -753,7 +752,7 @@ class TestAntiDuploDispatch:
     def test_sem_running_issues_pode_despachar_até_cap(self) -> None:
         """Sem issues em running e sem backstop ativo → pode despachar até o cap."""
         ctx = _make_ctx()
-        todo = _make_scan_result("crewflow:todo", issue_number=5)
+        todo = _make_scan_result("flow:develop-waiting", issue_number=5)
 
         with (
             mock.patch("deployment.deployment._load_config",

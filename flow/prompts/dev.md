@@ -25,7 +25,7 @@ Execute UMA vez, do início ao fim, e PARE:
    Se a issue estiver CLOSED, encerre silenciosamente sem criar branch, sem comentar, sem abrir PR.
 2. RECLAME A TASK IMEDIATAMENTE (após confirmar que a issue está OPEN):
    - Transição atômica de estado:
-     `gh issue edit {{issue_number}} --repo {{repo}} --add-label "crewflow:dev,crewflow:running" --remove-label "crewflow:todo"`
+     `gh issue edit {{issue_number}} --repo {{repo}} --add-label "flow:develop-running" --remove-label "flow:develop-waiting"`
    - Comente na issue que você pegou:
      `gh issue comment {{issue_number}} --repo {{repo}} --body "🔵 kiro-dev iniciando implementação. Lendo contexto e escopo."`
    Isso torna o estado visível de imediato e impede que outra varredura re-despache.
@@ -39,7 +39,7 @@ Execute UMA vez, do início ao fim, e PARE:
    comentários podem conter adendos e decisões que refinam o escopo.
 4. ESCOPO: se a issue exige decisão de design não-tomada ou é vaga, NÃO implemente.
    Reverta atomicamente a transição do passo 1:
-   `gh issue edit {{issue_number}} --repo {{repo}} --add-label "crewflow:blocked" --remove-label "crewflow:dev,crewflow:running"`
+   `gh issue edit {{issue_number}} --repo {{repo}} --add-label "flow:blocked" --remove-label "flow:develop-running"`
    Comente o motivo e ENCERRE.
 5. NÃO faça `git clone`. Use o clone em `{{dev_root}}/{{repo_short}}` como base e crie um WORKTREE ISOLADO.
    A branch base é a DEFAULT DO REPO — descubra, não presuma:
@@ -55,14 +55,13 @@ Execute UMA vez, do início ao fim, e PARE:
    python3 -m pytest flow/tests/ --cov=flow --cov-fail-under=75
    ```
    Para outros repos, descubra os comandos via README/Makefile/pyproject — **não presuma**.
-   Se qualquer check falhar e você não conseguir corrigir, marque `crewflow:blocked` e ENCERRE. **Não abra PR com CI vermelho.**
-9. Abra PR com 'Closes #{{issue_number}}' e troque a label para `crewflow:review` REMOVENDO `crewflow:dev`. Após abrir o PR, ATUALIZE o título da sessão adicionando o número do PR: `{{repo_short}} #{{issue_number}} #<N-PR>: {{issue_title}}`. **NUNCA mergeie. NUNCA faça deploy.** Ambos são ações humanas manuais.
+   Se qualquer check falhar e você não conseguir corrigir, marque `flow:blocked` e ENCERRE. **Não abra PR com CI vermelho.**
+9. Abra PR com 'Closes #{{issue_number}}' e troque a label para `flow:review-waiting` REMOVENDO `flow:develop-running`. Após abrir o PR, ATUALIZE o título da sessão adicionando o número do PR: `{{repo_short}} #{{issue_number}} #<N-PR>: {{issue_title}}`. **NUNCA mergeie. NUNCA faça deploy.** Ambos são ações humanas manuais.
    Use SEMPRE a forma atômica que remove todos os estados anteriores:
-   `gh issue edit {{issue_number}} --repo {{repo}} --add-label "crewflow:review" --remove-label "crewflow:dev,crewflow:todo,crewflow:running"`
+   `gh issue edit {{issue_number}} --repo {{repo}} --add-label "flow:review-waiting" --remove-label "flow:develop-running,flow:develop-waiting"`
 10. Ao terminar: {{notify_step}}
 
-   remova `crewflow:running` (mantenha `crewflow:review`), e ENCERRE.
-   `gh issue edit {{issue_number}} --repo {{repo}} --remove-label "crewflow:running"`
+   ENCERRE.
 
 {{vault_step}}
 
@@ -70,6 +69,6 @@ Execute UMA vez, do início ao fim, e PARE:
 
 - UMA passada. Terminou, acabou. NÃO entre em loop.
 - NUNCA mergeie. NUNCA faça deploy.
-- Se bloquear, marque `crewflow:blocked`, avise, e pare.
+- Se bloquear, marque `flow:blocked`, avise, e pare.
 
 {{prompt_extra}}

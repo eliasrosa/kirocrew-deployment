@@ -241,16 +241,13 @@ def _load_issues_from_github() -> dict[str, object]:
                 "age_min": age_min,
                 "labels": sorted(labels),
                 "blocked": Modifier.BLOCKED in modifiers,
-                "running": Modifier.RUNNING in modifiers,
+                "running": "flow:develop-running" in labels,
                 "implicit_state": _derive_implicit_state(raw, raw.get("repo", "") or _repo_from_key(raw.get("key", ""))),
             }
 
-            # Issues com crewflow:blocked vão para a coluna "blocked" (separada)
+            # Issues com flow:blocked vão para a coluna "blocked" (separada)
             if Modifier.BLOCKED in modifiers:
                 columns["blocked"].append(issue_entry)
-            # Issues em review + review_ok vão para coluna "review_ok"
-            elif col == "review" and Modifier.REVIEW_OK in modifiers:
-                columns["review_ok"].append(issue_entry)
             else:
                 columns[col].append(issue_entry)
 
@@ -293,13 +290,19 @@ def _state_to_column(state: object) -> str | None:
     from flow.domain.state import State
 
     mapping: dict[State, str | None] = {
-        State.SPEC:   "spec",
-        State.READY:  "ready",
-        State.TODO:   "todo",
-        State.DEV:    "dev",
-        State.REVIEW: "review",
-        State.QA:     "review_ok",  # QA é pós-aprovação — aparece no painel Code Review/Aprovado
-        State.DONE:   "done",
+        State.BRIEFING:        "briefing",
+        State.PLANNING_SPECS:  "planning_specs",
+        State.PLANNING_REVIEW: "planning_review",
+        State.DEVELOP_WAITING: "develop_waiting",
+        State.DEVELOP_RUNNING: "develop_running",
+        State.REVIEW_WAITING:  "review_waiting",
+        State.REVIEW_APPROVED: "review_approved",
+        State.REVIEW_REFUSED:  "review_refused",
+        State.QA_WAITING:      "qa_waiting",
+        State.QA_TESTING:      "qa_testing",
+        State.QA_APPROVED:     "qa_approved",
+        State.QA_REFUSED:      "qa_refused",
+        State.DONE:            "done",
     }
     if not isinstance(state, State):
         return None
@@ -309,13 +312,18 @@ def _state_to_column(state: object) -> str | None:
 def _empty_columns() -> dict[str, list[dict]]:
     """Retorna as colunas vazias do kanban."""
     return {
-        "spec": [],
-        "ready": [],
-        "todo": [],
-        "dev": [],
-        "review": [],
-        "review_ok": [],
-        "reviewed": [],
+        "briefing": [],
+        "planning_specs": [],
+        "planning_review": [],
+        "develop_waiting": [],
+        "develop_running": [],
+        "review_waiting": [],
+        "review_approved": [],
+        "review_refused": [],
+        "qa_waiting": [],
+        "qa_testing": [],
+        "qa_approved": [],
+        "qa_refused": [],
         "done": [],
         "blocked": [],
     }
@@ -459,7 +467,7 @@ async def handle_dispatch(request: web.Request, ctx: object = None) -> web.Respo
 
 
 def _force_dispatch(repo: str, issue_number: int) -> dict:
-    """Força o dispatch de uma issue: marca crewflow:todo e dispara o estágio dev.
+    """Força o dispatch de uma issue: marca flow:develop-waiting e dispara o estágio dev.
 
     Reutiliza BackendCronCtx e o mesmo caminho do _run_stage.
     """
@@ -483,25 +491,25 @@ def _force_dispatch(repo: str, issue_number: int) -> dict:
     state = parse_state(current_labels)
     modifiers = parse_modifiers(current_labels)
 
-    # Se já está em crewflow:todo e sem modificadores de parada, dispara direto
-    # Se está em outro estado, marca crewflow:todo primeiro
-    if state is not State.TODO or Modifier.BLOCKED in modifiers or Modifier.RUNNING in modifiers:
+    # Se já está em flow:develop-waiting e sem modificadores de parada, dispara direto
+    # Se está em outro estado, marca flow:develop-waiting primeiro
+    if state is not State.DEVELOP_WAITING or Modifier.BLOCKED in modifiers:
         # Preserva labels de tipo/prioridade, só troca o estado
         from flow.domain.state import transition_state
         new_labels = transition_state(
             current_labels,
-            State.TODO,
+            State.DEVELOP_WAITING,
         )
         # Remove modificadores de parada para garantir dispatchability
-        new_labels = new_labels - {Modifier.BLOCKED.value, Modifier.RUNNING.value}
+        new_labels = new_labels - {Modifier.BLOCKED.value}
         try:
             gh.set_labels(repo, str(issue_number), sorted(new_labels))
             logger.info(
-                "force_dispatch: %s#%s → crewflow:todo (era %s)",
+                "force_dispatch: %s#%s → flow:develop-waiting (era %s)",
                 repo, issue_number, state,
             )
         except ProviderError as exc:
-            return {"ok": False, "error": f"erro ao marcar crewflow:todo: {exc}"}
+            return {"ok": False, "error": f"erro ao marcar flow:develop-waiting: {exc}"}
 
     # Dispara o estágio dev via deployment._run_stage
     try:
