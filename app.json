@@ -38,28 +38,76 @@
     },
     "crons": [
         {
-            "name": "crewflow-dev",
+            "name": "flow-develop-waiting",
+            "script": "~/.kiro/crew/crons/deployment/flow/dev.py:run",
             "every": 300,
-            "message": "crewflow: trigger dev stage",
-            "enabled": false
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
         },
         {
-            "name": "crewflow-reviewer",
+            "name": "flow-review-waiting",
+            "script": "~/.kiro/crew/crons/deployment/flow/reviewer.py:run",
             "every": 180,
-            "message": "crewflow: trigger reviewer stage",
-            "enabled": false
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
         },
         {
-            "name": "crewflow-merge",
+            "name": "flow-review-approved",
+            "script": "~/.kiro/crew/crons/deployment/flow/review_approved.py:run",
             "every": 120,
-            "message": "crewflow: trigger merge stage",
-            "enabled": false
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
         },
         {
-            "name": "crewflow-conflito",
+            "name": "flow-review-refused",
+            "script": "~/.kiro/crew/crons/deployment/flow/rework.py:run",
+            "every": 3600,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
+        },
+        {
+            "name": "flow-merge-conflict",
+            "script": "~/.kiro/crew/crons/deployment/flow/conflict.py:run",
             "every": 300,
-            "message": "crewflow: trigger conflito stage",
-            "enabled": false
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
+        },
+        {
+            "name": "flow-qa-waiting",
+            "script": "~/.kiro/crew/crons/deployment/flow/qa_notify.py:run",
+            "every": 600,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
+        },
+        {
+            "name": "flow-qa-approved",
+            "script": "~/.kiro/crew/crons/deployment/flow/qa_approved.py:run",
+            "every": 120,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
+        },
+        {
+            "name": "flow-qa-refused",
+            "script": "~/.kiro/crew/crons/deployment/flow/qa_refused.py:run",
+            "every": 3600,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
+        },
+        {
+            "name": "flow-auto-update",
+            "script": "~/.kiro/crew/crons/flow_auto_update.py:run",
+            "every": 300,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
         }
     ],
     "permissions": {
@@ -76,8 +124,8 @@
         "network": true
     },
     "setup": {
-        "onInstall": "pip install -e '.[dev,gateway]' && cd ui && npm install && npm run build",
-        "onUpdate": "pip install -e '.[dev,gateway]' && cd ui && npm run build"
+        "onInstall": "pip install -e '.[dev,gateway]' && cd ui && npm install && npm run build && ./scripts/install-cron.sh",
+        "onUpdate": "pip install -e '.[dev,gateway]' && cd ui && npm run build && ./scripts/install-cron.sh"
     },
     "dependencies": {
         "commands": [

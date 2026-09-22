@@ -122,28 +122,35 @@ routing:
 # SEMPRE usar o script de instalação — não copie manualmente
 ./scripts/install-cron.sh
 
-# O script copia deployment.py, aplica o patch de sys.path e
-# copia deployment.config.yaml (se não existir).
+# O script copia deployment.py, deployment/flow/, flow_auto_update.py,
+# aplica o patch de sys.path e copia deployment.config.yaml (se não existir).
 # Edite ~/.kiro/crew/crons/deployment.config.yaml com seus paths.
 ```
 
-Depois registre os crons no dashboard do Kiro Crew. Há duas opções:
+Se o App estiver instalado via `kirocrew app enable kirocrew-flow`, os crons são
+registrados automaticamente pelo gateway ao habilitar o App (via `app.json`).
+Para instalar manualmente ou atualizar os scripts instalados:
 
-**Opção A — crons por estágio (recomendado):**
-```
-# Dev: implementação (issues flow:develop-waiting)
-cron_add(name="crewflow-dev",      script="~/.kiro/crew/crons/deployment.py:run_dev",      every=600)
-# Reviewer: code review (PRs flow:review-waiting)
-cron_add(name="crewflow-reviewer", script="~/.kiro/crew/crons/deployment.py:run_reviewer", every=300)
-# Merge: merge squash (flow:review-approved ou flow:qa-approved)
-cron_add(name="crewflow-merge",    script="~/.kiro/crew/crons/deployment.py:run_merge",    every=120)
-# Conflito: resolução de merge conflict (flow:merge-conflict)
-cron_add(name="crewflow-conflito", script="~/.kiro/crew/crons/deployment.py:run_conflito", every=300)
+```bash
+./scripts/install-cron.sh
 ```
 
-Cada cron tem log e histórico isolado, e aceita modelo diferente via `stage_models` no config.
+**Crons registrados automaticamente pelo App (namespace `flow:*`):**
 
-**Opção B — cron monolítico legado (todos os estágios em sequência):**
+| Nome | Script | Intervalo | Estágio |
+|---|---|---|---|
+| `flow-develop-waiting` | `deployment/flow/dev.py:run` | 300s | `flow:develop-waiting` → implementa + PR |
+| `flow-review-waiting` | `deployment/flow/reviewer.py:run` | 180s | `flow:review-waiting` → code review |
+| `flow-review-approved` | `deployment/flow/review_approved.py:run` | 120s | `flow:review-approved` → merge → QA |
+| `flow-review-refused` | `deployment/flow/rework.py:run` | 3600s | `flow:review-refused` → notifica TL |
+| `flow-merge-conflict` | `deployment/flow/conflict.py:run` | 300s | `flow:merge-conflict` → rebase |
+| `flow-qa-waiting` | `deployment/flow/qa_notify.py:run` | 600s | `flow:qa-waiting` → notifica QA |
+| `flow-qa-approved` | `deployment/flow/qa_approved.py:run` | 120s | `flow:qa-approved` → merge → done |
+| `flow-qa-refused` | `deployment/flow/qa_refused.py:run` | 3600s | `flow:qa-refused` → notifica TL+dev |
+| `flow-auto-update` | `flow_auto_update.py:run` | 300s | git pull + reinstala scripts |
+
+Para registrar manualmente (cron monolítico legado, todos os estágios em sequência):
+
 ```
 cron_add(name="crewflow-scan", script="~/.kiro/crew/crons/deployment.py:run", every=600)
 ```

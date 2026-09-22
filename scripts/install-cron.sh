@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# KiroCrew Flow — instala o cron de scan no Kiro Crew.
+# KiroCrew Flow — instala os scripts de cron no Kiro Crew.
 #
 # Uso: ./scripts/install-cron.sh
 #
@@ -8,8 +8,11 @@
 #   2. Aplica o patch de sys.path para que flow/ seja importável
 #      (o script é executado de ~/.kiro/crew/crons/, não do repo)
 #   3. Copia deployment/deployment.config.yaml se não existir ainda
+#   4. Copia scripts/flow_auto_update.py para ~/.kiro/crew/crons/
 #
-# Depois de instalar, registre o cron no Kiro Crew (uma vez):
+# Os crons são registrados automaticamente via app.json ao instalar/habilitar
+# o App no Kiro Crew (kirocrew app enable kirocrew-flow).
+# Para registrar manualmente (cron legado):
 #   cron_add(name="crewflow-scan",
 #            script="~/.kiro/crew/crons/deployment.py:run",
 #            every=600)
@@ -86,7 +89,11 @@ else
     echo "       dev_root: /caminho/para/seus/clones"
 fi
 
-# 4. Grava hash de versão para detecção de script desatualizado
+# 4. Copia o script de auto-update
+cp "$REPO_ROOT/scripts/flow_auto_update.py" "$CRONS_DIR/flow_auto_update.py"
+echo "  ✅ flow_auto_update.py copiado"
+
+# 5. Grava hash de versão para detecção de script desatualizado
 # deployment.py verifica este arquivo no startup e avisa quando diverge do repo.
 VERSION_FILE="$CRONS_DIR/deployment.version"
 python3 - <<PYEOF
