@@ -118,11 +118,11 @@ scan_candidates()
 
 A concorrência é decidida pelo **estado da issue**, não por lock de tempo:
 
-- **Cap primário:** contagem de issues em `crewflow:dev + crewflow:running` no scan atual — não locks de arquivo.
+- **Cap primário:** contagem de issues em `flow:develop-running` no scan atual — não locks de arquivo.
 - **Backstop anti-duplo-dispatch:** lock de arquivo (2min) — protege o intervalo entre dispatch e o label chegar na API.
 - **`_issue_has_active_session()`:** verifica worktree ativo, PR aberto na branch, e backstop lock — retorna `True` se qualquer sinal indicar sessão viva.
 - **Detector de sessão morta (`_is_dead_session()`):** issue em running há >40min sem PR, sem worktree, sem backstop lock → sessão morta confirmada.
-- **Recuperação fail-closed (`_recover_dead_session()`):** remove `crewflow:running`, notifica TL, espera redespacho no próximo ciclo. Nunca redespacha sozinho em caso de ambiguidade.
+- **Recuperação fail-closed (`_recover_dead_session()`):** remove `flow:develop-running`, notifica TL, espera redespacho no próximo ciclo. Nunca redespacha sozinho em caso de ambiguidade.
 - O headroom de recursos é verificado via `resource_status` do Kiro Crew antes de cada dispatch — posture `critical` adia sem bloquear o ciclo.
 
 | Campo config | Função | Default |
@@ -132,22 +132,32 @@ A concorrência é decidida pelo **estado da issue**, não por lock de tempo:
 
 ## Identificação e labels
 
-O prefixo `crewflow:` funciona em Jira e GitHub. Confluence rejeita `:` — fora
-de escopo.
+O prefixo `flow:` é o namespace canônico de estado. O prefixo `crewflow:` é mantido
+para metadado (tipo de fluxo, prioridade e `crewflow:blocked` por compatibilidade).
+Confluence rejeita `:` — fora de escopo.
 
-Estados (1 por vez):
+Estados (1 por vez, namespace `flow:*`):
 ```
-crewflow:spec → crewflow:ready → crewflow:todo → crewflow:dev →
-crewflow:review → crewflow:qa → crewflow:done
+flow:briefing → flow:planning-specs → flow:planning-review → flow:develop-waiting
+  → flow:develop-running → flow:review-waiting → flow:review-approved
+  → flow:qa-waiting → flow:qa-testing → flow:qa-approved → flow:done
 ```
 
-Modificadores (0..N):
+> Labels de estado legadas (`crewflow:spec`, `crewflow:todo`, `crewflow:dev`, etc.)
+> foram deprecadas — use `setup-flow-labels.sh` para novos repos.
+
+Modificadores de estado (0..N, namespace `flow:*`):
 ```
-crewflow:blocked   # para tudo (prioridade sobre o estado)
-crewflow:running   # trabalho em andamento
-crewflow:reviewed  # lock anti-loop de code review
-crewflow:hml-bypass  # bypass auditado do HML
-crewflow:changes-requested  # reviewer pediu mudança — re-trabalho na mesma PR
+flow:blocked         # para tudo (prioridade sobre o estado)
+flow:merge-conflict  # PR com conflito — cron resolve via rebase
+flow:reviewed        # lock anti-loop de code review (interno)
+```
+
+Metadado (tipo e prioridade, namespace `crewflow:*`):
+```
+crewflow:feature / crewflow:bug / crewflow:hotfix / crewflow:debt
+crewflow:p1 / crewflow:p2 / crewflow:p3
+crewflow:blocked   # alias de flow:blocked, mantido por compatibilidade
 ```
 
 ## O comentário de estado
@@ -169,12 +179,12 @@ crewflow:changes-requested  # reviewer pediu mudança — re-trabalho na mesma P
 ### Exceções
 | Exceção | Justificativa | Quem | Quando |
 |---------|---------------|------|--------|
-| `crewflow:hml-bypass` | Checkout fora do ar | @elias | 2026-09-15 |
+| `hml-bypass` | Checkout fora do ar | @elias | 2026-09-15 |
 <!-- /KIRO-FLOW-STATE -->
 ```
 
 O comentário não é só registro — é **fonte de pré-condições de merge**. O executor
-bloqueia o merge com `crewflow:hml-bypass` se a seção de Exceções não tiver
+bloqueia o merge com `hml-bypass` se a seção de Exceções não tiver
 justificativa preenchida.
 
 ## Detalhes técnicos: para desenvolvedores

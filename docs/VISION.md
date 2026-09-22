@@ -27,7 +27,7 @@ para todo o time em qualquer ferramenta.
 1. **Zero-token no polling.** O scan é Python puro — não acorda o agente. Token
    só é gasto quando há trabalho real.
 
-2. **Merge é SEMPRE manual.** A automação abre o PR e para em `crewflow:review`.
+2. **Merge é SEMPRE manual.** A automação abre o PR e para em `flow:review-waiting`.
    Nenhum merge, nenhum deploy é automatizado.
 
 3. **Gates humanos são invioláveis.** Aprovação de spec, de code review e de QA
@@ -36,7 +36,8 @@ para todo o time em qualquer ferramenta.
 
 4. **Exceções são auditáveis, não invisíveis.** O bypass do HML (hotfix direto
    pra PRD) existe, acontece, e o motor o rastreia — com justificativa obrigatória
-   e `crewflow:hml-bypass` para que a frequência seja mensurável.
+   e `flow:blocked` (via auditoria no comentário de estado) para que a frequência
+   seja mensurável.
 
 5. **Template por squad.** A Cogna usa a Versão C (review antes do QA). Outra
    squad pode usar Versão A (review depois do QA). O motor executa qualquer grafo
@@ -48,10 +49,14 @@ Duas dimensões independentes:
 
 | Dimensão | Cardinalidade | Exemplos |
 |---|---|---|
-| **Estado** | exatamente 1 | `crewflow:todo`, `crewflow:review`, `crewflow:done` |
-| **Modificador** | 0..N, sobrepõem | `crewflow:blocked`, `crewflow:running`, `crewflow:reviewed` |
+| **Estado** (`flow:*`) | exatamente 1 | `flow:develop-waiting`, `flow:review-waiting`, `flow:done` |
+| **Modificador** (`flow:*`) | 0..N, sobrepõem | `flow:blocked`, `flow:merge-conflict`, `flow:reviewed` |
+| **Metadado** (`crewflow:*`) | 0..N | `crewflow:feature`, `crewflow:p1`, `crewflow:blocked` |
 
-Modificador de parada (`blocked`, `running`) tem prioridade sobre qualquer estado.
+> Labels de estado legadas (`crewflow:todo`, `crewflow:review`, etc.) foram deprecadas.
+> Use `setup-flow-labels.sh` em novos repos.
+
+Modificador de parada (`flow:blocked`) tem prioridade sobre qualquer estado.
 
 ## Fluxos implementados (Fase 1)
 

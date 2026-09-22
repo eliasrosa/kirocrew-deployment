@@ -2,7 +2,7 @@
 
 **KiroCrew Flow** — orquestração de esteira de desenvolvimento multi-squad sobre o
 **[Kiro Crew](https://github.com/kirodotdev)**: os fluxos de trabalho são **grafos**,
-o estado de cada task vive em **labels `crewflow:*`** na própria issue, e o polling
+o estado de cada task vive em **labels `flow:*`** na própria issue, e o polling
 é **zero-token**.
 
 > ⚠️ **Não é standalone.** Depende do Kiro Crew rodando na máquina: usa o loopback
@@ -23,26 +23,35 @@ Duas dimensões independentes.
 ### Estados — 1 por vez, nesta ordem
 
 ```
-crewflow:spec → crewflow:ready → crewflow:todo → crewflow:dev → crewflow:review → crewflow:qa → crewflow:done
+flow:briefing → flow:planning-specs → flow:planning-review → flow:develop-waiting
+  → flow:develop-running → flow:review-waiting → flow:review-approved
+  → flow:qa-waiting → flow:qa-testing → flow:qa-approved → flow:done
 ```
+
+> Labels de estado legadas (`crewflow:spec`, `crewflow:ready`, `crewflow:todo`, etc.)
+> foram deprecadas. Use `setup-flow-labels.sh` para criar o namespace `flow:*` em novos repos.
 
 ### Modificadores — 0..N, sobrepõem ao estado
 
 | Label | Significado |
 |---|---|
-| `crewflow:blocked` | Para tudo (prioridade sobre o estado) |
-| `crewflow:running` | Trabalho em andamento |
-| `crewflow:reviewed` | Lock anti-loop: já analisado neste SHA |
-| `crewflow:hml-bypass` | Exceção auditada: hotfix pulou o HML (exige justificativa) |
-| `crewflow:changes-requested` | Reviewer pediu mudança — dev corrige na mesma PR e re-submete |
-| `crewflow:conflito` | PR com conflito de merge ou base desatualizada — cron resolve e atualiza a mesma branch |
+| `flow:blocked` | Para tudo (prioridade sobre o estado) |
+| `flow:merge-conflict` | PR com conflito de merge ou base desatualizada — cron resolve via rebase |
 
-### Tipo de fluxo (routing) e prioridade
+### Metadado crewflow:* (tipo de fluxo e prioridade)
 
 `crewflow:feature` · `crewflow:bug` · `crewflow:hotfix` · `crewflow:debt`  
 `crewflow:p1` · `crewflow:p2` · `crewflow:p3`
 
-Aplique todas num repo:
+> `crewflow:blocked` é reconhecido pelo motor por compatibilidade com repos que já
+> usam o namespace legado; o equivalente canônico é `flow:blocked`.
+
+Aplique os estados num repo:
+```bash
+./scripts/setup-flow-labels.sh owner/repo
+```
+
+Aplique o metadado (tipo + prioridade):
 ```bash
 ./scripts/setup-labels.sh owner/repo
 ```
@@ -53,11 +62,11 @@ Aplique todas num repo:
 squads/*.yaml → SquadConfig → scan_candidates() → executor.decide() → deployment.run()
 ```
 
-1. `scan_candidates()` varre as issues por labels `crewflow:*` sem gastar token — compara hash do estado atual com o cache SQLite, e só processa o que mudou.
+1. `scan_candidates()` varre as issues por labels `flow:*` sem gastar token — compara hash do estado atual com o cache SQLite, e só processa o que mudou.
 2. `executor.decide()` decide a ação (DISPATCH_DEV, DISPATCH_REVIEWER, NOTIFY_HUMAN, BLOCK, REBRAND ou SKIP) com base no template da squad e no estado da issue.
 3. `deployment.run()` executa a ação: dispara sessão one-shot, notifica humano ou aplica rebrand de template.
 
-A sessão one-shot **nunca mergeia e nunca faz deploy**. Ela entrega o PR em `crewflow:review` e encerra.
+A sessão one-shot **nunca mergeia e nunca faz deploy**. Ela entrega o PR em `flow:review-waiting` e encerra.
 
 ## Fluxos disponíveis (Fase 1)
 
@@ -122,13 +131,13 @@ Depois registre os crons no dashboard do Kiro Crew. Há duas opções:
 
 **Opção A — crons por estágio (recomendado):**
 ```
-# Dev: implementação (issues crewflow:todo)
+# Dev: implementação (issues flow:develop-waiting)
 cron_add(name="crewflow-dev",      script="~/.kiro/crew/crons/deployment.py:run_dev",      every=600)
-# Reviewer: code review (PRs crewflow:review)
+# Reviewer: code review (PRs flow:review-waiting)
 cron_add(name="crewflow-reviewer", script="~/.kiro/crew/crons/deployment.py:run_reviewer", every=300)
-# Merge: merge squash (crewflow:review + crewflow:reviewed aprovado)
+# Merge: merge squash (flow:review-approved ou flow:qa-approved)
 cron_add(name="crewflow-merge",    script="~/.kiro/crew/crons/deployment.py:run_merge",    every=120)
-# Conflito: re-trabalho pós-review (crewflow:changes-requested)
+# Conflito: resolução de merge conflict (flow:merge-conflict)
 cron_add(name="crewflow-conflito", script="~/.kiro/crew/crons/deployment.py:run_conflito", every=300)
 ```
 
@@ -142,6 +151,10 @@ cron_add(name="crewflow-scan", script="~/.kiro/crew/crons/deployment.py:run", ev
 ### 3. Aplique as labels
 
 ```bash
+# Labels de estado (namespace flow:*)
+./scripts/setup-flow-labels.sh owner/repo
+
+# Labels de metadado (tipo de fluxo + prioridade, namespace crewflow:*)
 ./scripts/setup-labels.sh owner/repo
 ```
 
@@ -207,7 +220,7 @@ O agente reviewer valida o PR como **gate único** antes do approve:
 3. **Analisa o código** — corretude, testes, estilo e convenções do steering do repo.
 4. **Decide com as três condições**: CI verde + zero comentários não resolvidos no PR + sem blockers técnicos.
 5. **Posta o resultado completo nos DOIS lugares** — PR e issue — com: o que foi feito, o resultado, o link e todas as informações.
-6. **Aplica `crewflow:reviewed`** somente quando as três condições são satisfeitas. Com `auto_merge_on_approve: true` no squad config, o motor faz merge squash automático; sem a flag (default), para em `crewflow:reviewed` aguardando merge manual.
+6. **Aplica `flow:reviewed`** somente quando as três condições são satisfeitas. Com `auto_merge_on_approve: true` no squad config, o motor faz merge squash automático; sem a flag (default), para em `flow:reviewed` aguardando merge manual.
 
 ## Desenvolvimento
 

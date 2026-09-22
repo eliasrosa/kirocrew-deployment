@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# KiroCrew Flow — aplica as 19 labels do padrão `crewflow:*` num repo (idempotente via --force).
+# KiroCrew Flow — aplica as labels de metadado `crewflow:*` num repo (idempotente via --force).
 # Uso: ./scripts/setup-labels.sh owner/repo [owner/repo ...]
+#
+# Labels de ESTADO (ex: crewflow:todo, crewflow:dev) foram deprecadas — o estado
+# agora vive no namespace flow:* (setup-flow-labels.sh). Aqui ficam apenas as labels
+# de metadado (tipo de fluxo, prioridade e o modificador crewflow:blocked).
 #
 # O prefixo `crewflow:` funciona em GitHub e Jira. Confluence NÃO aceita `:`
 # em label (só alfanumérico) — está fora de escopo.
@@ -13,41 +17,13 @@ fi
 
 # nome|cor(hex sem #)|descricao
 #
-# Duas dimensões independentes:
-#   ESTADO      — 1 por vez, ordem canônica spec > ready > todo > dev > review > qa > done
-#   MODIFICADOR — 0..N, sobrepoem ao estado; os de parada tem prioridade
+# Metadado em duas dimensões:
+#   TIPO        — define o workflow aplicado pelo motor (routing:)
+#   PRIORIDADE  — sinalização de urgência
+#   MODIFICADOR — crewflow:blocked permanece aqui por compatibilidade com
+#                 regras externas que já o utilizam; o motor também reconhece
+#                 flow:blocked (namespace novo).
 LABELS=(
-  # ── ESTADOS (1 por vez) ──────────────────────────────────────────────
-  "crewflow:spec|FEF3C7|PM especificando"
-  "crewflow:ready|FBBF24|Especificacao pronta, aguardando priorizacao"
-  "crewflow:todo|16A34A|Priorizado, aguardando dev pegar (GATILHO da esteira)"
-  "crewflow:dev|2563EB|Em desenvolvimento"
-  "crewflow:review|8B5CF6|PR aberto: review automatizado + aprovacao do TL (ANTES do QA)"
-  "crewflow:qa|0EA5E9|Deploy HML manual + QA testa (DEPOIS do review)"
-  "crewflow:done|22C55E|Concluido"
-
-  # ── MODIFICADORES (0..N, sobrepoem) ──────────────────────────────────
-  "crewflow:blocked|DC2626|Bloqueado - para tudo (tem prioridade sobre o estado)"
-  "crewflow:running|F97316|Trabalho em andamento no estado atual"
-  "crewflow:reviewed|6B7280|Lock anti-loop: ja analisado neste SHA"
-  # Excecao auditada do fluxo de hotfix: pulou HML e foi direto pra PRD.
-  # Exige justificativa no comentario da issue — o motor bloqueia o merge sem
-  # ela. Existe pra tornar a excecao CONTAVEL: sem label, "quantos hotfixes
-  # pularam HML neste trimestre?" nao tem resposta.
-  "crewflow:hml-bypass|C2410C|Excecao auditada: hotfix foi direto pra PRD sem passar por HML (exige justificativa)"
-  # Pedido de mudanca do reviewer: a issue volta pro dev para re-trabalho na MESMA PR.
-  # Removida automaticamente quando o dev abre o novo commit (crewflow:reviewed some).
-  "crewflow:changes-requested|9333EA|Reviewer pediu mudanca: dev deve corrigir e re-submeter na mesma PR"
-  # PR tem conflito de merge ou base desatualizada. O cron de conflito resolve o
-  # rebase/merge na branch feat/issue-N existente e atualiza a MESMA PR.
-  # Nunca abre PR nova.
-  "crewflow:conflito|F97316|PR com conflito de merge ou base desatualizada: cron de conflito resolve e atualiza a mesma branch"
-  # Resultado semantico de review (1 label, sem combinacao):
-  #   review-ok   = reviewer aprovou, pronto para merge (substitui review+reviewed)
-  #   review-fail = reviewer reprovou, aguarda rework  (substitui review+changes-requested)
-  "crewflow:review-ok|22C55E|Reviewer aprovou — pronto para merge"
-  "crewflow:review-fail|DC2626|Reviewer reprovou — aguarda rework"
-
   # ── TIPO DE FLUXO (routing: define qual workflow aplicar) ────────────
   "crewflow:feature|A855F7|Feature nova"
   "crewflow:bug|EF4444|Correcao de bug"
@@ -58,6 +34,11 @@ LABELS=(
   "crewflow:p1|B91C1C|Critico"
   "crewflow:p2|F59E0B|Alto"
   "crewflow:p3|3B82F6|Normal"
+
+  # ── MODIFICADOR DE PARADA (compatibilidade) ──────────────────────────
+  # crewflow:blocked é reconhecido pelo motor ao lado de flow:blocked.
+  # Manter aqui para repos que ainda usam o namespace legado.
+  "crewflow:blocked|DC2626|Bloqueado - para tudo (tem prioridade sobre o estado)"
 )
 
 for repo in "$@"; do

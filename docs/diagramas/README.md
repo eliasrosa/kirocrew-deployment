@@ -57,10 +57,10 @@ O que muda é o que pode ser encurtado:
 
 | Etapa | No hotfix |
 |-------|-----------|
-| `spec` / `ready` / `todo` | pulados — o incidente é a spec, `p1` é a priorização |
+| `briefing` / `planning` / `develop-waiting` | pulados — o incidente é a spec, `p1` é a priorização |
 | 🤖 code review | **mantido** — custa minutos, e a pressa é quando o erro é mais provável |
 | GATE 1 (TL aprova) | **inviolável** |
-| Deploy HML | pulável como **exceção auditada** (`crewflow:hml-bypass` + justificativa) |
+| Deploy HML | pulável como **exceção auditada** (registrada no comentário de estado + justificativa) |
 | QA | reduzido a smoke do incidente |
 | Merge | **manual** |
 | Post-mortem | **obrigatório** → abre um `crewflow:debt` |
