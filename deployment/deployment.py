@@ -947,7 +947,7 @@ def _scan_result_to_issue(result: object) -> dict:
 # ── Shadow mode: estado implícito em paralelo com labels ─────────────────
 
 def _collect_implicit_state(
-    result: "ScanResult",
+    result: ScanResult,
     provider: object,
     project: str,
 ) -> object:
@@ -958,9 +958,9 @@ def _collect_implicit_state(
 
     Retorna ImplicitState ou None se ocorrer erro ao coletar as evidências (fail-safe).
     """
-    from flow.scan.scanner import ImplicitState, implicit_state as _implicit_state
-
     import re as _re
+
+    from flow.scan.scanner import implicit_state as _implicit_state
 
     # Extrai o número da issue da key
     m = _re.search(r"[#\-/](\d+)$", result.item.key)
@@ -995,10 +995,9 @@ def _collect_implicit_state(
             pr_number = pr.get("number")
             reviews: list[dict] = []
             if pr_number:
-                try:
+                import contextlib as _ctxlib
+                with _ctxlib.suppress(Exception):
                     reviews = _gh2.get_pr_reviews(project, int(pr_number))
-                except Exception:
-                    pass
             pr_entry = dict(pr)
             pr_entry["state"] = "open"
             pr_entry["reviews"] = reviews
@@ -1044,7 +1043,6 @@ def _log_shadow_divergences(
     Shadow mode — apenas loga; não altera labels nem bloqueia dispatch.
     O estado por label continua sendo a fonte de verdade para o executor.
     """
-    from flow.scan.scanner import ImplicitState
 
     implicit_map = _build_implicit_to_explicit_map()
 
@@ -1291,7 +1289,6 @@ def run(ctx: object) -> None:
     # Para issues sem flow:develop-running: limpa o timestamp (issue saiu do estado running).
     from datetime import UTC
 
-    from flow.domain.state import Modifier as _Modifier
     _now_iso = __import__("datetime").datetime.now(tz=UTC).isoformat()
     for _r in scan_results:
         if _r.current_state is not None and _r.current_state.value == "flow:develop-running":
@@ -2797,10 +2794,12 @@ def _execute_auto_merges(
 #     merge:     "kirocrew"            # merge squash (leve)
 #     conflito:  "kirocrew"            # re-trabalho pós-review
 
-_STAGE_DEV      = "dev"
-_STAGE_REVIEWER = "reviewer"
-_STAGE_MERGE    = "merge"
-_STAGE_CONFLITO = "conflito"
+_STAGE_DEV           = "dev"
+_STAGE_REVIEWER      = "reviewer"
+_STAGE_MERGE         = "merge"
+_STAGE_MERGE_REVIEW  = "merge_review"   # merge após flow:review-approved → flow:qa-waiting
+_STAGE_MERGE_QA      = "merge_qa"       # merge após flow:qa-approved → flow:done
+_STAGE_CONFLITO      = "conflito"
 
 # ActionKinds por estágio — o filtro que cada entrypoint aplica sobre o scan
 #
@@ -2810,11 +2809,18 @@ _STAGE_CONFLITO = "conflito"
 #   - dispatch_conflict_resolver → _STAGE_CONFLITO: despachado quando crewflow:conflito
 #                          já foi aplicado na issue (Modifier.CONFLITO presente).
 #   - dispatch_rework    → _STAGE_CONFLITO: re-trabalho pós-review (review-fail).
+#
+# _STAGE_MERGE_REVIEW e _STAGE_MERGE_QA têm o mesmo ActionKind (merge_pr), mas são
+# filtrados adicionalmente pelo current_state de origem da issue em _run_stage:
+#   - merge_review → apenas issues em State.REVIEW_APPROVED
+#   - merge_qa     → apenas issues em State.QA_APPROVED
 _STAGE_ACTIONS = {
-    _STAGE_DEV:      frozenset({"dispatch_dev"}),
-    _STAGE_REVIEWER: frozenset({"dispatch_reviewer", "mark_conflito"}),
-    _STAGE_MERGE:    frozenset({"merge_pr"}),
-    _STAGE_CONFLITO: frozenset({"dispatch_rework", "dispatch_conflict_resolver"}),
+    _STAGE_DEV:          frozenset({"dispatch_dev"}),
+    _STAGE_REVIEWER:     frozenset({"dispatch_reviewer", "mark_conflito"}),
+    _STAGE_MERGE:        frozenset({"merge_pr"}),
+    _STAGE_MERGE_REVIEW: frozenset({"merge_pr"}),
+    _STAGE_MERGE_QA:     frozenset({"merge_pr"}),
+    _STAGE_CONFLITO:     frozenset({"dispatch_rework", "dispatch_conflict_resolver"}),
 }
 
 
@@ -3046,7 +3052,9 @@ def _run_stage(ctx: object, stage: str) -> None:
         elif decision.action is ActionKind.MERGE_PR:
             repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
             issue = _scan_result_to_issue(result)
-            merge_prs.append((repo, issue, state_comment))
+            # Armazena (repo, issue, state_comment, current_state) para permitir
+            # que _STAGE_MERGE_REVIEW e _STAGE_MERGE_QA filtrem por estado de origem.
+            merge_prs.append((repo, issue, state_comment, result.current_state))
 
         elif decision.action is ActionKind.DISPATCH_REWORK:
             repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
@@ -3235,7 +3243,16 @@ def _run_stage(ctx: object, stage: str) -> None:
 
     elif stage == _STAGE_MERGE:
         if merge_prs:
-            _execute_auto_merges(ctx, merge_prs, chat_id, provider)
+            # Normaliza tupla: (repo, issue, state_comment, current_state) → (repo, issue, sc)
+            _execute_auto_merges(ctx, [(r, i, sc) for r, i, sc, _st in merge_prs], chat_id, provider)
+
+    elif stage in (_STAGE_MERGE_REVIEW, _STAGE_MERGE_QA):
+        # Filtra merge_prs pelo estado de origem da issue
+        from flow.domain.state import State
+        _origin_state = State.REVIEW_APPROVED if stage == _STAGE_MERGE_REVIEW else State.QA_APPROVED
+        _filtered = [(r, i, sc) for r, i, sc, _st in merge_prs if _st is _origin_state]
+        if _filtered:
+            _execute_auto_merges(ctx, _filtered, chat_id, provider)
 
     elif stage == _STAGE_CONFLITO:
         # ── Despacha sessões de resolução de conflito de merge ───────────
@@ -3385,12 +3402,48 @@ def run_merge(ctx: object) -> None:
 
     Configure o modelo via ``stage_models.merge`` na deployment.config.yaml.
 
+    .. deprecated::
+        Prefira ``run_review_approved`` e ``run_qa_approved`` para crons separados
+        por label, com nomes 1:1 com o estado que processam.
+
     Registro (uma vez):
         cron_add(name="flow-merge",
                  script="~/.kiro/crew/crons/deployment.py:run_merge",
                  every=120)
     """
     _run_stage(ctx, _STAGE_MERGE)
+
+
+def run_review_approved(ctx: object) -> None:
+    """Entrypoint do cron de merge após review aprovado.
+
+    Processa PRs em ``flow:review-approved`` e executa o merge squash,
+    movendo a issue para ``flow:qa-waiting``. Intervalo curto recomendado: 120s.
+
+    Configure o modelo via ``stage_models.merge_review`` na deployment.config.yaml.
+
+    Registro (uma vez):
+        cron_add(name="flow-review-approved",
+                 script="~/.kiro/crew/crons/deployment.py:run_review_approved",
+                 every=120)
+    """
+    _run_stage(ctx, _STAGE_MERGE_REVIEW)
+
+
+def run_qa_approved(ctx: object) -> None:
+    """Entrypoint do cron de merge final após QA aprovado.
+
+    Processa issues em ``flow:qa-approved`` e executa o merge squash final,
+    movendo a issue para ``flow:done``. Intervalo curto recomendado: 120s.
+
+    Configure o modelo via ``stage_models.merge_qa`` na deployment.config.yaml.
+
+    Registro (uma vez):
+        cron_add(name="flow-qa-approved",
+                 script="~/.kiro/crew/crons/deployment.py:run_qa_approved",
+                 every=120)
+    """
+    _run_stage(ctx, _STAGE_MERGE_QA)
 
 
 def run_conflito(ctx: object) -> None:

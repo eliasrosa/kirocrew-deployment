@@ -52,15 +52,19 @@ else:
 
 # Re-exporta os símbolos necessários para os módulos de cron em flow/.
 _run_stage = _mod._run_stage
-_STAGE_DEV = _mod._STAGE_DEV
-_STAGE_REVIEWER = _mod._STAGE_REVIEWER
-_STAGE_MERGE = _mod._STAGE_MERGE
-_STAGE_CONFLITO = _mod._STAGE_CONFLITO
+_STAGE_DEV           = _mod._STAGE_DEV
+_STAGE_REVIEWER      = _mod._STAGE_REVIEWER
+_STAGE_MERGE         = _mod._STAGE_MERGE
+_STAGE_MERGE_REVIEW  = _mod._STAGE_MERGE_REVIEW
+_STAGE_MERGE_QA      = _mod._STAGE_MERGE_QA
+_STAGE_CONFLITO      = _mod._STAGE_CONFLITO
 
 __all__ = [
     "_STAGE_CONFLITO",
     "_STAGE_DEV",
     "_STAGE_MERGE",
+    "_STAGE_MERGE_QA",
+    "_STAGE_MERGE_REVIEW",
     "_STAGE_REVIEWER",
     "_run_stage",
 ]

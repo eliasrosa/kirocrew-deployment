@@ -2465,12 +2465,31 @@ class TestStageActionsCobertura:
         )
 
     def test_estagios_sem_overlap(self) -> None:
-        """Uma mesma ActionKind não deve aparecer em dois estágios diferentes."""
-        from deployment.deployment import _STAGE_ACTIONS
+        """Uma mesma ActionKind não deve aparecer em dois estágios diferentes.
+
+        Exceção intencional: merge_pr pode aparecer em múltiplos estágios de merge
+        (_STAGE_MERGE, _STAGE_MERGE_REVIEW, _STAGE_MERGE_QA) pois cada um filtra
+        adicionalmente pelo current_state da issue em _run_stage. Isso é necessário
+        para que os novos crons separados (flow-review-approved / flow-qa-approved)
+        coexistam com o cron legado flow-merge sem quebrar o roteamento.
+        """
+        from deployment.deployment import (
+            _STAGE_ACTIONS,
+            _STAGE_MERGE,
+            _STAGE_MERGE_QA,
+            _STAGE_MERGE_REVIEW,
+        )
+
+        # Estágios de merge são uma família deliberada que compartilha a ActionKind
+        # merge_pr — cada um deles filtra pelo estado de origem da issue.
+        _MERGE_FAMILY = {_STAGE_MERGE, _STAGE_MERGE_REVIEW, _STAGE_MERGE_QA}
 
         seen: dict[str, str] = {}
         for stage, actions in _STAGE_ACTIONS.items():
             for action in actions:
+                if action == "merge_pr" and stage in _MERGE_FAMILY:
+                    # Sobreposição intencional dentro da família de merge — ignorar
+                    continue
                 assert action not in seen, (
                     f"ActionKind '{action}' aparece em dois estágios: "
                     f"'{seen[action]}' e '{stage}'. "
@@ -2950,3 +2969,252 @@ class TestPromptsClosedGuard:
         prompts = ["dev", "reviewer", "rework", "conflict"]
         has_ref = any("#163" in self._read_prompt(s) for s in prompts)
         assert has_ref, "Nenhum prompt referencia o bug #163 para rastreabilidade"
+
+
+# ---------------------------------------------------------------------------
+# Testes dos novos estágios: _STAGE_MERGE_REVIEW e _STAGE_MERGE_QA
+# ---------------------------------------------------------------------------
+
+class TestMergeReviewStage:
+    """_run_stage com _STAGE_MERGE_REVIEW só processa flow:review-approved."""
+
+    def _make_ctx(self) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "secret"
+        ctx.job.id = "test-job"
+        return ctx
+
+    def _make_review_approved_result(self) -> object:
+        """ScanResult em flow:review-approved (auto_merge_on_approve=True)."""
+        from flow.domain.gates import WorkItem
+        from flow.domain.state import State
+        from flow.scan.scanner import ScanResult
+
+        return ScanResult(
+            item=WorkItem(
+                key="https://github.com/owner/repo/issues/10",
+                title="[owner/repo] Feature A",
+                labels=frozenset(["flow:review-approved", "flow:feature"]),
+            ),
+            current_state=State.REVIEW_APPROVED,
+            modifiers=frozenset(),
+            dispatch_candidate=False,
+            spec_valid=None,
+            changed=True,
+            reason="flow:review-approved",
+        )
+
+    def _make_qa_approved_result(self) -> object:
+        """ScanResult em flow:qa-approved."""
+        from flow.domain.gates import WorkItem
+        from flow.domain.state import State
+        from flow.scan.scanner import ScanResult
+
+        return ScanResult(
+            item=WorkItem(
+                key="https://github.com/owner/repo/issues/20",
+                title="[owner/repo] Feature B",
+                labels=frozenset(["flow:qa-approved", "flow:feature"]),
+            ),
+            current_state=State.QA_APPROVED,
+            modifiers=frozenset(),
+            dispatch_candidate=False,
+            spec_valid=None,
+            changed=True,
+            reason="flow:qa-approved",
+        )
+
+    def test_merge_review_processa_review_approved(self) -> None:
+        """_STAGE_MERGE_REVIEW executa merge para issue em flow:review-approved."""
+        from deployment.deployment import _STAGE_MERGE_REVIEW, _run_stage
+
+        ctx = self._make_ctx()
+        result = self._make_review_approved_result()
+        fake_pr = {
+            "number": 55,
+            "title": "feat: Feature A",
+            "headRefName": "feat/issue-10",
+            "headRefOid": "sha_review",
+            "body": "Closes #10",
+        }
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value={**_minimal_config(auto=True),
+                                     "workflow_params": {"auto_merge_on_approve": True}}),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache",
+                       return_value=sqlite3.connect(":memory:")),
+            mock.patch("deployment.deployment.provider_for") as mock_pf,
+            mock.patch("flow.adapters.github_client.get_pr_for_issue", return_value=fake_pr),
+            mock.patch("flow.adapters.github_client.merge_pull_request",
+                       return_value={"merged": True}) as mock_merge,
+            mock.patch("flow.adapters.github_client.get_work_item",
+                       return_value={"labels": ["flow:review-approved", "flow:feature"]}),
+            mock.patch("flow.adapters.github_client.set_labels"),
+            mock.patch("flow.adapters.github_client.upsert_pr_review_comment"),
+            mock.patch("flow.adapters.github_client.get_state_comment", return_value=None),
+            mock.patch("flow.adapters.github_client.upsert_state_comment"),
+            mock.patch("flow.adapters.github_client.add_issue_comment"),
+            mock.patch("flow.adapters.github_client.delete_branch"),
+        ):
+            mock_pf.return_value = mock.MagicMock(
+                get_state_comment=mock.MagicMock(return_value=None),
+                get_pr_for_issue=mock.MagicMock(return_value=fake_pr),
+            )
+            _run_stage(ctx, _STAGE_MERGE_REVIEW)
+
+        # merge_pull_request deve ter sido chamado
+        mock_merge.assert_called_once()
+
+    def test_merge_review_ignora_qa_approved(self) -> None:
+        """_STAGE_MERGE_REVIEW ignora issue em flow:qa-approved."""
+        from deployment.deployment import _STAGE_MERGE_REVIEW, _run_stage
+
+        ctx = self._make_ctx()
+        result = self._make_qa_approved_result()
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value={**_minimal_config(auto=True),
+                                     "workflow_params": {"auto_merge_on_approve": True}}),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache",
+                       return_value=sqlite3.connect(":memory:")),
+            mock.patch("deployment.deployment.provider_for") as mock_pf,
+            mock.patch("flow.adapters.github_client.get_pr_for_issue",
+                       return_value={"number": 66, "headRefName": "feat/issue-20",
+                                     "headRefOid": "sha_qa", "body": "Closes #20"}),
+            mock.patch("flow.adapters.github_client.merge_pull_request") as mock_merge,
+            mock.patch("flow.adapters.github_client.get_work_item",
+                       return_value={"labels": ["flow:qa-approved", "flow:feature"]}),
+            mock.patch("flow.adapters.github_client.set_labels"),
+            mock.patch("flow.adapters.github_client.get_state_comment", return_value=None),
+        ):
+            mock_pf.return_value = mock.MagicMock(
+                get_state_comment=mock.MagicMock(return_value=None),
+            )
+            _run_stage(ctx, _STAGE_MERGE_REVIEW)
+
+        # flow:qa-approved NÃO deve ser processado por _STAGE_MERGE_REVIEW
+        mock_merge.assert_not_called()
+
+    def test_merge_qa_processa_qa_approved(self) -> None:
+        """_STAGE_MERGE_QA executa merge para issue em flow:qa-approved."""
+        from deployment.deployment import _STAGE_MERGE_QA, _run_stage
+
+        ctx = self._make_ctx()
+        result = self._make_qa_approved_result()
+        fake_pr = {
+            "number": 66,
+            "title": "feat: Feature B",
+            "headRefName": "feat/issue-20",
+            "headRefOid": "sha_qa",
+            "body": "Closes #20",
+        }
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value={**_minimal_config(auto=True),
+                                     "workflow_params": {"auto_merge_on_approve": True}}),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache",
+                       return_value=sqlite3.connect(":memory:")),
+            mock.patch("deployment.deployment.provider_for") as mock_pf,
+            mock.patch("flow.adapters.github_client.get_pr_for_issue", return_value=fake_pr),
+            mock.patch("flow.adapters.github_client.merge_pull_request",
+                       return_value={"merged": True}) as mock_merge,
+            mock.patch("flow.adapters.github_client.get_work_item",
+                       return_value={"labels": ["flow:qa-approved", "flow:feature"]}),
+            mock.patch("flow.adapters.github_client.set_labels"),
+            mock.patch("flow.adapters.github_client.upsert_pr_review_comment"),
+            mock.patch("flow.adapters.github_client.get_state_comment", return_value=None),
+            mock.patch("flow.adapters.github_client.upsert_state_comment"),
+            mock.patch("flow.adapters.github_client.add_issue_comment"),
+            mock.patch("flow.adapters.github_client.delete_branch"),
+        ):
+            mock_pf.return_value = mock.MagicMock(
+                get_state_comment=mock.MagicMock(return_value=None),
+                get_pr_for_issue=mock.MagicMock(return_value=fake_pr),
+            )
+            _run_stage(ctx, _STAGE_MERGE_QA)
+
+        mock_merge.assert_called_once()
+
+    def test_merge_qa_ignora_review_approved(self) -> None:
+        """_STAGE_MERGE_QA ignora issue em flow:review-approved."""
+        from deployment.deployment import _STAGE_MERGE_QA, _run_stage
+
+        ctx = self._make_ctx()
+        result = self._make_review_approved_result()
+
+        with (
+            mock.patch("deployment.deployment._load_config",
+                       return_value={**_minimal_config(auto=True),
+                                     "workflow_params": {"auto_merge_on_approve": True}}),
+            mock.patch("deployment.deployment.scan_candidates", return_value=[result]),
+            mock.patch("deployment.deployment.open_cache",
+                       return_value=sqlite3.connect(":memory:")),
+            mock.patch("deployment.deployment.provider_for") as mock_pf,
+            mock.patch("flow.adapters.github_client.get_pr_for_issue",
+                       return_value={"number": 55, "headRefName": "feat/issue-10",
+                                     "headRefOid": "sha_review", "body": "Closes #10"}),
+            mock.patch("flow.adapters.github_client.merge_pull_request") as mock_merge,
+            mock.patch("flow.adapters.github_client.get_work_item",
+                       return_value={"labels": ["flow:review-approved", "flow:feature"]}),
+            mock.patch("flow.adapters.github_client.set_labels"),
+            mock.patch("flow.adapters.github_client.get_state_comment", return_value=None),
+        ):
+            mock_pf.return_value = mock.MagicMock(
+                get_state_comment=mock.MagicMock(return_value=None),
+            )
+            _run_stage(ctx, _STAGE_MERGE_QA)
+
+        # flow:review-approved NÃO deve ser processado por _STAGE_MERGE_QA
+        mock_merge.assert_not_called()
+
+    def test_stage_actions_contem_merge_review_e_merge_qa(self) -> None:
+        """_STAGE_ACTIONS deve conter entradas para merge_review e merge_qa."""
+        from deployment.deployment import (
+            _STAGE_ACTIONS,
+            _STAGE_MERGE_QA,
+            _STAGE_MERGE_REVIEW,
+        )
+
+        assert _STAGE_MERGE_REVIEW in _STAGE_ACTIONS, (
+            f"_STAGE_MERGE_REVIEW não está em _STAGE_ACTIONS. Keys: {list(_STAGE_ACTIONS)}"
+        )
+        assert _STAGE_MERGE_QA in _STAGE_ACTIONS, (
+            f"_STAGE_MERGE_QA não está em _STAGE_ACTIONS. Keys: {list(_STAGE_ACTIONS)}"
+        )
+        assert "merge_pr" in _STAGE_ACTIONS[_STAGE_MERGE_REVIEW]
+        assert "merge_pr" in _STAGE_ACTIONS[_STAGE_MERGE_QA]
+
+    def test_entrypoints_run_review_approved_e_run_qa_approved_existem(self) -> None:
+        """Os entrypoints run_review_approved e run_qa_approved devem estar exportados."""
+        import deployment.deployment as dep
+
+        assert hasattr(dep, "run_review_approved"), "run_review_approved não encontrado em deployment.py"
+        assert hasattr(dep, "run_qa_approved"), "run_qa_approved não encontrado em deployment.py"
+        assert callable(dep.run_review_approved)
+        assert callable(dep.run_qa_approved)
+
+    def test_modulos_review_approved_e_qa_approved_existem(self) -> None:
+        """deployment/flow/review_approved.py e qa_approved.py devem existir e exportar run()."""
+        import importlib.util
+        import os
+
+        flow_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "..", "deployment", "flow",
+        )
+
+        for modname in ("review_approved", "qa_approved"):
+            path = os.path.normpath(os.path.join(flow_dir, f"{modname}.py"))
+            assert os.path.isfile(path), f"deployment/flow/{modname}.py não encontrado em {path}"
+            spec = importlib.util.spec_from_file_location(f"_test_{modname}", path)
+            mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            assert hasattr(mod, "run"), f"deployment/flow/{modname}.py não exporta run()"
+            assert callable(mod.run), f"deployment/flow/{modname}.py: run não é callable"
