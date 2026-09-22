@@ -16,18 +16,25 @@ import importlib.util
 import os
 import sys
 
-# Localiza o deployment.py um nível acima desta pasta (deployment/deployment.py
-# no repo, ou ~/.kiro/crew/crons/deployment.py após instalação).
+# Localiza o deployment.py. Dois layouts possíveis:
+#   - No repo:      deployment/deployment.py  (um nível acima de flow/)
+#   - Instalado:    ~/.kiro/crew/crons/deployment.py  (o install-cron.sh copia
+#                   o deployment.py para a RAIZ de crons/, não para deployment/)
+# Tenta os dois e usa o primeiro que existir.
 _FLOW_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEPLOYMENT_DIR = os.path.dirname(_FLOW_DIR)
-_DEPLOYMENT_PY = os.path.join(_DEPLOYMENT_DIR, "deployment.py")
 
-# Garante que o diretório pai de deployment/ esteja no sys.path para que
-# o deployment.py possa importar flow/ (ele usa _REPO_ROOT / _FLOW_ROOT).
-# O patch de sys.path do install-cron.sh cuida do _FLOW_ROOT — aqui apenas
-# garantimos que o import do próprio deployment.py funcione.
-if _DEPLOYMENT_DIR not in sys.path:
-    sys.path.insert(0, _DEPLOYMENT_DIR)
+_CANDIDATES = [
+    os.path.join(_DEPLOYMENT_DIR, "deployment.py"),                 # repo: deployment/deployment.py
+    os.path.join(os.path.dirname(_DEPLOYMENT_DIR), "deployment.py"),  # instalado: crons/deployment.py
+]
+_DEPLOYMENT_PY = next((p for p in _CANDIDATES if os.path.isfile(p)), _CANDIDATES[0])
+
+# Garante que o diretório do deployment.py escolhido esteja no sys.path para
+# que ele consiga resolver seus próprios imports.
+_DEPLOYMENT_PARENT = os.path.dirname(_DEPLOYMENT_PY)
+if _DEPLOYMENT_PARENT not in sys.path:
+    sys.path.insert(0, _DEPLOYMENT_PARENT)
 
 # Carrega deployment.py como módulo se ainda não estiver em sys.modules.
 # Usa o nome "_deployment_module" para evitar conflito com qualquer pacote
