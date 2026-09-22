@@ -3409,3 +3409,25 @@ def run_conflito(ctx: object) -> None:
                  every=300)
     """
     _run_stage(ctx, _STAGE_CONFLITO)
+
+
+# ── Stub de compatibilidade — re-exporta entrypoints de deployment/flow/ ─────
+#
+# Os crons novos apontam para deployment/flow/<modulo>.py:run.
+# Os crons existentes (run_dev, run_reviewer, run_merge, run_conflito) continuam
+# funcionando via as funções definidas acima — não há quebra de compatibilidade.
+#
+# Importações dos módulos flow/ disponíveis para uso direto quando instalados:
+#
+#   from deployment.flow.dev      import run as run_dev_flow
+#   from deployment.flow.reviewer import run as run_reviewer_flow
+#   from deployment.flow.merge    import run as run_merge_flow
+#   from deployment.flow.conflict import run as run_conflict_flow
+#   from deployment.flow.rework   import run as run_rework_flow
+#
+# Novos scripts de cron (após install-cron.sh):
+#   script="~/.kiro/crew/crons/deployment/flow/dev.py:run"
+#   script="~/.kiro/crew/crons/deployment/flow/reviewer.py:run"
+#   script="~/.kiro/crew/crons/deployment/flow/merge.py:run"
+#   script="~/.kiro/crew/crons/deployment/flow/conflict.py:run"
+#   script="~/.kiro/crew/crons/deployment/flow/rework.py:run"

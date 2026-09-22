@@ -24,9 +24,20 @@ echo "  crons: $CRONS_DIR"
 
 mkdir -p "$CRONS_DIR"
 
-# 1. Copia o script
+# 1. Copia o script monolítico
 cp "$REPO_ROOT/deployment/deployment.py" "$CRONS_DIR/deployment.py"
 echo "  ✅ deployment.py copiado"
+
+# 1b. Copia a pasta deployment/flow/ (módulos por cron)
+mkdir -p "$CRONS_DIR/deployment/flow"
+cp "$REPO_ROOT/deployment/flow/__init__.py" "$CRONS_DIR/deployment/__init__.py" 2>/dev/null || true
+cp "$REPO_ROOT/deployment/flow/__init__.py" "$CRONS_DIR/deployment/flow/__init__.py"
+for f in base dev reviewer merge conflict rework qa_notify qa_refused; do
+    if [ -f "$REPO_ROOT/deployment/flow/${f}.py" ]; then
+        cp "$REPO_ROOT/deployment/flow/${f}.py" "$CRONS_DIR/deployment/flow/${f}.py"
+    fi
+done
+echo "  ✅ deployment/flow/ copiado"
 
 # 2. Aplica o patch de sys.path
 # O script instalado roda de ~/.kiro/crew/crons/ onde flow/ não existe.
@@ -106,25 +117,31 @@ echo "=== Instalação completa ==="
 echo ""
 echo "  Para registrar os crons por estágio (recomendado), no dashboard do Kiro Crew:"
 echo ""
-echo "    # Cron dev — implementação (issues crewflow:todo)"
-echo "    cron_add(name=\"crewflow-dev\","
-echo "             script=\"~/.kiro/crew/crons/deployment.py:run_dev\","
+echo "    # Cron dev — implementação (issues flow:develop-waiting)"
+echo "    cron_add(name=\"flow-dev\","
+echo "             script=\"~/.kiro/crew/crons/deployment/flow/dev.py:run\","
 echo "             every=600)"
 echo ""
-echo "    # Cron reviewer — code review (PRs crewflow:review)"
-echo "    cron_add(name=\"crewflow-reviewer\","
-echo "             script=\"~/.kiro/crew/crons/deployment.py:run_reviewer\","
+echo "    # Cron reviewer — code review (PRs flow:review-waiting)"
+echo "    cron_add(name=\"flow-reviewer\","
+echo "             script=\"~/.kiro/crew/crons/deployment/flow/reviewer.py:run\","
 echo "             every=300)"
 echo ""
-echo "    # Cron merge — merge squash (crewflow:review + crewflow:reviewed aprovado)"
-echo "    cron_add(name=\"crewflow-merge\","
-echo "             script=\"~/.kiro/crew/crons/deployment.py:run_merge\","
+echo "    # Cron merge — merge squash (flow:review-approved / flow:qa-approved)"
+echo "    cron_add(name=\"flow-merge\","
+echo "             script=\"~/.kiro/crew/crons/deployment/flow/merge.py:run\","
 echo "             every=120)"
 echo ""
-echo "    # Cron conflito — re-trabalho pós-review (crewflow:changes-requested)"
-echo "    cron_add(name=\"crewflow-conflito\","
-echo "             script=\"~/.kiro/crew/crons/deployment.py:run_conflito\","
+echo "    # Cron conflito/rework — resolução de conflito e re-trabalho pós-review"
+echo "    cron_add(name=\"flow-rework\","
+echo "             script=\"~/.kiro/crew/crons/deployment/flow/rework.py:run\","
 echo "             every=300)"
+echo ""
+echo "  Ou, usando os entrypoints legados (equivalentes, também funcionam):"
+echo "    script=\"~/.kiro/crew/crons/deployment.py:run_dev\""
+echo "    script=\"~/.kiro/crew/crons/deployment.py:run_reviewer\""
+echo "    script=\"~/.kiro/crew/crons/deployment.py:run_merge\""
+echo "    script=\"~/.kiro/crew/crons/deployment.py:run_conflito\""
 echo ""
 echo "  Ou, para usar o cron monolítico legado (todos os estágios em sequência):"
 echo "    cron_add(name=\"crewflow-scan\","
