@@ -111,7 +111,7 @@ class TestRegisterRoutes:
 
     def test_three_explicit_routes(self) -> None:
         routes = self._get_routes()
-        assert len(routes) == 3, f"esperado 3 rotas, obtido {len(routes)}"
+        assert len(routes) == 5, f"esperado 5 rotas, obtido {len(routes)}"
 
     def test_handlers_are_callable(self) -> None:
         routes = self._get_routes()

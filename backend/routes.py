@@ -124,6 +124,8 @@ def register_routes(ctx: object) -> list:
         AppRoute("GET", "/health", handle_health),
         AppRoute("GET", "/issues", handle_issues),
         AppRoute("POST", "/dispatch", handle_dispatch),
+        AppRoute("POST", "/qa-fail", handle_qa_fail),
+        AppRoute("POST", "/qa-approve", handle_qa_approve),
     ]
 
 
@@ -531,3 +533,167 @@ def _force_dispatch(repo: str, issue_number: int) -> dict:
         }
 
     return {"ok": True, "dispatched": True}
+
+
+async def handle_qa_fail(request: web.Request, ctx: object = None) -> web.Response:
+    """Reprova uma issue no QA: adiciona flow:qa-refused e remove flow:qa-testing.
+
+    Body JSON: {"repo": "owner/repo", "number": 123, "reason": "motivo opcional"}
+
+    O estado flow:qa-refused é um gate humano — o TL/dev decide o próximo passo
+    manualmente (mover para flow:develop-waiting ou flow:develop-running).
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "body JSON inválido"}, status=400)
+
+    repo = body.get("repo", "")
+    number = body.get("number")
+    reason = body.get("reason", "")
+
+    if not repo or not number:
+        return web.json_response(
+            {"ok": False, "error": "campos 'repo' e 'number' são obrigatórios"},
+            status=400,
+        )
+
+    try:
+        number = int(number)
+    except (TypeError, ValueError):
+        return web.json_response({"ok": False, "error": "'number' deve ser um inteiro"}, status=400)
+
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _mark_qa_fail, repo, number, reason)
+        return web.json_response(result)
+    except Exception as exc:
+        logger.exception("handle_qa_fail: erro inesperado: %s", exc)
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+async def handle_qa_approve(request: web.Request, ctx: object = None) -> web.Response:
+    """Aprova uma issue no QA: move de flow:qa-testing para flow:qa-approved.
+
+    Body JSON: {"repo": "owner/repo", "number": 123}
+
+    O executor detecta flow:qa-approved e faz o merge final automaticamente.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "body JSON inválido"}, status=400)
+
+    repo = body.get("repo", "")
+    number = body.get("number")
+
+    if not repo or not number:
+        return web.json_response(
+            {"ok": False, "error": "campos 'repo' e 'number' são obrigatórios"},
+            status=400,
+        )
+
+    try:
+        number = int(number)
+    except (TypeError, ValueError):
+        return web.json_response({"ok": False, "error": "'number' deve ser um inteiro"}, status=400)
+
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _mark_qa_approve, repo, number)
+        return web.json_response(result)
+    except Exception as exc:
+        logger.exception("handle_qa_approve: erro inesperado: %s", exc)
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+def _mark_qa_fail(repo: str, issue_number: int, reason: str) -> dict:
+    """Marca flow:qa-refused na issue (gate humano — sem dispatch automático).
+
+    Remove flow:qa-testing e adiciona flow:qa-refused.
+    Posta comentário com o motivo para o TL/dev lerem antes de decidir.
+    """
+    app_root = Path(__file__).parent.parent
+    if str(app_root) not in sys.path:
+        sys.path.insert(0, str(app_root))
+
+    from flow.adapters import github_client as gh
+    from flow.domain.state import State, parse_state
+    from flow.ports.issue_provider import ProviderError, ProviderNotFoundError
+
+    try:
+        item = gh.get_work_item(repo, str(issue_number))
+    except ProviderNotFoundError:
+        return {"ok": False, "error": f"issue #{issue_number} não encontrada em {repo!r}"}
+    except ProviderError as exc:
+        return {"ok": False, "error": f"erro ao acessar a issue: {exc}"}
+
+    current_labels = set(item.get("labels", []))
+    state = parse_state(current_labels)
+
+    if state not in (State.QA_TESTING, State.QA_WAITING):
+        return {
+            "ok": False,
+            "error": f"issue #{issue_number} não está em qa-testing/qa-waiting (estado atual: {state})",
+        }
+
+    # Troca qa-testing → qa-refused
+    new_labels = (current_labels - {"flow:qa-testing", "flow:qa-waiting"}) | {"flow:qa-refused"}
+    try:
+        gh.set_labels(repo, str(issue_number), sorted(new_labels))
+    except ProviderError as exc:
+        return {"ok": False, "error": f"erro ao aplicar flow:qa-refused: {exc}"}
+
+    # Posta comentário com o motivo
+    if reason:
+        import contextlib
+        with contextlib.suppress(Exception):
+            gh.add_issue_comment(
+                repo,
+                issue_number,
+                f"❌ **QA Reprovado** — motivo: {reason}\n\n"
+                f"A issue está em `flow:qa-refused` (gate humano). "
+                f"TL/dev deve avaliar e mover manualmente para `flow:develop-waiting` "
+                f"(novo ciclo) ou `flow:develop-running` (rework direto).",
+            )
+
+    return {"ok": True, "qa_refused": True}
+
+
+def _mark_qa_approve(repo: str, issue_number: int) -> dict:
+    """Aprova a issue no QA: move de flow:qa-testing para flow:qa-approved.
+
+    O executor detecta flow:qa-approved e faz o merge squash final automaticamente.
+    """
+    app_root = Path(__file__).parent.parent
+    if str(app_root) not in sys.path:
+        sys.path.insert(0, str(app_root))
+
+    from flow.adapters import github_client as gh
+    from flow.domain.state import State, parse_state
+    from flow.ports.issue_provider import ProviderError, ProviderNotFoundError
+
+    try:
+        item = gh.get_work_item(repo, str(issue_number))
+    except ProviderNotFoundError:
+        return {"ok": False, "error": f"issue #{issue_number} não encontrada em {repo!r}"}
+    except ProviderError as exc:
+        return {"ok": False, "error": f"erro ao acessar a issue: {exc}"}
+
+    current_labels = set(item.get("labels", []))
+    state = parse_state(current_labels)
+
+    if state not in (State.QA_TESTING, State.QA_WAITING):
+        return {
+            "ok": False,
+            "error": f"issue #{issue_number} não está em qa-testing/qa-waiting (estado atual: {state})",
+        }
+
+    # Troca qa-testing → qa-approved (o executor faz o merge squash final)
+    new_labels = (current_labels - {"flow:qa-testing", "flow:qa-waiting"}) | {"flow:qa-approved"}
+    try:
+        gh.set_labels(repo, str(issue_number), sorted(new_labels))
+    except ProviderError as exc:
+        return {"ok": False, "error": f"erro ao aplicar flow:qa-approved: {exc}"}
+
+    return {"ok": True, "qa_approved": True}

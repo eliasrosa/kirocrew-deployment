@@ -1,22 +1,27 @@
-import { jsxs as t, jsx as r } from "react/jsx-runtime";
-import { useAppApi as T } from "@kirocrew/app-sdk";
-import { PageHeader as P, Btn as h, Card as j } from "@kirocrew/app-sdk/ui";
-import { useState as d, useCallback as z, useEffect as q } from "react";
-function D(e) {
+import { jsxs as r, jsx as i } from "react/jsx-runtime";
+import { useAppApi as E } from "@kirocrew/app-sdk";
+import { PageHeader as T, Btn as w, Card as D } from "@kirocrew/app-sdk/ui";
+import { useState as g, useCallback as _, useEffect as j } from "react";
+function K(e) {
   return e < 60 ? `${e}m` : e < 1440 ? `${Math.floor(e / 60)}h` : `${Math.floor(e / 1440)}d`;
 }
-function K(e) {
+function P(e) {
   return e.split("/").pop() ?? e;
 }
-function y() {
+function S() {
   return {
-    spec: [],
-    ready: [],
-    todo: [],
-    dev: [],
-    review: [],
-    review_ok: [],
-    reviewed: [],
+    briefing: [],
+    planning_specs: [],
+    planning_review: [],
+    develop_waiting: [],
+    develop_running: [],
+    review_waiting: [],
+    review_approved: [],
+    review_refused: [],
+    qa_waiting: [],
+    qa_testing: [],
+    qa_approved: [],
+    qa_refused: [],
     done: [],
     blocked: []
   };
@@ -25,64 +30,93 @@ const M = {
   squad_name: "KiroCrew Flow (demo)",
   project: "eliasrosa/kirocrew-flow",
   columns: {
-    spec: [
-      { number: 95, title: "Exemplo: feature sendo especificada", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 240, labels: ["crewflow:spec", "crewflow:feature"], blocked: !1, running: !1 }
+    briefing: [
+      { number: 95, title: "Exemplo: demanda sendo especificada", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 240, labels: ["flow:briefing"], blocked: !1, running: !1 }
     ],
-    ready: [
-      { number: 97, title: "Exemplo: spec pronta, aguardando priorização", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 120, labels: ["crewflow:ready", "crewflow:feature"], blocked: !1, running: !1 }
+    planning_specs: [
+      { number: 97, title: "Exemplo: dev montando spec/critérios", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 120, labels: ["flow:planning-specs"], blocked: !1, running: !1 }
     ],
-    todo: [
-      { number: 99, title: "Exemplo: feature aguardando dev", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 45, labels: ["crewflow:feature", "crewflow:p2"], blocked: !1, running: !1 }
+    planning_review: [],
+    develop_waiting: [
+      { number: 99, title: "Exemplo: aguardando agente", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 45, labels: ["flow:develop-waiting"], blocked: !1, running: !1 }
     ],
-    dev: [
-      { number: 100, title: "Exemplo: issue em implementação", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 120, labels: ["crewflow:bug", "crewflow:p1"], blocked: !1, running: !0 }
+    develop_running: [
+      { number: 100, title: "Exemplo: agente implementando", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 120, labels: ["flow:develop-running"], blocked: !1, running: !0 }
     ],
-    review: [
-      { number: 101, title: "Exemplo: PR aguardando review", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 30, labels: ["crewflow:feature"], blocked: !1, running: !1 }
+    review_waiting: [
+      { number: 101, title: "Exemplo: PR aguardando reviewer", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 30, labels: ["flow:review-waiting"], blocked: !1, running: !1 }
     ],
-    review_ok: [
-      { number: 103, title: "Exemplo: PR aprovado, aguardando merge", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 15, labels: ["crewflow:feature", "crewflow:review-ok"], blocked: !1, running: !1 }
+    review_approved: [
+      { number: 103, title: "Exemplo: reviewer aprovou — aguardando merge", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 15, labels: ["flow:review-approved"], blocked: !1, running: !1 }
     ],
-    reviewed: [],
+    review_refused: [],
+    qa_waiting: [],
+    qa_testing: [],
+    qa_approved: [],
+    qa_refused: [],
     done: [],
     blocked: [
-      { number: 102, title: "Exemplo: issue bloqueada", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 240, labels: ["crewflow:debt"], blocked: !0, running: !1 }
+      { number: 102, title: "Exemplo: issue bloqueada", repo: "eliasrosa/kirocrew-flow", url: "", age_min: 240, labels: ["flow:blocked"], blocked: !0, running: !1 }
     ]
   }
 };
-function b({ issue: e, showDispatch: i, onDispatch: o, dispatching: n }) {
-  return /* @__PURE__ */ t(j, { style: { marginBottom: 8, padding: "10px 12px" }, children: [
-    /* @__PURE__ */ t("div", { style: { display: "flex", alignItems: "flex-start", gap: 8 }, children: [
-      /* @__PURE__ */ t("div", { style: { flex: 1, minWidth: 0 }, children: [
-        /* @__PURE__ */ t("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }, children: [
-          /* @__PURE__ */ t("span", { style: { fontWeight: 600, fontSize: 12, opacity: 0.6, whiteSpace: "nowrap" }, children: [
+function B({ issue: e, showDispatch: n, onDispatch: t, dispatching: s, showQaButtons: m, onQaFail: f, onQaApprove: h, qaActioning: p }) {
+  return /* @__PURE__ */ r(D, { style: { marginBottom: 8, padding: "10px 12px" }, children: [
+    /* @__PURE__ */ r("div", { style: { display: "flex", alignItems: "flex-start", gap: 8 }, children: [
+      /* @__PURE__ */ r("div", { style: { flex: 1, minWidth: 0 }, children: [
+        /* @__PURE__ */ r("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }, children: [
+          /* @__PURE__ */ r("span", { style: { fontWeight: 600, fontSize: 12, opacity: 0.6, whiteSpace: "nowrap" }, children: [
             "#",
             e.number
           ] }),
-          /* @__PURE__ */ r("span", { style: { fontWeight: 500, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: e.title })
+          /* @__PURE__ */ i("span", { style: { fontWeight: 500, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: e.title })
         ] }),
-        /* @__PURE__ */ t("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 11, opacity: 0.6 }, children: [
-          /* @__PURE__ */ r("span", { children: K(e.repo) }),
-          e.age_min > 0 && /* @__PURE__ */ t("span", { children: [
+        /* @__PURE__ */ r("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 11, opacity: 0.6 }, children: [
+          /* @__PURE__ */ i("span", { children: P(e.repo) }),
+          e.age_min > 0 && /* @__PURE__ */ r("span", { children: [
             "⏱ ",
-            D(e.age_min)
+            K(e.age_min)
           ] }),
-          e.running && /* @__PURE__ */ r("span", { style: { color: "#f97316" }, children: "● running" })
+          e.running && /* @__PURE__ */ i("span", { style: { color: "#f97316" }, children: "● running" })
         ] })
       ] }),
-      i && o && /* @__PURE__ */ r(
-        h,
+      n && t && /* @__PURE__ */ i(
+        w,
         {
           size: "sm",
           variant: "secondary",
-          disabled: n,
-          onClick: () => o(e.repo, e.number),
+          disabled: s,
+          onClick: () => t(e.repo, e.number),
           style: { flexShrink: 0, fontSize: 11 },
-          children: n ? "..." : "Dispatch"
+          children: s ? "..." : "Dispatch"
         }
-      )
+      ),
+      m && (h || f) && /* @__PURE__ */ r("div", { style: { display: "flex", flexDirection: "column", gap: 4, flexShrink: 0 }, children: [
+        h && /* @__PURE__ */ i(
+          w,
+          {
+            size: "sm",
+            variant: "primary",
+            disabled: !!p,
+            onClick: () => h(e.repo, e.number),
+            style: { fontSize: 11, background: "#22c55e", borderColor: "#16a34a" },
+            children: p === "approve" ? "..." : "✓ Aprovar"
+          }
+        ),
+        f && /* @__PURE__ */ i(
+          w,
+          {
+            size: "sm",
+            variant: "secondary",
+            disabled: !!p,
+            onClick: () => f(e.repo, e.number),
+            style: { fontSize: 11, borderColor: "#9333ea", color: "#9333ea" },
+            children: p === "fail" ? "..." : "✗ Reprovar"
+          }
+        )
+      ] })
     ] }),
-    e.url && /* @__PURE__ */ r(
+    e.url && /* @__PURE__ */ i(
       "a",
       {
         href: e.url,
@@ -94,9 +128,9 @@ function b({ issue: e, showDispatch: i, onDispatch: o, dispatching: n }) {
     )
   ] });
 }
-function m({ title: e, issues: i, color: o, showDispatch: n, onDispatch: a, dispatchingKey: u }) {
-  return /* @__PURE__ */ t("div", { style: { flex: 1, minWidth: 160 }, children: [
-    /* @__PURE__ */ t("div", { style: {
+function o({ title: e, issues: n, color: t, showDispatch: s, onDispatch: m, dispatchingKey: f, showQaButtons: h, onQaFail: p, onQaApprove: k, qaActioningKey: u }) {
+  return /* @__PURE__ */ r("div", { style: { flex: 1, minWidth: 160 }, children: [
+    /* @__PURE__ */ r("div", { style: {
       fontSize: 11,
       fontWeight: 600,
       textTransform: "uppercase",
@@ -104,63 +138,80 @@ function m({ title: e, issues: i, color: o, showDispatch: n, onDispatch: a, disp
       opacity: 0.55,
       marginBottom: 8,
       paddingBottom: 4,
-      borderBottom: `1px solid ${o}44`,
+      borderBottom: `1px solid ${t}44`,
       display: "flex",
       alignItems: "center",
       gap: 6
     }, children: [
       e,
-      /* @__PURE__ */ r("span", { style: {
-        background: o + "33",
-        color: o,
+      /* @__PURE__ */ i("span", { style: {
+        background: t + "33",
+        color: t,
         borderRadius: 8,
         padding: "0 6px",
         fontSize: 10,
         fontWeight: 700
-      }, children: i.length })
+      }, children: n.length })
     ] }),
-    i.length === 0 ? /* @__PURE__ */ r("div", { style: { fontSize: 12, opacity: 0.3, textAlign: "center", padding: "12px 0" }, children: "—" }) : i.map((s) => {
-      const f = `${s.repo}#${s.number}`;
-      return /* @__PURE__ */ r(
-        b,
+    n.length === 0 ? /* @__PURE__ */ i("div", { style: { fontSize: 12, opacity: 0.3, textAlign: "center", padding: "12px 0" }, children: "—" }) : n.map((v) => {
+      const b = `${v.repo}#${v.number}`;
+      return /* @__PURE__ */ i(
+        B,
         {
-          issue: s,
-          showDispatch: n,
-          onDispatch: a,
-          dispatching: u === f
+          issue: v,
+          showDispatch: s,
+          onDispatch: m,
+          dispatching: f === b,
+          showQaButtons: h,
+          onQaFail: p,
+          onQaApprove: k,
+          qaActioning: u != null && u.startsWith(`${b}:`) ? u.split(":").pop() : void 0
         },
-        f
+        b
       );
     })
   ] });
 }
-function W({ title: e, subtitle: i, issues: o, accentColor: n }) {
-  return /* @__PURE__ */ t("div", { style: {
-    flex: 1,
+function N({ columns: e, accentColor: n }) {
+  const t = e.briefing.length + e.planning_specs.length + e.planning_review.length;
+  return /* @__PURE__ */ r("div", { style: {
     border: `1px solid ${n}33`,
     borderRadius: 10,
     padding: "14px 16px",
     background: `${n}08`,
-    minWidth: 220
+    flex: 1,
+    minWidth: 260
   }, children: [
-    /* @__PURE__ */ t("div", { style: { marginBottom: 10 }, children: [
-      /* @__PURE__ */ r("div", { style: { fontWeight: 700, fontSize: 13, color: n, marginBottom: 2 }, children: e }),
-      /* @__PURE__ */ r("div", { style: { fontSize: 11, opacity: 0.5 }, children: i })
+    /* @__PURE__ */ r("div", { style: { marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }, children: [
+      /* @__PURE__ */ i("div", { style: { fontWeight: 700, fontSize: 13, color: n }, children: "Planning" }),
+      /* @__PURE__ */ i("span", { style: {
+        background: n + "33",
+        color: n,
+        borderRadius: 10,
+        padding: "1px 7px",
+        fontSize: 11,
+        fontWeight: 700
+      }, children: t })
     ] }),
-    o.length === 0 ? /* @__PURE__ */ r("div", { style: { fontSize: 12, opacity: 0.3, textAlign: "center", padding: "12px 0" }, children: "—" }) : o.map((a) => /* @__PURE__ */ r(b, { issue: a }, `${a.repo}#${a.number}`))
+    /* @__PURE__ */ r("div", { style: { display: "flex", gap: 12, flexWrap: "wrap" }, children: [
+      /* @__PURE__ */ i(o, { title: "Briefing", issues: e.briefing, color: "#f59e0b" }),
+      /* @__PURE__ */ i(o, { title: "Specs", issues: e.planning_specs, color: "#fbbf24" }),
+      /* @__PURE__ */ i(o, { title: "Revisão TL", issues: e.planning_review, color: "#d97706" })
+    ] })
   ] });
 }
-function F({ columns: e, onDispatch: i, dispatchingKey: o }) {
-  return /* @__PURE__ */ t("div", { style: {
+function F({ columns: e, onDispatch: n, dispatchingKey: t }) {
+  const s = e.review_refused.length + e.qa_refused.length;
+  return /* @__PURE__ */ r("div", { style: {
     border: "1px solid rgba(128,128,128,0.15)",
     borderRadius: 10,
     padding: "14px 16px",
     marginTop: 16
   }, children: [
-    /* @__PURE__ */ r("div", { style: { fontWeight: 700, fontSize: 12, opacity: 0.4, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 14 }, children: "Agentes" }),
-    /* @__PURE__ */ t("div", { style: { display: "flex", gap: 20, flexWrap: "wrap" }, children: [
-      /* @__PURE__ */ t("div", { style: { flex: 1, minWidth: 300 }, children: [
-        /* @__PURE__ */ t("div", { style: {
+    /* @__PURE__ */ i("div", { style: { fontWeight: 700, fontSize: 12, opacity: 0.4, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 14 }, children: "Agentes" }),
+    /* @__PURE__ */ r("div", { style: { display: "flex", gap: 20, flexWrap: "wrap" }, children: [
+      /* @__PURE__ */ r("div", { style: { flex: 1, minWidth: 300 }, children: [
+        /* @__PURE__ */ r("div", { style: {
           fontWeight: 700,
           fontSize: 13,
           marginBottom: 12,
@@ -170,40 +221,40 @@ function F({ columns: e, onDispatch: i, dispatchingKey: o }) {
           alignItems: "center",
           gap: 8
         }, children: [
-          /* @__PURE__ */ r("span", { children: "Desenvolvimento" }),
-          /* @__PURE__ */ r("span", { style: {
+          /* @__PURE__ */ i("span", { children: "Desenvolvimento" }),
+          /* @__PURE__ */ i("span", { style: {
             background: "#2563eb",
             color: "#fff",
             borderRadius: 10,
             padding: "1px 7px",
             fontSize: 11,
             fontWeight: 700
-          }, children: e.todo.length + e.dev.length })
+          }, children: e.develop_waiting.length + e.develop_running.length })
         ] }),
-        /* @__PURE__ */ t("div", { style: { display: "flex", gap: 12 }, children: [
-          /* @__PURE__ */ r(
-            m,
+        /* @__PURE__ */ r("div", { style: { display: "flex", gap: 12 }, children: [
+          /* @__PURE__ */ i(
+            o,
             {
               title: "Aguardando",
-              issues: e.todo,
+              issues: e.develop_waiting,
               color: "#16a34a",
               showDispatch: !0,
-              onDispatch: i,
-              dispatchingKey: o ?? void 0
+              onDispatch: n,
+              dispatchingKey: t ?? void 0
             }
           ),
-          /* @__PURE__ */ r(
-            m,
+          /* @__PURE__ */ i(
+            o,
             {
-              title: "Trabalhando",
-              issues: e.dev,
+              title: "Implementando",
+              issues: e.develop_running,
               color: "#2563eb"
             }
           )
         ] })
       ] }),
-      /* @__PURE__ */ t("div", { style: { flex: 1, minWidth: 300 }, children: [
-        /* @__PURE__ */ t("div", { style: {
+      /* @__PURE__ */ r("div", { style: { flex: 1, minWidth: 300 }, children: [
+        /* @__PURE__ */ r("div", { style: {
           fontWeight: 700,
           fontSize: 13,
           marginBottom: 12,
@@ -213,119 +264,179 @@ function F({ columns: e, onDispatch: i, dispatchingKey: o }) {
           alignItems: "center",
           gap: 8
         }, children: [
-          /* @__PURE__ */ r("span", { children: "Code Review" }),
-          /* @__PURE__ */ r("span", { style: {
+          /* @__PURE__ */ i("span", { children: "Code Review" }),
+          /* @__PURE__ */ i("span", { style: {
             background: "#8b5cf6",
             color: "#fff",
             borderRadius: 10,
             padding: "1px 7px",
             fontSize: 11,
             fontWeight: 700
-          }, children: e.review.length + e.review_ok.length })
+          }, children: e.review_waiting.length + e.review_approved.length })
         ] }),
-        /* @__PURE__ */ t("div", { style: { display: "flex", gap: 12 }, children: [
-          /* @__PURE__ */ r(
-            m,
+        /* @__PURE__ */ r("div", { style: { display: "flex", gap: 12 }, children: [
+          /* @__PURE__ */ i(
+            o,
             {
               title: "Aguardando",
-              issues: e.review,
+              issues: e.review_waiting,
               color: "#8b5cf6"
             }
           ),
-          /* @__PURE__ */ r(
-            m,
+          /* @__PURE__ */ i(
+            o,
             {
               title: "Aprovado ✓",
-              issues: e.review_ok,
+              issues: e.review_approved,
               color: "#22c55e"
             }
           )
         ] })
+      ] }),
+      /* @__PURE__ */ r("div", { style: { flex: 1, minWidth: 300 }, children: [
+        /* @__PURE__ */ r("div", { style: {
+          fontWeight: 700,
+          fontSize: 13,
+          marginBottom: 12,
+          paddingBottom: 6,
+          borderBottom: "2px solid #0ea5e9",
+          display: "flex",
+          alignItems: "center",
+          gap: 8
+        }, children: [
+          /* @__PURE__ */ i("span", { children: "QA" }),
+          /* @__PURE__ */ i("span", { style: {
+            background: "#0ea5e9",
+            color: "#fff",
+            borderRadius: 10,
+            padding: "1px 7px",
+            fontSize: 11,
+            fontWeight: 700
+          }, children: e.qa_waiting.length + e.qa_testing.length + e.qa_approved.length })
+        ] }),
+        /* @__PURE__ */ r("div", { style: { display: "flex", gap: 12 }, children: [
+          /* @__PURE__ */ i(o, { title: "Aguardando", issues: e.qa_waiting, color: "#0ea5e9" }),
+          /* @__PURE__ */ i(
+            o,
+            {
+              title: "Testando",
+              issues: e.qa_testing,
+              color: "#38bdf8",
+              showQaButtons: !0,
+              onQaFail: handleQaFail,
+              onQaApprove: handleQaApprove,
+              qaActioningKey: qaActioningKey ?? void 0
+            }
+          ),
+          /* @__PURE__ */ i(o, { title: "Aprovado ✓", issues: e.qa_approved, color: "#22c55e" })
+        ] })
+      ] })
+    ] }),
+    s > 0 && /* @__PURE__ */ r("div", { style: {
+      marginTop: 16,
+      border: "1px solid #9333ea33",
+      borderRadius: 8,
+      padding: "10px 14px",
+      background: "#9333ea08"
+    }, children: [
+      /* @__PURE__ */ i("div", { style: { fontWeight: 700, fontSize: 12, color: "#9333ea", marginBottom: 8 }, children: "🚫 Gates humanos — aguardando decisão manual do TL/dev" }),
+      /* @__PURE__ */ r("div", { style: { display: "flex", gap: 12, flexWrap: "wrap" }, children: [
+        e.review_refused.length > 0 && /* @__PURE__ */ i(o, { title: "Review reprovado", issues: e.review_refused, color: "#9333ea" }),
+        e.qa_refused.length > 0 && /* @__PURE__ */ i(o, { title: "QA reprovado", issues: e.qa_refused, color: "#9333ea" })
       ] })
     ] })
   ] });
 }
 function H() {
-  const e = T(), [i, o] = d(y()), [n, a] = d("KiroCrew Flow"), [u, s] = d(""), [f, _] = d(!0), [x, w] = d(null), [$, v] = d(!1), [k, B] = d(null), [C, S] = d(null), c = z(() => e.get("/api/apps/kirocrew-flow/issues").then((l) => {
-    o(l.columns ?? y()), a(l.squad_name || "KiroCrew Flow"), s(l.project || ""), B(/* @__PURE__ */ new Date()), w(null), v(!1);
-  }).catch((l) => {
-    const p = String(l);
-    if (p.includes("404") || p.includes("not found")) {
-      const g = M;
-      o(g.columns ?? y()), a(g.squad_name), s(g.project), v(!0), w(null);
+  const e = E(), [n, t] = g(S()), [s, m] = g("KiroCrew Flow"), [f, h] = g(""), [p, k] = g(!0), [u, v] = g(null), [b, z] = g(!1), [W, $] = g(null), [C, q] = g(null), [L, x] = g(null), d = _(() => e.get("/api/apps/kirocrew-flow/issues").then((a) => {
+    t(a.columns ?? S()), m(a.squad_name || "KiroCrew Flow"), h(a.project || ""), $(/* @__PURE__ */ new Date()), v(null), z(!1);
+  }).catch((a) => {
+    const l = String(a);
+    if (l.includes("404") || l.includes("not found")) {
+      const c = M;
+      t(c.columns ?? S()), m(c.squad_name), h(c.project), z(!0), v(null);
     } else
-      w(p);
+      v(l);
   }).finally(() => {
-    _(!1);
+    k(!1);
   }), [e]);
-  q(() => {
-    c();
-    const l = setInterval(c, 15e3);
-    return () => clearInterval(l);
-  }, [c]);
-  const A = z(
-    async (l, p) => {
-      const g = `${l}#${p}`;
-      S(g);
+  j(() => {
+    d();
+    const a = setInterval(d, 15e3);
+    return () => clearInterval(a);
+  }, [d]);
+  const R = _(
+    async (a, l) => {
+      const c = `${a}#${l}`;
+      q(c);
       try {
-        await e.post("/api/apps/kirocrew-flow/dispatch", { repo: l, number: Number(p) }), await c();
-      } catch (I) {
-        console.error("dispatch failed:", I);
+        await e.post("/api/apps/kirocrew-flow/dispatch", { repo: a, number: Number(l) }), await d();
+      } catch (y) {
+        console.error("dispatch failed:", y);
       } finally {
-        S(null);
+        q(null);
       }
     },
-    [e, c]
-  ), E = u ? `Flow - ${n} / ${u.split("/").pop()}` : n, R = i.spec.length + i.ready.length + i.todo.length + i.dev.length + i.review.length + i.review_ok.length + i.blocked.length;
-  return /* @__PURE__ */ t("div", { style: { padding: "20px 24px", maxWidth: 1400 }, children: [
-    /* @__PURE__ */ r(
-      P,
+    [e, d]
+  );
+  _(
+    async (a, l) => {
+      const c = `${a}#${l}:fail`;
+      x(c);
+      try {
+        await e.post("/api/apps/kirocrew-flow/qa-fail", { repo: a, number: Number(l) }), await d();
+      } catch (y) {
+        console.error("qa-fail failed:", y);
+      } finally {
+        x(null);
+      }
+    },
+    [e, d]
+  ), _(
+    async (a, l) => {
+      const c = `${a}#${l}:approve`;
+      x(c);
+      try {
+        await e.post("/api/apps/kirocrew-flow/qa-approve", { repo: a, number: Number(l) }), await d();
+      } catch (y) {
+        console.error("qa-approve failed:", y);
+      } finally {
+        x(null);
+      }
+    },
+    [e, d]
+  );
+  const A = f ? `Flow - ${s} / ${f.split("/").pop()}` : s, I = n.briefing.length + n.planning_specs.length + n.planning_review.length + n.develop_waiting.length + n.develop_running.length + n.review_waiting.length + n.review_approved.length + n.review_refused.length + n.qa_waiting.length + n.qa_testing.length + n.qa_approved.length + n.qa_refused.length + n.blocked.length;
+  return /* @__PURE__ */ r("div", { style: { padding: "20px 24px", maxWidth: 1400 }, children: [
+    /* @__PURE__ */ i(
+      T,
       {
-        title: E,
-        subtitle: f ? "Carregando…" : x ? `Erro: ${x}` : $ ? "⚠️ Modo demo — backend indisponível" : k ? `${R} issues ativas · atualizado ${k.toLocaleTimeString()}` : "",
-        actions: /* @__PURE__ */ t("div", { style: { display: "flex", gap: 8 }, children: [
-          /* @__PURE__ */ r(h, { size: "sm", variant: "secondary", disabled: !0, children: "Rules" }),
-          /* @__PURE__ */ r(h, { size: "sm", variant: "secondary", disabled: !0, children: "Configurações" }),
-          /* @__PURE__ */ r(h, { size: "sm", variant: "secondary", onClick: c, disabled: f, children: "↻ Atualizar" })
+        title: A,
+        subtitle: p ? "Carregando…" : u ? `Erro: ${u}` : b ? "⚠️ Modo demo — backend indisponível" : W ? `${I} issues ativas · atualizado ${W.toLocaleTimeString()}` : "",
+        actions: /* @__PURE__ */ r("div", { style: { display: "flex", gap: 8 }, children: [
+          /* @__PURE__ */ i(w, { size: "sm", variant: "secondary", disabled: !0, children: "Rules" }),
+          /* @__PURE__ */ i(w, { size: "sm", variant: "secondary", disabled: !0, children: "Configurações" }),
+          /* @__PURE__ */ i(w, { size: "sm", variant: "secondary", onClick: d, disabled: p, children: "↻ Atualizar" })
         ] })
       }
     ),
-    /* @__PURE__ */ t("div", { style: { display: "flex", gap: 16, marginTop: 20, flexWrap: "wrap" }, children: [
-      /* @__PURE__ */ r(
-        W,
-        {
-          title: "Aguardando SPEC",
-          subtitle: "PM especificando",
-          issues: i.spec,
-          accentColor: "#f59e0b"
-        }
-      ),
-      /* @__PURE__ */ r(
-        W,
-        {
-          title: "Aguardando definição de produto/TL",
-          subtitle: "Spec pronta, aguardando priorização",
-          issues: i.ready,
-          accentColor: "#fbbf24"
-        }
-      )
-    ] }),
-    /* @__PURE__ */ r(
+    /* @__PURE__ */ i("div", { style: { display: "flex", gap: 16, marginTop: 20, flexWrap: "wrap" }, children: /* @__PURE__ */ i(N, { columns: n, accentColor: "#f59e0b" }) }),
+    /* @__PURE__ */ i(
       F,
       {
-        columns: i,
-        onDispatch: A,
+        columns: n,
+        onDispatch: R,
         dispatchingKey: C
       }
     ),
-    i.blocked.length > 0 && /* @__PURE__ */ t("div", { style: {
+    n.blocked.length > 0 && /* @__PURE__ */ r("div", { style: {
       marginTop: 20,
       border: "1px solid #dc262633",
       borderRadius: 10,
       padding: "14px 16px",
       background: "#dc262608"
     }, children: [
-      /* @__PURE__ */ t("div", { style: {
+      /* @__PURE__ */ r("div", { style: {
         fontWeight: 700,
         fontSize: 13,
         color: "#dc2626",
@@ -335,15 +446,15 @@ function H() {
         gap: 8
       }, children: [
         "🔴 Bloqueadas",
-        /* @__PURE__ */ r("span", { style: {
+        /* @__PURE__ */ i("span", { style: {
           background: "#dc2626",
           color: "#fff",
           borderRadius: 10,
           padding: "1px 7px",
           fontSize: 11
-        }, children: i.blocked.length })
+        }, children: n.blocked.length })
       ] }),
-      /* @__PURE__ */ r("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 }, children: i.blocked.map((l) => /* @__PURE__ */ r("div", { style: { minWidth: 200, flex: "0 0 auto", maxWidth: 280 }, children: /* @__PURE__ */ r(b, { issue: l }) }, `${l.repo}#${l.number}`)) })
+      /* @__PURE__ */ i("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 }, children: n.blocked.map((a) => /* @__PURE__ */ i("div", { style: { minWidth: 200, flex: "0 0 auto", maxWidth: 280 }, children: /* @__PURE__ */ i(B, { issue: a }) }, `${a.repo}#${a.number}`)) })
     ] })
   ] });
 }
