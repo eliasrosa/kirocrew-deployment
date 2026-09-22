@@ -131,6 +131,7 @@ class TestRunDev:
             mock.patch("deployment.deployment._pr_exists", return_value=False),
             mock.patch("deployment.deployment._resource_headroom_ok", return_value=True),
             mock.patch("deployment.deployment._clean_stale_worktree"),
+            mock.patch("flow.adapters.github_client.edit_issue_labels"),
             mock.patch("deployment.deployment._dispatch") as mock_dispatch,
         ):
             mock_cache.return_value.__enter__ = mock.MagicMock(
@@ -208,6 +209,7 @@ class TestRunDev:
             mock.patch("deployment.deployment._pr_exists", return_value=False),
             mock.patch("deployment.deployment._resource_headroom_ok", return_value=True),
             mock.patch("deployment.deployment._clean_stale_worktree"),
+            mock.patch("flow.adapters.github_client.edit_issue_labels"),
             mock.patch("deployment.deployment._dispatch", side_effect=_fake_dispatch),
         ):
             mock_cache.return_value.__enter__ = mock.MagicMock(
@@ -239,6 +241,7 @@ class TestRunDev:
             mock.patch("deployment.deployment._pr_exists", return_value=False),
             mock.patch("deployment.deployment._resource_headroom_ok", return_value=True),
             mock.patch("deployment.deployment._clean_stale_worktree"),
+            mock.patch("flow.adapters.github_client.edit_issue_labels"),
             mock.patch("deployment.deployment._dispatch", side_effect=_fake_dispatch),
         ):
             mock_cache.return_value.__enter__ = mock.MagicMock(
@@ -268,6 +271,7 @@ class TestRunReviewer:
             mock.patch("deployment.deployment.open_cache") as mock_cache,
             mock.patch("deployment.deployment.provider_for") as mock_pf,
             mock.patch("deployment.deployment._reviewer_has_active", return_value=False),
+            mock.patch("flow.adapters.github_client.edit_issue_labels"),
             mock.patch("deployment.deployment._dispatch_reviewer") as mock_rev,
         ):
             mock_cache.return_value.__enter__ = mock.MagicMock(
@@ -320,6 +324,7 @@ class TestRunReviewer:
             mock.patch("deployment.deployment.open_cache") as mock_cache,
             mock.patch("deployment.deployment.provider_for") as mock_pf,
             mock.patch("deployment.deployment._reviewer_has_active", return_value=False),
+            mock.patch("flow.adapters.github_client.edit_issue_labels"),
             mock.patch("deployment.deployment._dispatch_reviewer",
                        side_effect=_fake_reviewer),
         ):
@@ -709,6 +714,7 @@ class TestEstagioIsolamento:
             mock.patch("deployment.deployment._resource_headroom_ok", return_value=True),
             mock.patch("deployment.deployment._clean_stale_worktree"),
             mock.patch("deployment.deployment._reviewer_has_active", return_value=False),
+            mock.patch("flow.adapters.github_client.edit_issue_labels"),
             mock.patch("deployment.deployment._dispatch", side_effect=_fake_dispatch),
             mock.patch("deployment.deployment._dispatch_reviewer",
                        side_effect=_fake_reviewer),
@@ -731,6 +737,7 @@ class TestEstagioIsolamento:
             mock.patch("deployment.deployment.open_cache") as mock_cache,
             mock.patch("deployment.deployment.provider_for") as mock_pf,
             mock.patch("deployment.deployment._reviewer_has_active", return_value=False),
+            mock.patch("flow.adapters.github_client.edit_issue_labels"),
             mock.patch("deployment.deployment._dispatch", side_effect=_fake_dispatch),
             mock.patch("deployment.deployment._dispatch_reviewer",
                        side_effect=_fake_reviewer),

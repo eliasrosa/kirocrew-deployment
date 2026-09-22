@@ -568,6 +568,7 @@ class TestDispatchGuardPrDuplicado:
             mock.patch("deployment.deployment.open_cache") as mock_cache,
             mock.patch("deployment.deployment._active_sessions", return_value=0),
             mock.patch("deployment.deployment._pr_exists", return_value=False),
+            mock.patch("flow.adapters.github_client.edit_issue_labels"),
             mock.patch("deployment.deployment._dispatch") as mock_disp,
         ):
             mock_cache.return_value.__enter__ = mock.MagicMock(
@@ -1205,6 +1206,7 @@ class TestRunDispatchReviewer:
             mock.patch("deployment.deployment.open_cache") as mock_cache,
             mock.patch("deployment.deployment.provider_for") as mock_provider_for,
             mock.patch("deployment.deployment._reviewer_has_active", return_value=False),
+            mock.patch("flow.adapters.github_client.edit_issue_labels"),
             mock.patch("deployment.deployment._dispatch_reviewer") as mock_disp_rev,
         ):
             mock_cache.return_value.__enter__ = mock.MagicMock(
@@ -1636,6 +1638,7 @@ class TestDryRun:
             mock.patch("deployment.deployment._active_sessions", return_value=0),
             mock.patch("deployment.deployment._repo_has_active", return_value=False),
             mock.patch("deployment.deployment._pr_exists", return_value=False),
+            mock.patch("flow.adapters.github_client.edit_issue_labels"),
             mock.patch("deployment.deployment._dispatch") as mock_dispatch,
         ):
             mock_cache.return_value.__enter__ = mock.MagicMock(
@@ -1663,6 +1666,7 @@ class TestDryRun:
             mock.patch("deployment.deployment._active_sessions", return_value=0),
             mock.patch("deployment.deployment._repo_has_active", return_value=False),
             mock.patch("deployment.deployment._pr_exists", return_value=False),
+            mock.patch("flow.adapters.github_client.edit_issue_labels"),
             mock.patch("deployment.deployment._dispatch") as mock_dispatch,
         ):
             mock_cache.return_value.__enter__ = mock.MagicMock(
@@ -2090,6 +2094,7 @@ class TestParallelDispatchIsolation:
             mock.patch("deployment.deployment._pr_exists", return_value=False),
             mock.patch("deployment.deployment._resource_headroom_ok", return_value=True),
             mock.patch("deployment.deployment._clean_stale_worktree"),
+            mock.patch("flow.adapters.github_client.edit_issue_labels"),
             mock.patch("deployment.deployment._dispatch") as mock_dispatch,
         ):
             mock_cache.return_value.__enter__ = mock.MagicMock(
@@ -2125,6 +2130,7 @@ class TestParallelDispatchIsolation:
             mock.patch("deployment.deployment._pr_exists", return_value=False),
             mock.patch("deployment.deployment._resource_headroom_ok", return_value=True),
             mock.patch("deployment.deployment._clean_stale_worktree"),
+            mock.patch("flow.adapters.github_client.edit_issue_labels"),
             mock.patch("deployment.deployment._dispatch") as mock_dispatch,
         ):
             mock_cache.return_value.__enter__ = mock.MagicMock(
@@ -2221,6 +2227,7 @@ class TestParallelDispatchIsolation:
             mock.patch("deployment.deployment._pr_exists", return_value=False),
             mock.patch("deployment.deployment._resource_headroom_ok", return_value=True),
             mock.patch("deployment.deployment._clean_stale_worktree"),
+            mock.patch("flow.adapters.github_client.edit_issue_labels"),
             mock.patch("deployment.deployment._dispatch") as mock_dispatch,
         ):
             mock_cache.return_value.__enter__ = mock.MagicMock(
@@ -3218,3 +3225,356 @@ class TestMergeReviewStage:
             spec.loader.exec_module(mod)  # type: ignore[union-attr]
             assert hasattr(mod, "run"), f"deployment/flow/{modname}.py não exporta run()"
             assert callable(mod.run), f"deployment/flow/{modname}.py: run não é callable"
+
+
+# ---------------------------------------------------------------------------
+# Issue #207 — lock atômico antes de despachar sessão
+# ---------------------------------------------------------------------------
+
+class TestAtomicLabelLockBeforeDispatch:
+    """Verifica que _run_stage e run() trocam a label atomicamente ANTES de
+    lançar a sessão one-shot, e que, se a troca falhar, a sessão NÃO é lançada.
+
+    Critérios de aceite (#207):
+    - edit_issue_labels chamado ANTES de _dispatch / _dispatch_reviewer
+    - Se edit_issue_labels lança, _dispatch NÃO é chamado (fail-closed)
+    - Estágio dev: develop-waiting → develop-running antes do dispatch
+    - Estágio reviewer: flow:reviewed adicionado antes do dispatch_reviewer
+    """
+
+    def _make_ctx(self) -> object:
+        ctx = mock.MagicMock()
+        ctx._port = 9999
+        ctx._secret = "s"
+        ctx.job.id = "j1"
+        return ctx
+
+    def _base_cfg(self, stage: str = "dev") -> dict:
+        return {
+            "repos": ["owner/repo"],
+            "auto_dispatch": True,
+            "max_concurrent": 2,
+            "notify_chat_id": "",
+            "squad_id": "test",
+            "issue_provider": "github",
+            "dev_root": "/tmp/dev",
+            "agent": "kirocrew",
+        }
+
+    def _make_dev_scan_result(self) -> object:
+        """ScanResult em flow:develop-waiting — candidato a DISPATCH_DEV."""
+        from flow.domain.gates import WorkItem
+        from flow.domain.state import State
+        from flow.scan.scanner import ScanResult
+        return ScanResult(
+            item=WorkItem(
+                key="https://github.com/owner/repo/issues/99",
+                title="Test Issue",
+                labels=frozenset(["flow:develop-waiting", "flow:feature"]),
+            ),
+            current_state=State.DEVELOP_WAITING,
+            modifiers=frozenset(),
+            spec_valid=True,
+            reason="candidato",
+            dispatch_candidate=True,
+            changed=True,
+        )
+
+    def _make_reviewer_scan_result(self) -> object:
+        """ScanResult em flow:review-waiting sem flow:reviewed — candidato a DISPATCH_REVIEWER."""
+        from flow.domain.gates import WorkItem
+        from flow.domain.state import State
+        from flow.scan.scanner import ScanResult
+        return ScanResult(
+            item=WorkItem(
+                key="https://github.com/owner/repo/issues/99",
+                title="Test Issue",
+                labels=frozenset(["flow:review-waiting", "flow:feature"]),
+            ),
+            current_state=State.REVIEW_WAITING,
+            modifiers=frozenset(),
+            spec_valid=True,
+            reason="candidato",
+            dispatch_candidate=True,
+            changed=True,
+        )
+
+    def test_dev_edit_labels_chamado_antes_do_dispatch_em_run_stage(self) -> None:
+        """_run_stage[dev]: edit_issue_labels deve ser chamado ANTES de _dispatch."""
+        from deployment.deployment import _run_stage
+
+        ctx = self._make_ctx()
+        call_order: list[str] = []
+
+        def fake_edit_labels(repo: str, number: int, add: list, remove: list) -> None:
+            call_order.append("edit_labels")
+
+        def fake_dispatch(ctx: object, repo: str, issue: dict, cfg: dict, **kw: object) -> None:
+            call_order.append("dispatch")
+
+        with (
+            mock.patch("deployment.deployment._load_config", return_value=self._base_cfg()),
+            mock.patch("deployment.deployment.scan_candidates",
+                       return_value=[self._make_dev_scan_result()]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment._active_sessions", return_value=0),
+            mock.patch("deployment.deployment._issue_has_active_session", return_value=False),
+            mock.patch("deployment.deployment._resource_headroom_ok", return_value=True),
+            mock.patch("deployment.deployment._clean_stale_worktree"),
+            mock.patch("deployment.deployment._check_installed_version"),
+            mock.patch("deployment.deployment._log_cycle_summary"),
+            mock.patch("deployment.deployment._log_shadow_divergences"),
+            mock.patch("deployment.deployment.set_running_since"),
+            mock.patch("deployment.deployment.clear_running_since"),
+            mock.patch("flow.adapters.github_client.edit_issue_labels", side_effect=fake_edit_labels),
+            mock.patch("deployment.deployment._dispatch", side_effect=fake_dispatch),
+        ):
+            mock_cache.return_value = mock.MagicMock(spec=["close"])
+            _run_stage(ctx, "dev")
+
+        assert "edit_labels" in call_order, "edit_issue_labels não foi chamado"
+        assert "dispatch" in call_order, "_dispatch não foi chamado"
+        assert call_order.index("edit_labels") < call_order.index("dispatch"), (
+            "edit_issue_labels deve ser chamado ANTES de _dispatch"
+        )
+
+    def test_dev_dispatch_nao_chamado_se_edit_labels_falha_em_run_stage(self) -> None:
+        """_run_stage[dev]: se edit_issue_labels falha, _dispatch NÃO é chamado (fail-closed)."""
+        from deployment.deployment import _run_stage
+        from flow.ports.issue_provider import ProviderError
+
+        ctx = self._make_ctx()
+
+        with (
+            mock.patch("deployment.deployment._load_config", return_value=self._base_cfg()),
+            mock.patch("deployment.deployment.scan_candidates",
+                       return_value=[self._make_dev_scan_result()]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment._active_sessions", return_value=0),
+            mock.patch("deployment.deployment._issue_has_active_session", return_value=False),
+            mock.patch("deployment.deployment._resource_headroom_ok", return_value=True),
+            mock.patch("deployment.deployment._clean_stale_worktree"),
+            mock.patch("deployment.deployment._check_installed_version"),
+            mock.patch("deployment.deployment._log_cycle_summary"),
+            mock.patch("deployment.deployment._log_shadow_divergences"),
+            mock.patch("deployment.deployment.set_running_since"),
+            mock.patch("deployment.deployment.clear_running_since"),
+            mock.patch(
+                "flow.adapters.github_client.edit_issue_labels",
+                side_effect=ProviderError("gh falhou: 403"),
+            ),
+            mock.patch("deployment.deployment._dispatch") as mock_dispatch,
+        ):
+            mock_cache.return_value = mock.MagicMock(spec=["close"])
+            _run_stage(ctx, "dev")
+
+        mock_dispatch.assert_not_called()
+
+    def test_dev_edit_labels_args_corretos_em_run_stage(self) -> None:
+        """_run_stage[dev]: edit_issue_labels deve receber add=['flow:develop-running']
+        e remove=['flow:develop-waiting']."""
+        from deployment.deployment import _run_stage
+
+        ctx = self._make_ctx()
+        captured: dict = {}
+
+        def fake_edit(repo: str, number: int, add: list, remove: list) -> None:
+            captured["add"] = add
+            captured["remove"] = remove
+
+        with (
+            mock.patch("deployment.deployment._load_config", return_value=self._base_cfg()),
+            mock.patch("deployment.deployment.scan_candidates",
+                       return_value=[self._make_dev_scan_result()]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment._active_sessions", return_value=0),
+            mock.patch("deployment.deployment._issue_has_active_session", return_value=False),
+            mock.patch("deployment.deployment._resource_headroom_ok", return_value=True),
+            mock.patch("deployment.deployment._clean_stale_worktree"),
+            mock.patch("deployment.deployment._check_installed_version"),
+            mock.patch("deployment.deployment._log_cycle_summary"),
+            mock.patch("deployment.deployment._log_shadow_divergences"),
+            mock.patch("deployment.deployment.set_running_since"),
+            mock.patch("deployment.deployment.clear_running_since"),
+            mock.patch("flow.adapters.github_client.edit_issue_labels", side_effect=fake_edit),
+            mock.patch("deployment.deployment._dispatch"),
+        ):
+            mock_cache.return_value = mock.MagicMock(spec=["close"])
+            _run_stage(ctx, "dev")
+
+        assert "flow:develop-running" in captured.get("add", []), (
+            "edit_issue_labels deve adicionar flow:develop-running"
+        )
+        assert "flow:develop-waiting" in captured.get("remove", []), (
+            "edit_issue_labels deve remover flow:develop-waiting"
+        )
+
+    def test_reviewer_edit_labels_chamado_antes_do_dispatch_em_run_stage(self) -> None:
+        """_run_stage[reviewer]: edit_issue_labels deve ser chamado ANTES de _dispatch_reviewer."""
+        from deployment.deployment import _run_stage
+
+        ctx = self._make_ctx()
+        call_order: list[str] = []
+
+        def fake_edit(repo: str, number: int, add: list, remove: list) -> None:
+            call_order.append("edit_labels")
+
+        def fake_dispatch_reviewer(ctx: object, repo: str, issue: dict, cfg: dict) -> None:
+            call_order.append("dispatch_reviewer")
+
+        with (
+            mock.patch("deployment.deployment._load_config", return_value=self._base_cfg()),
+            mock.patch("deployment.deployment.scan_candidates",
+                       return_value=[self._make_reviewer_scan_result()]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment._active_sessions", return_value=0),
+            mock.patch("deployment.deployment._reviewer_has_active", return_value=False),
+            mock.patch("deployment.deployment._check_installed_version"),
+            mock.patch("deployment.deployment._log_cycle_summary"),
+            mock.patch("deployment.deployment._log_shadow_divergences"),
+            mock.patch("deployment.deployment.set_running_since"),
+            mock.patch("deployment.deployment.clear_running_since"),
+            mock.patch("flow.adapters.github_client.edit_issue_labels", side_effect=fake_edit),
+            mock.patch("deployment.deployment._dispatch_reviewer",
+                       side_effect=fake_dispatch_reviewer),
+        ):
+            mock_cache.return_value = mock.MagicMock(spec=["close"])
+            _run_stage(ctx, "reviewer")
+
+        assert "edit_labels" in call_order, "edit_issue_labels não foi chamado"
+        assert "dispatch_reviewer" in call_order, "_dispatch_reviewer não foi chamado"
+        assert call_order.index("edit_labels") < call_order.index("dispatch_reviewer"), (
+            "edit_issue_labels deve ser chamado ANTES de _dispatch_reviewer"
+        )
+
+    def test_reviewer_dispatch_nao_chamado_se_edit_labels_falha_em_run_stage(self) -> None:
+        """_run_stage[reviewer]: se edit_issue_labels falha, _dispatch_reviewer NÃO é chamado."""
+        from deployment.deployment import _run_stage
+        from flow.ports.issue_provider import ProviderError
+
+        ctx = self._make_ctx()
+
+        with (
+            mock.patch("deployment.deployment._load_config", return_value=self._base_cfg()),
+            mock.patch("deployment.deployment.scan_candidates",
+                       return_value=[self._make_reviewer_scan_result()]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment._active_sessions", return_value=0),
+            mock.patch("deployment.deployment._reviewer_has_active", return_value=False),
+            mock.patch("deployment.deployment._check_installed_version"),
+            mock.patch("deployment.deployment._log_cycle_summary"),
+            mock.patch("deployment.deployment._log_shadow_divergences"),
+            mock.patch("deployment.deployment.set_running_since"),
+            mock.patch("deployment.deployment.clear_running_since"),
+            mock.patch(
+                "flow.adapters.github_client.edit_issue_labels",
+                side_effect=ProviderError("gh falhou: 403"),
+            ),
+            mock.patch("deployment.deployment._dispatch_reviewer") as mock_dispatch_rev,
+        ):
+            mock_cache.return_value = mock.MagicMock(spec=["close"])
+            _run_stage(ctx, "reviewer")
+
+        mock_dispatch_rev.assert_not_called()
+
+    def test_reviewer_edit_labels_adiciona_reviewed_em_run_stage(self) -> None:
+        """_run_stage[reviewer]: edit_issue_labels deve adicionar flow:reviewed."""
+        from deployment.deployment import _run_stage
+
+        ctx = self._make_ctx()
+        captured: dict = {}
+
+        def fake_edit(repo: str, number: int, add: list, remove: list) -> None:
+            captured["add"] = add
+            captured["remove"] = remove
+
+        with (
+            mock.patch("deployment.deployment._load_config", return_value=self._base_cfg()),
+            mock.patch("deployment.deployment.scan_candidates",
+                       return_value=[self._make_reviewer_scan_result()]),
+            mock.patch("deployment.deployment.open_cache") as mock_cache,
+            mock.patch("deployment.deployment._active_sessions", return_value=0),
+            mock.patch("deployment.deployment._reviewer_has_active", return_value=False),
+            mock.patch("deployment.deployment._check_installed_version"),
+            mock.patch("deployment.deployment._log_cycle_summary"),
+            mock.patch("deployment.deployment._log_shadow_divergences"),
+            mock.patch("deployment.deployment.set_running_since"),
+            mock.patch("deployment.deployment.clear_running_since"),
+            mock.patch("flow.adapters.github_client.edit_issue_labels", side_effect=fake_edit),
+            mock.patch("deployment.deployment._dispatch_reviewer"),
+        ):
+            mock_cache.return_value = mock.MagicMock(spec=["close"])
+            _run_stage(ctx, "reviewer")
+
+        assert "flow:reviewed" in captured.get("add", []), (
+            "edit_issue_labels deve adicionar flow:reviewed antes do dispatch do reviewer"
+        )
+
+
+class TestEditIssueLabelsTransport:
+    """Testes unitários de edit_issue_labels no transport e client."""
+
+    def test_transport_monta_comando_correto(self) -> None:
+        """edit_issue_labels monta: gh issue edit N --repo R --add-label A --remove-label B."""
+        from flow.adapters import github_transport as t
+
+        captured: list = []
+
+        def fake_run(args: list, timeout: int = 30) -> dict:
+            captured.extend(args)
+            return {}
+
+        with mock.patch.object(t, "_run", side_effect=fake_run):
+            t.edit_issue_labels("owner/repo", 42, add=["flow:develop-running"],
+                                remove=["flow:develop-waiting"])
+
+        assert "issue" in captured
+        assert "edit" in captured
+        assert "42" in captured
+        assert "--repo" in captured
+        assert "owner/repo" in captured
+        assert "--add-label" in captured
+        assert "flow:develop-running" in captured
+        assert "--remove-label" in captured
+        assert "flow:develop-waiting" in captured
+
+    def test_transport_add_only(self) -> None:
+        """edit_issue_labels com apenas add — sem --remove-label."""
+        from flow.adapters import github_transport as t
+
+        captured: list = []
+
+        def fake_run(args: list, timeout: int = 30) -> dict:
+            captured.extend(args)
+            return {}
+
+        with mock.patch.object(t, "_run", side_effect=fake_run):
+            t.edit_issue_labels("owner/repo", 1, add=["flow:reviewed"], remove=[])
+
+        assert "--add-label" in captured
+        assert "--remove-label" not in captured
+
+    def test_transport_noop_quando_listas_vazias(self) -> None:
+        """edit_issue_labels sem add nem remove não chama _run."""
+        from flow.adapters import github_transport as t
+
+        with mock.patch.object(t, "_run") as mock_run:
+            t.edit_issue_labels("owner/repo", 1, add=[], remove=[])
+
+        mock_run.assert_not_called()
+
+    def test_client_delega_ao_transport(self) -> None:
+        """github_client.edit_issue_labels delega para transport.edit_issue_labels."""
+        from flow.adapters import github_client as c
+        from flow.adapters import github_transport as t
+
+        with mock.patch.object(t, "edit_issue_labels") as mock_t:
+            c.edit_issue_labels("owner/repo", 42,
+                                add=["flow:develop-running"],
+                                remove=["flow:develop-waiting"])
+
+        mock_t.assert_called_once_with(
+            "owner/repo", 42,
+            add=["flow:develop-running"],
+            remove=["flow:develop-waiting"],
+        )

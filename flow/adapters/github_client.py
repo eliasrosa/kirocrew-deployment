@@ -78,6 +78,25 @@ def set_labels(project: str, key: str, labels: list[str]) -> None:
     transport.set_issue_labels(project, number, labels)
 
 
+def edit_issue_labels(
+    project: str,
+    issue_number: int,
+    add: list[str],
+    remove: list[str],
+) -> None:
+    """Troca labels da issue de forma atômica via ``gh issue edit``.
+
+    Executa a transição ``--add-label X --remove-label Y`` em um único
+    comando do gh CLI. Isso é preferível a ``set_labels`` quando se quer
+    mudar apenas um subconjunto de labels sem substituir toda a lista,
+    pois evita race conditions entre crons concorrentes que poderiam
+    sobrescrever labels adicionadas por outro processo.
+
+    Lança ``ProviderError`` se o gh CLI falhar.
+    """
+    transport.edit_issue_labels(project, issue_number, add=add, remove=remove)
+
+
 def upsert_state_comment(project: str, key: str, body: str) -> None:
     """Cria ou atualiza o comentário <!-- KIRO-FLOW-STATE --> da issue.
 

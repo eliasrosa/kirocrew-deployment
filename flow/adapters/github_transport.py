@@ -105,6 +105,37 @@ def set_issue_labels(owner_repo: str, number: int, labels: list[str]) -> None:
         raise ProviderError(f"gh label PUT falhou: {result.stderr.strip()}")
 
 
+def edit_issue_labels(
+    owner_repo: str,
+    number: int,
+    add: list[str],
+    remove: list[str],
+) -> None:
+    """Troca labels da issue de forma atômica via ``gh issue edit``.
+
+    Executa ``gh issue edit --add-label X --remove-label Y`` em um único
+    comando, garantindo que a transição de estado (ex: develop-waiting →
+    develop-running) seja visível atomicamente para outros crons que possam
+    varrer as issues concorrentemente.
+
+    Ao contrário de ``set_issue_labels`` (PUT full replace), esta função
+    preserva labels que não fazem parte da transição — apenas adiciona e
+    remove o conjunto especificado.
+
+    Lança ``ProviderError`` se o comando falhar.
+    """
+    if not add and not remove:
+        return
+
+    cmd = ["issue", "edit", str(number), "--repo", owner_repo]
+    for lbl in add:
+        cmd += ["--add-label", lbl]
+    for lbl in remove:
+        cmd += ["--remove-label", lbl]
+
+    _run(cmd)
+
+
 def get_issue_comments(owner_repo: str, number: int) -> list:
     """Retorna os comentários de uma issue."""
     return cast(list, _run([

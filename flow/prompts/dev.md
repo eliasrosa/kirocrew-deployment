@@ -23,12 +23,11 @@ Execute UMA vez, do início ao fim, e PARE:
    fi
    ```
    Se a issue estiver CLOSED, encerre silenciosamente sem criar branch, sem comentar, sem abrir PR.
-2. RECLAME A TASK IMEDIATAMENTE (após confirmar que a issue está OPEN):
-   - Transição atômica de estado:
-     `gh issue edit {{issue_number}} --repo {{repo}} --add-label "flow:develop-running" --remove-label "flow:develop-waiting"`
+2. SINALIZE A TASK IMEDIATAMENTE (após confirmar que a issue está OPEN):
    - Comente na issue que você pegou:
      `gh issue comment {{issue_number}} --repo {{repo}} --body "🔵 kiro-dev iniciando implementação. Lendo contexto e escopo."`
-   Isso torna o estado visível de imediato e impede que outra varredura re-despache.
+   **Nota:** a label `flow:develop-running` já foi aplicada atomicamente pelo executor
+   antes de lançar esta sessão. Não é necessário (nem correto) trocar a label aqui.
 3. CONTEXTO: leia TODA a documentação do repo:
    - `.kiro/steering/*.md` (steerings do projeto)
    - `README.md`

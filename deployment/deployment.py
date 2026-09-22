@@ -1559,6 +1559,15 @@ def run(ctx: object) -> None:
         _clean_stale_worktree(dev_root, repo, issue["number"])
         try:
             prompt_extra = squad.dispatch_prompt_extra if squad else ""
+            # Lock atômico: troca a label ANTES de lançar a sessão (issue #207).
+            # Se falhar, não lança — fail-closed. Impede que outro cron
+            # redespacha a mesma issue entre o scan e o dispatch.
+            from flow.adapters import github_client as _gh
+            _gh.edit_issue_labels(
+                repo, issue["number"],
+                add=["flow:develop-running"],
+                remove=["flow:develop-waiting"],
+            )
             _dispatch(ctx, repo, issue, cfg, prompt_extra=prompt_extra)
             disparadas.append((repo, issue))
             vagas -= 1
@@ -1656,6 +1665,15 @@ def run(ctx: object) -> None:
                 )
                 continue
             try:
+                # Lock atômico: adiciona flow:reviewed ANTES de lançar o reviewer (issue #207).
+                # Isso fecha a janela de race entre crons concorrentes que poderiam
+                # redespachar o mesmo PR enquanto o reviewer ainda está rodando.
+                from flow.adapters import github_client as _gh
+                _gh.edit_issue_labels(
+                    repo, issue_number,
+                    add=["flow:reviewed"],
+                    remove=[],
+                )
                 _dispatch_reviewer(ctx, repo, issue, cfg)
             except Exception as exc:
                 logger.error(
@@ -3148,6 +3166,15 @@ def _run_stage(ctx: object, stage: str) -> None:
             _clean_stale_worktree(dev_root, repo, issue["number"])
             try:
                 prompt_extra = squad.dispatch_prompt_extra if squad else ""
+                # Lock atômico: troca a label ANTES de lançar a sessão (issue #207).
+                # Se falhar, não lança — fail-closed. Impede que outro cron
+                # redespacha a mesma issue entre o scan e o dispatch.
+                from flow.adapters import github_client as _gh
+                _gh.edit_issue_labels(
+                    repo, issue["number"],
+                    add=["flow:develop-running"],
+                    remove=["flow:develop-waiting"],
+                )
                 _dispatch(ctx, repo, issue, cfg, prompt_extra=prompt_extra)
                 disparadas.append((repo, issue))
                 vagas -= 1
@@ -3216,6 +3243,15 @@ def _run_stage(ctx: object, stage: str) -> None:
                 )
                 continue
             try:
+                # Lock atômico: adiciona flow:reviewed ANTES de lançar o reviewer (issue #207).
+                # Fecha a janela de race entre crons concorrentes que poderiam
+                # redespachar o mesmo PR enquanto o reviewer ainda está rodando.
+                from flow.adapters import github_client as _gh
+                _gh.edit_issue_labels(
+                    repo, issue_number,
+                    add=["flow:reviewed"],
+                    remove=[],
+                )
                 _dispatch_reviewer(ctx, repo, issue, cfg)
             except Exception as exc:
                 logger.error(
