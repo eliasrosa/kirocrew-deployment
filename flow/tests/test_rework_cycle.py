@@ -280,6 +280,7 @@ class TestReworkPrompt:
             pr_number="10",
             dev_root="/home/dev",
             worktree_path="/home/dev/.esteira-worktrees/repo-42",
+            base_branch="main",
             iteration="1",
             notify_step="reporte o resultado, ",
             vault_step="",

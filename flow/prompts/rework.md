@@ -53,8 +53,14 @@ Execute UMA vez, do início ao fim, e PARE:
    Se o worktree não existir (foi removido após a PR), re-crie-o:
    `cd {{dev_root}}/{{repo_short}} && git fetch origin && git worktree add {{worktree_path}} feat/issue-{{issue_number}}`
    Trabalhe DENTRO do worktree; NUNCA toque em outros worktrees.
-6. Implemente as correções solicitadas pelo reviewer.
-7. **VALIDAÇÃO OBRIGATÓRIA — rode ANTES de fazer push.** Se o repo for `eliasrosa/kirocrew-flow`, execute exatamente:
+6. REBASE ANTES DE EDITAR — minimize a janela de divergência:
+   ```bash
+   cd {{worktree_path}}
+   git fetch origin && git rebase origin/{{base_branch}}
+   ```
+   Faça isso imediatamente antes de editar qualquer arquivo. Se o rebase conflitar, resolva antes de continuar.
+7. Implemente as correções solicitadas pelo reviewer.
+8. **VALIDAÇÃO OBRIGATÓRIA — rode ANTES de fazer push.** Se o repo for `eliasrosa/kirocrew-flow`, execute exatamente:
    ```bash
    python3 -m ruff check flow/
    python3 -m mypy flow/ --ignore-missing-imports
@@ -62,17 +68,17 @@ Execute UMA vez, do início ao fim, e PARE:
    ```
    Para outros repos, descubra os comandos via README/Makefile/pyproject — **não presuma**.
    Se qualquer check falhar e você não conseguir corrigir, marque `flow:blocked` e ENCERRE. **Não faça push com CI vermelho.**
-8. Faça commit e push na branch existente:
+9. Faça commit e push na branch existente:
    `git add -A && git commit -m "fix: aplicar pedidos de mudança do reviewer (iteração {{iteration}})" && git push origin feat/issue-{{issue_number}}`
    Isso invalida o lock anti-loop `flow:reviewed` (novo SHA).
-9. Atualize o state_comment da issue incrementando `review_iterations`:
+10. Atualize o state_comment da issue incrementando `review_iterations`:
    - Leia o comentário atual: `gh issue view {{issue_number}} --repo {{repo}} --comments`
    - Incremente o campo `**Iterações de review:**` (ou adicione-o se ausente)
    - Adicione uma linha no histórico: `| <data> | rework → review | kiro-dev |`
    - Atualize via `gh issue comment {{issue_number}} --repo {{repo}} --body "..."` (editando o comentário existente)
-10. Troque a label de volta para review:
+11. Troque a label de volta para review:
    `gh issue edit {{issue_number}} --repo {{repo}} --add-label "flow:review-waiting" --remove-label "flow:develop-running,flow:review-refused"`
-11. Ao terminar: {{notify_step}}
+12. Ao terminar: {{notify_step}}
 
    e ENCERRE.
 

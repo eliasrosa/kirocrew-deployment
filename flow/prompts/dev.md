@@ -45,9 +45,15 @@ Execute UMA vez, do início ao fim, e PARE:
    `BASE=$(gh repo view {{repo}} --json defaultBranchRef --jq .defaultBranchRef.name)`
    `cd {{dev_root}}/{{repo_short}} && git fetch origin && git worktree add -b feat/issue-{{issue_number}} {{worktree_path}} "origin/$BASE"`
    Trabalhe DENTRO do worktree; remova-o ao fim. NUNCA toque em outros worktrees.
-6. Implemente EXATAMENTE o escopo — nada além.
-7. DOCS: atualize README, steerings e docs/ se a mudança afeta comportamento, arquitetura ou convenções. Não atualize se a mudança for puramente interna (bugfix, refactor).
-8. **VALIDAÇÃO OBRIGATÓRIA — rode ANTES de abrir PR.** Se o repo for `eliasrosa/kirocrew-flow`, execute exatamente:
+6. REBASE ANTES DE EDITAR — minimize a janela de divergência:
+   ```bash
+   cd {{worktree_path}}
+   git fetch origin && git rebase origin/{{base_branch}}
+   ```
+   Faça isso imediatamente antes de editar qualquer arquivo. Se o rebase conflitar, resolva antes de continuar.
+7. Implemente EXATAMENTE o escopo — nada além.
+8. DOCS: atualize README, steerings e docs/ se a mudança afeta comportamento, arquitetura ou convenções. Não atualize se a mudança for puramente interna (bugfix, refactor).
+9. **VALIDAÇÃO OBRIGATÓRIA — rode ANTES de abrir PR.** Se o repo for `eliasrosa/kirocrew-flow`, execute exatamente:
    ```bash
    python3 -m ruff check flow/
    python3 -m mypy flow/ --ignore-missing-imports
@@ -55,10 +61,10 @@ Execute UMA vez, do início ao fim, e PARE:
    ```
    Para outros repos, descubra os comandos via README/Makefile/pyproject — **não presuma**.
    Se qualquer check falhar e você não conseguir corrigir, marque `flow:blocked` e ENCERRE. **Não abra PR com CI vermelho.**
-9. Abra PR com 'Closes #{{issue_number}}' e troque a label para `flow:review-waiting` REMOVENDO `flow:develop-running`. Após abrir o PR, ATUALIZE o título da sessão adicionando o número do PR: `{{repo_short}} #{{issue_number}} #<N-PR>: {{issue_title}}`. **NUNCA mergeie. NUNCA faça deploy.** Ambos são ações humanas manuais.
+10. Abra PR com 'Closes #{{issue_number}}' e troque a label para `flow:review-waiting` REMOVENDO `flow:develop-running`. Após abrir o PR, ATUALIZE o título da sessão adicionando o número do PR: `{{repo_short}} #{{issue_number}} #<N-PR>: {{issue_title}}`. **NUNCA mergeie. NUNCA faça deploy.** Ambos são ações humanas manuais.
    Use SEMPRE a forma atômica que remove todos os estados anteriores:
    `gh issue edit {{issue_number}} --repo {{repo}} --add-label "flow:review-waiting" --remove-label "flow:develop-running,flow:develop-waiting"`
-10. Ao terminar: {{notify_step}}
+11. Ao terminar: {{notify_step}}
 
    ENCERRE.
 

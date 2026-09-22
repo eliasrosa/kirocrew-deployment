@@ -709,10 +709,13 @@ _DEV_PROMPT_FALLBACK = (
     "   Para trocar o estado, use SEMPRE a forma atômica que remove todos os estados anteriores:\n"
     "   `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"flow:develop-running\" --remove-label \"flow:develop-waiting\"`\n"
     "   Trabalhe DENTRO do worktree; remova-o ao fim. NUNCA toque em outros worktrees.\n"
-    "4. Implemente EXATAMENTE o escopo — nada além.\n"
-    "5. DOCS: atualize README, steerings e docs/ se a mudança afeta comportamento, "
+    "4. REBASE ANTES DE EDITAR — minimize a janela de divergência:\n"
+    "   `cd {{worktree_path}} && git fetch origin && git rebase origin/{{base_branch}}`\n"
+    "   Faça isso imediatamente antes de editar qualquer arquivo. Se o rebase conflitar, resolva antes de continuar.\n"
+    "5. Implemente EXATAMENTE o escopo — nada além.\n"
+    "6. DOCS: atualize README, steerings e docs/ se a mudança afeta comportamento, "
     "arquitetura ou convenções. Não atualize se a mudança for puramente interna (bugfix, refactor).\n"
-    "6. **VALIDAÇÃO OBRIGATÓRIA — rode ANTES de abrir PR.** Se o repo for `eliasrosa/kirocrew-flow`, execute exatamente:\n"
+    "7. **VALIDAÇÃO OBRIGATÓRIA — rode ANTES de abrir PR.** Se o repo for `eliasrosa/kirocrew-flow`, execute exatamente:\n"
     "   ```bash\n"
     "   python3 -m ruff check flow/\n"
     "   python3 -m mypy flow/ --ignore-missing-imports\n"
@@ -721,13 +724,13 @@ _DEV_PROMPT_FALLBACK = (
     "   Para outros repos, descubra os comandos via README/Makefile/pyproject — **não presuma**.\n"
     "   Se qualquer check falhar e você não conseguir corrigir, marque `flow:blocked` e ENCERRE. "
     "**Não abra PR com CI vermelho.**\n"
-    "7. Abra PR com 'Closes #{{issue_number}}' e troque a label para `flow:review-waiting` REMOVENDO `flow:develop-running`. "
+    "8. Abra PR com 'Closes #{{issue_number}}' e troque a label para `flow:review-waiting` REMOVENDO `flow:develop-running`. "
     "Após abrir o PR, ATUALIZE o título da sessão adicionando o número do PR: "
     "`{{repo_short}} #{{issue_number}} #<N-PR>: {{issue_title}}`. "
     "**NUNCA mergeie. NUNCA faça deploy.** Ambos são ações humanas manuais.\n"
     "   Use SEMPRE a forma atômica que remove todos os estados anteriores:\n"
     "   `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"flow:review-waiting\" --remove-label \"flow:develop-running,flow:develop-waiting\"`\n"
-    "8. Ao terminar: {{notify_step}}\n\n"
+    "9. Ao terminar: {{notify_step}}\n\n"
     "   ENCERRE.\n\n"
     "{{vault_step}}\n\n"
     "### Regras críticas\n\n"
@@ -769,6 +772,18 @@ def _dispatch_prompt(
     worktree = _worktree_path(dev_root, repo, issue["number"])
     session_title = f"{short} #{issue['number']}: {issue['title']}"
 
+    # Descobre a branch base do repo para o passo de rebase
+    base_branch = "main"
+    try:
+        _bb = subprocess.run(
+            ["gh", "repo", "view", repo, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if _bb.returncode == 0:
+            base_branch = _bb.stdout.strip() or "main"
+    except Exception:
+        pass
+
     try:
         return render_prompt(
             "dev",
@@ -781,6 +796,7 @@ def _dispatch_prompt(
             session_title=session_title,
             dev_root=dev_root,
             worktree_path=worktree,
+            base_branch=base_branch,
             notify_step=notify_step,
             vault_step=vault_step,
             prompt_extra=prompt_extra.strip(),
@@ -2104,8 +2120,11 @@ _REWORK_PROMPT_FALLBACK = (
     "   Se o worktree não existir (foi removido após a PR), re-crie-o:\n"
     "   `cd {{dev_root}}/{{repo_short}} && git fetch origin && git worktree add {{worktree_path}} feat/issue-{{issue_number}}`\n"
     "   Trabalhe DENTRO do worktree; NUNCA toque em outros worktrees.\n"
-    "4. Implemente as correções solicitadas pelo reviewer.\n"
-    "5. **VALIDAÇÃO OBRIGATÓRIA — rode ANTES de fazer push.** Se o repo for `eliasrosa/kirocrew-flow`, execute exatamente:\n"
+    "4. REBASE ANTES DE EDITAR — minimize a janela de divergência:\n"
+    "   `cd {{worktree_path}} && git fetch origin && git rebase origin/{{base_branch}}`\n"
+    "   Faça isso imediatamente antes de editar qualquer arquivo. Se o rebase conflitar, resolva antes de continuar.\n"
+    "5. Implemente as correções solicitadas pelo reviewer.\n"
+    "6. **VALIDAÇÃO OBRIGATÓRIA — rode ANTES de fazer push.** Se o repo for `eliasrosa/kirocrew-flow`, execute exatamente:\n"
     "   ```bash\n"
     "   python3 -m ruff check flow/\n"
     "   python3 -m mypy flow/ --ignore-missing-imports\n"
@@ -2114,17 +2133,17 @@ _REWORK_PROMPT_FALLBACK = (
     "   Para outros repos, descubra os comandos via README/Makefile/pyproject — **não presuma**.\n"
     "   Se qualquer check falhar e você não conseguir corrigir, marque `flow:blocked` e ENCERRE. "
     "**Não faça push com CI vermelho.**\n"
-    "6. Faça commit e push na branch existente:\n"
+    "7. Faça commit e push na branch existente:\n"
     "   `git add -A && git commit -m \"fix: aplicar pedidos de mudança do reviewer (iteração {{iteration}})\" && git push origin feat/issue-{{issue_number}}`\n"
     "   Isso invalida `flow:reviewed` automaticamente (novo SHA).\n"
-    "7. Atualize o state_comment da issue incrementando `review_iterations`:\n"
+    "8. Atualize o state_comment da issue incrementando `review_iterations`:\n"
     "   - Leia o comentário atual: `gh issue view {{issue_number}} --repo {{repo}} --comments`\n"
     "   - Incremente o campo `**Iterações de review:**` (ou adicione-o se ausente)\n"
     "   - Adicione uma linha no histórico: `| <data> | rework → review | kiro-dev |`\n"
     "   - Atualize via `gh issue comment {{issue_number}} --repo {{repo}} --body \"...\"` (editando o comentário existente)\n"
-    "8. Troque a label de volta para review:\n"
+    "9. Troque a label de volta para review:\n"
     "   `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"flow:review-waiting\" --remove-label \"flow:develop-running,flow:review-refused\"`\n"
-    "9. Ao terminar: {{notify_step}}\n\n"
+    "10. Ao terminar: {{notify_step}}\n\n"
     "   e ENCERRE.\n\n"
     "{{vault_step}}\n\n"
     "### Regras críticas\n\n"
@@ -2170,6 +2189,18 @@ def _rework_prompt(
     worktree = _worktree_path(dev_root, repo, issue["number"])
     session_title = f"rework: {short} #{issue['number']} PR #{pr_number} (iter {iteration}): {issue['title']}"
 
+    # Descobre a branch base do repo para o passo de rebase
+    base_branch = "main"
+    try:
+        _bb = subprocess.run(
+            ["gh", "repo", "view", repo, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if _bb.returncode == 0:
+            base_branch = _bb.stdout.strip() or "main"
+    except Exception:
+        pass
+
     try:
         return render_prompt(
             "rework",
@@ -2183,6 +2214,7 @@ def _rework_prompt(
             pr_number=str(pr_number),
             dev_root=dev_root,
             worktree_path=worktree,
+            base_branch=base_branch,
             iteration=str(iteration),
             notify_step=notify_step,
             vault_step=vault_step,
