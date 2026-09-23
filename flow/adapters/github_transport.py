@@ -23,8 +23,11 @@ from flow.ports.issue_provider import (
 )
 
 
-def _run(args: list[str], timeout: int = 30) -> dict | list:  # type: ignore[type-arg]
-    """Executa um comando ``gh`` e retorna o JSON parseado.
+def _run_raw(args: list[str], timeout: int = 30) -> str:
+    """Executa um comando ``gh`` e retorna o stdout cru (sem parse JSON).
+
+    Use para comandos cuja saída NÃO é JSON (ex: ``gh issue edit``, que
+    retorna a URL da issue). Lança as mesmas exceções de erro que ``_run``.
 
     Lança ``ProviderSetupError`` se o ``gh`` não estiver autenticado.
     Lança ``ProviderPermissionError`` se o acesso for negado.
@@ -59,11 +62,22 @@ def _run(args: list[str], timeout: int = 30) -> dict | list:  # type: ignore[typ
             )
         raise ProviderError(f"gh falhou (exit {result.returncode}): {stderr}")
 
+    return result.stdout
+
+
+def _run(args: list[str], timeout: int = 30) -> dict | list:  # type: ignore[type-arg]
+    """Executa um comando ``gh`` e retorna o JSON parseado.
+
+    Lança ``ProviderSetupError`` se o ``gh`` não estiver autenticado.
+    Lança ``ProviderPermissionError`` se o acesso for negado.
+    Lança ``ProviderError`` para outros erros (inclui saída não-JSON).
+    """
+    stdout = _run_raw(args, timeout=timeout)
     try:
-        return json.loads(result.stdout)
+        return json.loads(stdout)
     except json.JSONDecodeError as exc:
         raise ProviderError(
-            f"gh retornou JSON inválido: {result.stdout[:200]!r}"
+            f"gh retornou JSON inválido: {stdout[:200]!r}"
         ) from exc
 
 
@@ -133,7 +147,8 @@ def edit_issue_labels(
     for lbl in remove:
         cmd += ["--remove-label", lbl]
 
-    _run(cmd)
+    # gh issue edit retorna a URL da issue (texto), não JSON — usa _run_raw.
+    _run_raw(cmd)
 
 
 def get_issue_comments(owner_repo: str, number: int) -> list:

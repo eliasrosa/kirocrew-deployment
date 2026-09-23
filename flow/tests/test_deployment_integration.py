@@ -3515,16 +3515,19 @@ class TestEditIssueLabelsTransport:
     """Testes unitários de edit_issue_labels no transport e client."""
 
     def test_transport_monta_comando_correto(self) -> None:
-        """edit_issue_labels monta: gh issue edit N --repo R --add-label A --remove-label B."""
+        """edit_issue_labels monta: gh issue edit N --repo R --add-label A --remove-label B.
+
+        Usa _run_raw (não _run) porque gh issue edit retorna URL (texto), não JSON.
+        """
         from flow.adapters import github_transport as t
 
         captured: list = []
 
-        def fake_run(args: list, timeout: int = 30) -> dict:
+        def fake_run_raw(args: list, timeout: int = 30) -> str:
             captured.extend(args)
-            return {}
+            return "https://github.com/owner/repo/issues/42\n"
 
-        with mock.patch.object(t, "_run", side_effect=fake_run):
+        with mock.patch.object(t, "_run_raw", side_effect=fake_run_raw):
             t.edit_issue_labels("owner/repo", 42, add=["flow:develop-running"],
                                 remove=["flow:develop-waiting"])
 
@@ -3544,24 +3547,24 @@ class TestEditIssueLabelsTransport:
 
         captured: list = []
 
-        def fake_run(args: list, timeout: int = 30) -> dict:
+        def fake_run_raw(args: list, timeout: int = 30) -> str:
             captured.extend(args)
-            return {}
+            return "https://github.com/owner/repo/issues/42\n"
 
-        with mock.patch.object(t, "_run", side_effect=fake_run):
+        with mock.patch.object(t, "_run_raw", side_effect=fake_run_raw):
             t.edit_issue_labels("owner/repo", 1, add=["flow:reviewed"], remove=[])
 
         assert "--add-label" in captured
         assert "--remove-label" not in captured
 
     def test_transport_noop_quando_listas_vazias(self) -> None:
-        """edit_issue_labels sem add nem remove não chama _run."""
+        """edit_issue_labels sem add nem remove não chama _run_raw."""
         from flow.adapters import github_transport as t
 
-        with mock.patch.object(t, "_run") as mock_run:
+        with mock.patch.object(t, "_run_raw") as mock_run_raw:
             t.edit_issue_labels("owner/repo", 1, add=[], remove=[])
 
-        mock_run.assert_not_called()
+        mock_run_raw.assert_not_called()
 
     def test_client_delega_ao_transport(self) -> None:
         """github_client.edit_issue_labels delega para transport.edit_issue_labels."""

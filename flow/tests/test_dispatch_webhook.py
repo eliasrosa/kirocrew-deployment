@@ -285,7 +285,7 @@ class TestPostAgentSessionLoopbackFallback:
         mock_webhook.assert_not_called()
         assert captured["url"] == "http://localhost:5000/api/chat"
         assert captured["headers"]["X-internal-secret"] == "s3cr3t"
-        assert captured["headers"]["X-session-key"] == "cron:test-job"
+        assert captured["headers"]["X-session-key"] == "dashboard:slot-1"
 
     def test_no_token_script_ctx_no_attribute_error(
         self, monkeypatch: pytest.MonkeyPatch

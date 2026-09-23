@@ -747,21 +747,39 @@ _DEV_PROMPT_FALLBACK = (
 _WEBHOOK_URL_DEFAULT = "http://localhost:5478/api/hooks/agent"
 
 
-def _webhook_url() -> str:
+def _webhook_url(cfg: dict | None = None) -> str:
     """URL do webhook do dashboard para despachar sessões de agente.
 
-    Lida de ``KIROCREW_WEBHOOK_URL`` (secret/env do cron); default aponta para
-    o endpoint do dashboard local.
+    Ordem de precedência: deployment.config.yaml (webhook_url) → env
+    KIROCREW_WEBHOOK_URL → default (endpoint do dashboard local).
     """
+    if cfg and cfg.get("webhook_url"):
+        return str(cfg["webhook_url"])
     return os.environ.get("KIROCREW_WEBHOOK_URL", _WEBHOOK_URL_DEFAULT)
 
 
-def _webhook_token() -> str:
-    """Token Bearer do webhook, lido de ``KIROCREW_WEBHOOK_TOKEN`` (secret do cron).
+def _webhook_token(cfg: dict | None = None) -> str:
+    """Token Bearer do webhook.
 
-    Vazio por padrão — quando vazio, o dispatch usa o fallback loopback interno.
+    Ordem de precedência: deployment.config.yaml (webhook_token) → env
+    KIROCREW_WEBHOOK_TOKEN. Vazio quando nenhum — aí o dispatch usa o
+    fallback loopback interno.
     """
+    if cfg and cfg.get("webhook_token"):
+        return str(cfg["webhook_token"])
     return os.environ.get("KIROCREW_WEBHOOK_TOKEN", "")
+
+
+def _webhook_secret(cfg: dict | None = None) -> str:
+    """Signing secret do webhook (HMAC-SHA256 do corpo).
+
+    Ordem de precedência: deployment.config.yaml (webhook_secret) → env
+    KIROCREW_WEBHOOK_SECRET. Necessário quando o webhook exige assinatura;
+    sem ele o POST é rejeitado com 401 signature_rejected.
+    """
+    if cfg and cfg.get("webhook_secret"):
+        return str(cfg["webhook_secret"])
+    return os.environ.get("KIROCREW_WEBHOOK_SECRET", "")
 
 
 def _post_agent_session(
@@ -802,16 +820,33 @@ def _post_agent_session(
         "memory_mode": "temporary",
     }).encode()
 
-    token = _webhook_token()
+    token = _webhook_token(cfg)
     if token:
         # ── Transporte preferido: webhook do dashboard ──────────────────
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "Origin": _webhook_url(cfg).rsplit("/api/", 1)[0],
+        }
+        # Assinatura HMAC-SHA256 quando o webhook exige (signing secret).
+        # String assinada = "<timestamp>.<raw body>"; header sha256=<hex>.
+        # Timestamp deve estar dentro de 300s do relógio do gateway.
+        secret = _webhook_secret(cfg)
+        if secret:
+            import hashlib
+            import hmac
+            import time as _time
+
+            ts = str(int(_time.time()))
+            signed = f"{ts}.".encode() + body
+            sig = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+            headers["X-KiroCrew-Timestamp"] = ts
+            headers["X-KiroCrew-Signature"] = f"sha256={sig}"
+
         req = _u.Request(
-            _webhook_url(),
+            _webhook_url(cfg),
             data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
+            headers=headers,
             method="POST",
         )
         try:
@@ -825,26 +860,26 @@ def _post_agent_session(
             return False
         return True
 
-    # ── Fallback: loopback interno (/api/chat) para ctx message-based ──────
-    port = getattr(ctx, "_port", None)
-    secret = getattr(ctx, "_secret", None)
-    if port is None or secret is None:
+    # ── Fallback: loopback interno (/api/chat) ─────────────────────────────
+    # ctx._port e ctx._secret existem no ScriptContext do runtime real do gateway —
+    # o preview de cron não os simula, mas em produção estão presentes.
+    # Usa 5478 como fallback (porta padrão do dashboard).
+    port = getattr(ctx, "_port", 5478)
+    secret = getattr(ctx, "_secret", "")
+    if not port:
         logger.error(
-            "deployment: dispatch abortado (slot %s) — sem KIROCREW_WEBHOOK_TOKEN "
-            "e ctx sem _port/_secret (ScriptContext). Configure o secret do webhook.",
+            "deployment: dispatch abortado (slot %s) — porta do gateway não disponível.",
             slot,
         )
         return False
 
-    job = getattr(ctx, "job", None)
-    job_id = getattr(job, "id", "") if job is not None else ""
     req = _u.Request(
         f"http://localhost:{port}/api/chat",
         data=body,
         headers={
             "Content-Type": "application/json",
             "X-Internal-Secret": secret,
-            "X-Session-Key": f"cron:{job_id}",
+            "X-Session-Key": f"dashboard:{slot}",
         },
         method="POST",
     )
