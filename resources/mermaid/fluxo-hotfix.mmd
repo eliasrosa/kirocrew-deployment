@@ -1,0 +1,43 @@
+flowchart TD
+    AL["🚨 Alerta / incidente<br/>(Grafana, on-call, cliente)"] --> T["🎫 Cria issue<br/>crewflow:hotfix + crewflow:p1"]
+    T --> TRI{"GATE 0<br/>é mesmo hotfix?<br/>(TL ou on-call)"}
+    TRI -.->|"não: pode esperar"| DOWN["⬇️ rebaixa pra crewflow:bug<br/>(entra no fluxo normal)"]
+    TRI -->|"sim: PRD quebrada"| D["🔵 crewflow:dev<br/>(sem spec do PM — o incidente É a spec)"]
+
+    D --> PR["🔀 PR release/VGAT-XXX → main"]
+    PR --> R["🟣 crewflow:review"]
+    R --> BOT["🤖 code review automatizado<br/>(NÃO é encurtável: são minutos)"]
+    BOT --> G1{"GATE 1<br/>TL aprova?<br/>(INVIOLÁVEL)"}
+    G1 -.->|reprova| D
+    G1 -->|aprova| BY{"pula HML?<br/>(decisão do TL)"}
+
+    BY -->|"não — caminho normal"| HML["🚀 Deploy HML manual"]
+    HML --> SMOKE["🔷 crewflow:qa<br/>SMOKE do incidente<br/>(não é regressão completa)"]
+    SMOKE --> G2{"GATE 2<br/>o incidente parou?"}
+    G2 -.->|não| D
+    G2 -->|sim| M["🤝 MERGE MANUAL<br/>→ dispara PRD"]
+
+    BY ==>|"SIM — exceção"| JUST["📋 JUSTIFICATIVA OBRIGATÓRIA<br/>+ crewflow:hml-bypass<br/>(motivo no comentário da issue)"]
+    JUST ==> BLOCK{"tem justificativa<br/>registrada?"}
+    BLOCK -.->|"não"| JUST
+    BLOCK ==>|"sim"| M
+
+    M --> OK["✔️ crewflow:done<br/>PRD corrigida"]
+
+    OK ==> PM["📝 OBRIGATÓRIO: post-mortem<br/>(skill write-postmortem)"]
+    PM ==> DT["🧾 Abre crewflow:debt<br/>com o que foi encurtado<br/>(se houve bypass: a regressão<br/>que NUNCA rodou)"]
+
+    D -.->|"não reproduz /<br/>causa não achada"| K["⚫ crewflow:blocked<br/>(escala, não adivinha)"]
+
+    classDef human fill:#fde68a,stroke:#b45309,color:#000
+    classDef auto fill:#bbf7d0,stroke:#15803d,color:#000
+    classDef gate fill:#e9d5ff,stroke:#7e22ce,color:#000
+    classDef urgent fill:#fecaca,stroke:#b91c1c,color:#000
+    classDef debt fill:#e7e5e4,stroke:#57534e,color:#000
+    classDef bypass fill:#fed7aa,stroke:#c2410c,color:#000
+    class AL,T urgent
+    class D,HML,SMOKE,M human
+    class PR,R,BOT,OK auto
+    class TRI,G1,G2,BY,BLOCK gate
+    class PM,DT,DOWN debt
+    class JUST bypass

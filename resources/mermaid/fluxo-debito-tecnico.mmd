@@ -1,0 +1,39 @@
+flowchart TD
+    subgraph ORIG["Origens (todas legítimas)"]
+        O1["🔍 achado em code review<br/>(vira Sub-bug)"]
+        O2["🧾 sobra de hotfix<br/>(post-mortem)"]
+        O3["🏗️ decisão de arquitetura"]
+        O4["📉 métrica / alerta recorrente"]
+    end
+
+    ORIG --> T["🎫 Débito Técnico no Jira<br/>[repo] Descrição<br/>crewflow:debt + crewflow:spec"]
+    T --> G0{"GATE 0 — TL aprova?<br/>(justificativa TÉCNICA,<br/>não de produto)"}
+    G0 -.->|"não vale o risco agora"| BL["🗄️ backlog<br/>(fica em crewflow:spec)"]
+    G0 -->|aprova| RD["🟡 crewflow:ready"]
+    RD -->|"TL prioriza na sprint"| TD["🟢 crewflow:todo"]
+    TD --> D["🔵 crewflow:dev<br/>refatora SEM mudar comportamento"]
+
+    D --> COV{"tem teste que<br/>PROVA equivalência?"}
+    COV -.->|"não: escreve primeiro"| TEST["🧪 escreve teste do<br/>comportamento ATUAL"]
+    TEST --> D
+    COV -->|sim| PR["🔀 PR release/VGAT-XXX → main"]
+
+    PR --> R["🟣 crewflow:review"]
+    R --> BOT["🤖 code review automatizado<br/>(peso extra: diff de refatoração é grande)"]
+    BOT --> G1{"GATE 1 — TL aprova<br/>(revisor É a validação)"}
+    G1 -.->|reprova| D
+    G1 -->|aprova| HML["🚀 Deploy HML manual"]
+    HML --> REG["🔷 crewflow:qa<br/>REGRESSÃO, não teste funcional novo"]
+    REG --> G2{"GATE 2<br/>nada mudou de<br/>comportamento?"}
+    G2 -.->|"mudou algo"| D
+    G2 -->|"equivalente"| M["🤝 MERGE MANUAL"]
+    M --> OK["✔️ crewflow:done"]
+
+    classDef human fill:#fde68a,stroke:#b45309,color:#000
+    classDef auto fill:#bbf7d0,stroke:#15803d,color:#000
+    classDef gate fill:#e9d5ff,stroke:#7e22ce,color:#000
+    classDef debt fill:#e7e5e4,stroke:#57534e,color:#000
+    class T,RD,TD,HML,REG,M,TEST human
+    class PR,R,BOT,OK auto
+    class G0,G1,G2,COV gate
+    class O1,O2,O3,O4,BL debt

@@ -1,0 +1,7 @@
+{
+  "name": "crewflow-dev",
+  "model": "auto",
+  "description": "Implementa issues marcadas flow:develop-waiting e abre PR.",
+  "prompt": "Você é o agente de implementação da esteira kirocrew-flow. Receba a instrução do cron e execute o dispatch de dev.",
+  "tools": ["@kirocrew-core"]
+}

@@ -1,0 +1,29 @@
+# Config real (contém chat_id, paths — dado do usuário)
+config.yaml
+
+# UI — dependências Node (não versionar)
+ui/node_modules/
+
+# Estado por-repo da vigia
+state/
+*.state.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Config local do puppeteer pra renderizar Mermaid em ambiente sem sandbox.
+# Não versionado: desabilitar o sandbox do Chromium é decisão do ambiente de
+# quem roda, não do projeto. Ver docs/diagramas/README.md.
+.puppeteer.json
+.coverage
+# Config de deploy real (contém paths pessoais)
+deployment/deployment.config.yaml
+
+# Playwright CLI snapshots e venv local
+.playwright-cli/
+.venv-playwright/
+/tmp/.kirocrew-flow-session-token

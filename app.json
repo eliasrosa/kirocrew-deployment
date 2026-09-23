@@ -1,0 +1,161 @@
+{
+    "name": "kirocrew-flow",
+    "version": "1.0.0",
+    "displayName": "KiroCrew Flow",
+    "description": "Autonomous dev pipeline: issue to PR to review to merge. Zero-token polling over GitHub/Jira labels.",
+    "author": "eliasrosa",
+    "tags": [
+        "devops",
+        "github",
+        "automation",
+        "pr-review"
+    ],
+    "agents": [
+        "agents/crewflow-dev.json",
+        "agents/crewflow-reviewer.json",
+        "agents/crewflow-merge.json"
+    ],
+    "backend": {
+        "hooks": {
+            "routes": "backend.routes:register_routes",
+            "on_startup": "backend.hooks:on_startup",
+            "on_shutdown": "backend.hooks:on_shutdown"
+        }
+    },
+    "ui": {
+        "entry": "dist/index.mjs",
+        "pages": [
+            {
+                "route": "/apps/kirocrew-flow",
+                "label": "Flow",
+                "icon": "GitPullRequest"
+            }
+        ],
+        "sidebar": {
+            "section": "Dev Tools",
+            "order": 1
+        }
+    },
+    "crons": [
+        {
+            "name": "flow-develop-waiting",
+            "script": "~/.kiro/crew/crons/deployment/flow/dev.py:run",
+            "every": 300,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true,
+            "secrets": [
+                "KIROCREW_WEBHOOK_URL",
+                "KIROCREW_WEBHOOK_TOKEN"
+            ]
+        },
+        {
+            "name": "flow-review-waiting",
+            "script": "~/.kiro/crew/crons/deployment/flow/reviewer.py:run",
+            "every": 180,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true,
+            "secrets": [
+                "KIROCREW_WEBHOOK_URL",
+                "KIROCREW_WEBHOOK_TOKEN"
+            ]
+        },
+        {
+            "name": "flow-review-approved",
+            "script": "~/.kiro/crew/crons/deployment/flow/review_approved.py:run",
+            "every": 120,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
+        },
+        {
+            "name": "flow-review-refused",
+            "script": "~/.kiro/crew/crons/deployment/flow/rework.py:run",
+            "every": 3600,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true,
+            "secrets": [
+                "KIROCREW_WEBHOOK_URL",
+                "KIROCREW_WEBHOOK_TOKEN"
+            ]
+        },
+        {
+            "name": "flow-merge-conflict",
+            "script": "~/.kiro/crew/crons/deployment/flow/conflict.py:run",
+            "every": 300,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true,
+            "secrets": [
+                "KIROCREW_WEBHOOK_URL",
+                "KIROCREW_WEBHOOK_TOKEN"
+            ]
+        },
+        {
+            "name": "flow-qa-waiting",
+            "script": "~/.kiro/crew/crons/deployment/flow/qa_notify.py:run",
+            "every": 600,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
+        },
+        {
+            "name": "flow-qa-approved",
+            "script": "~/.kiro/crew/crons/deployment/flow/qa_approved.py:run",
+            "every": 120,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
+        },
+        {
+            "name": "flow-qa-refused",
+            "script": "~/.kiro/crew/crons/deployment/flow/qa_refused.py:run",
+            "every": 3600,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
+        },
+        {
+            "name": "flow-auto-update",
+            "script": "~/.kiro/crew/crons/flow_auto_update.py:run",
+            "every": 300,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
+        }
+    ],
+    "permissions": {
+        "api": [
+            "/api/crons",
+            "/api/status",
+            "/apps/kirocrew-flow/api",
+            "/api/apps/kirocrew-flow"
+        ],
+        "events": [
+            "notification"
+        ],
+        "storage": true,
+        "network": true
+    },
+    "setup": {
+        "onInstall": "pip install -e '.[dev,gateway]' && cd ui && npm install && npm run build && ./scripts/install-cron.sh",
+        "onUpdate": "pip install -e '.[dev,gateway]' && cd ui && npm run build && ./scripts/install-cron.sh"
+    },
+    "dependencies": {
+        "commands": [
+            "git",
+            "gh",
+            "python3",
+            "node",
+            "npm"
+        ]
+    },
+    "platform": {
+        "os": [
+            "linux",
+            "macos"
+        ]
+    }
+}

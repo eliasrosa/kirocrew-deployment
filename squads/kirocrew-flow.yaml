@@ -1,0 +1,29 @@
+# KiroCrew Flow — squad de auto-teste
+# O próprio repo como cobaia do motor.
+id: kirocrew-flow
+name: KiroCrew Flow (auto-teste)
+issue_provider: github
+
+# O repo sob monitoramento
+repos:
+  - eliasrosa/kirocrew-flow
+
+workflow_template: versao-c
+
+workflow_params:
+  merge_mode: manual
+  review_position: before_qa
+  deploy_hml_mode: manual
+  allow_hml_bypass: true
+  auto_merge_on_approve: true  # opt-in: reviewer aprova sem comentários → merge squash automático
+
+routing:
+  - match: {labels: ["flow:hotfix"]}
+    workflow: hotfix-flow
+  - match: {labels: ["flow:bug"]}
+    workflow: bug-flow
+  - match: {labels: ["flow:debt"]}
+    workflow: debt-flow
+  - match: {labels: ["flow:feature"]}
+    workflow: feature-flow
+  - default: feature-flow

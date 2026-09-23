@@ -60,6 +60,11 @@ logger = logging.getLogger(__name__)
 # flow/ não está instalado como pacote no Python do sistema.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_HERE)
+# Quando instalado em ~/.kiro/crew/crons/, _REPO_ROOT aponta para ~/.kiro/crew/
+# onde flow/ não existe. Adicionamos o caminho real do repo:
+_FLOW_ROOT = "/home/elias/dev/kirocrew-flow"
+if _FLOW_ROOT not in sys.path:
+    sys.path.insert(0, _FLOW_ROOT)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 

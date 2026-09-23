@@ -1,0 +1,5 @@
+# KiroCrew Flow — Workflow de Feature (Versão C)
+# Template fixo da Fase 1. Na Fase 3 será editável no canvas.
+id: feature-flow
+name: "Feature (Versão C)"
+description: "Review ANTES do QA, sequencial. Fluxo oficial da squad."
