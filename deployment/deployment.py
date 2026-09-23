@@ -1040,6 +1040,51 @@ def _dispatch(
     _post_agent_session(ctx, message, slot=slot, cfg=cfg)
 
 
+# ── Monitor zero-token da issue (issue #211) ─────────────────────────────
+
+def _create_issue_monitor(repo: str, issue_number: int) -> None:
+    """Cria (idempotente) um cron zero-token que monitora a issue despachada.
+
+    Nasce como efeito colateral do dispatch de dev: notifica no canal do
+    usuário quando a PR abre, quando a issue fecha (PR mergeada) ou quando a
+    sessão parece ter travado — sem gastar tokens (Python puro, só ``gh``).
+    O script alvo é ``deployment/flow/watch_issue.py:check``.
+
+    Idempotente por nome (``watch-<repo_short>-<N>``): um re-dispatch da mesma
+    issue não cria um segundo monitor. Fail-safe: qualquer erro é logado e
+    engolido — criar o monitor NUNCA pode derrubar o dispatch já concluído.
+    """
+    short = repo.split("/")[-1]
+    name = f"watch-{short}-{issue_number}"
+    try:
+        from kiro_crew.config.paths import config_dir  # type: ignore[import]
+        from kiro_crew.cron import CronService  # type: ignore[import]
+
+        svc = CronService(base_dir=config_dir())
+        job = svc.add_job_if_absent(
+            lambda j: getattr(j, "name", "") == name,
+            name=name,
+            message=f"{repo}#{issue_number}",
+            every_secs=180,
+            script="~/.kiro/crew/crons/deployment/flow/watch_issue.py:check",
+            persistent_session=False,
+            minimal_context=True,
+            hide_in_chat=True,
+            created_by="flow-dev",
+        )
+        if job is None:
+            logger.info(
+                "deployment[dev]: monitor '%s' já existe — não recriado", name
+            )
+        else:
+            logger.info("deployment[dev]: monitor zero-token '%s' criado", name)
+    except Exception as exc:  # noqa: BLE001 — fail-safe: dispatch não pode cair
+        logger.warning(
+            "deployment[dev]: falha ao criar monitor '%s' (dispatch preservado): %s",
+            name, exc,
+        )
+
+
 # ── Conversão ScanResult → formato legado do dispatch ────────────────────
 
 def _scan_result_to_issue(result: object) -> dict:
@@ -3237,6 +3282,9 @@ def _run_stage(ctx: object, stage: str) -> None:
                 _dispatch(ctx, repo, issue, cfg, prompt_extra=prompt_extra)
                 disparadas.append((repo, issue))
                 vagas -= 1
+                # Cria o monitor zero-token da issue (issue #211). Fail-safe:
+                # um erro aqui NUNCA pode abortar/reverter o dispatch já feito.
+                _create_issue_monitor(repo, issue["number"])
             except Exception as exc:
                 logger.error("deployment[dev]: erro ao despachar %s: %s", issue.get("number"), exc)
                 adiadas.append((repo, issue))

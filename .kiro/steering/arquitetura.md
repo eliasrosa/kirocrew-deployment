@@ -259,6 +259,26 @@ Os prompts das sessões one-shot (dev e reviewer) vivem em arquivos MD editávei
 | `rework.md` | re-trabalho pós-review | `DISPATCH_REWORK` — issue com `flow:review-refused` |
 | `conflict.md` | resolução de conflito | `DISPATCH_CONFLICT_RESOLVER` — issue com `crewflow:conflito` |
 
+### Monitor zero-token da issue (efeito colateral do dispatch DEV)
+
+Ao despachar uma sessão de dev com sucesso, o executor cria automaticamente um
+**monitor zero-token** para a issue (`_create_issue_monitor` em `deployment.py`).
+Não é uma sessão de agente — é um cron script em Python puro
+(`deployment/flow/watch_issue.py:check`) que a cada 180s chama só `gh`:
+
+- **PR abre** → notifica o usuário UMA vez (anti-spam por marcador em disco) e
+  segue monitorando até o merge.
+- **Issue fecha** (PR mergeada) → notifica e se auto-remove (`Done`).
+- **Sem PR + sessão sem atividade > 40min** → notifica possível travamento e se
+  auto-remove (`Done`).
+- **Ainda implementando** → silêncio (`Skip`).
+
+O cron é registrado idempotentemente por nome (`watch-<repo_short>-<N>`) via
+`CronService.add_job_if_absent`, então um re-dispatch da mesma issue não cria um
+segundo monitor. A criação é **fail-safe**: qualquer erro é logado e engolido —
+nunca aborta o dispatch já concluído. O `install-cron.sh` copia `watch_issue.py`
+junto dos demais módulos de `deployment/flow/`.
+
 ### Ciclo de re-trabalho (flow:review-refused)
 
 Quando o reviewer reprova, o motor adiciona `flow:review-refused` à issue (removendo
