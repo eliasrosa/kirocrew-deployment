@@ -773,15 +773,15 @@ class TestDispatchAcquiresLockBeforePost:
 
         lock_existed_at_post_time: list[bool] = []
 
-        def fake_urlopen(req, timeout=10):  # type: ignore[no-untyped-def]
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
             # O backstop lock agora fica em backstop/ (não direto no sessdir)
             lock = tmp_path / "backstop" / "dispatch-myrepo-42.lock"
             lock_existed_at_post_time.append(lock.exists())
-            resp = mock.MagicMock()
-            resp.__enter__ = mock.MagicMock(return_value=resp)
-            resp.__exit__ = mock.MagicMock(return_value=False)
-            resp.read = mock.MagicMock(return_value=b"")
-            return resp
+            result = mock.MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            return result
 
         cfg = {
             "dev_root": str(tmp_path),
@@ -792,13 +792,14 @@ class TestDispatchAcquiresLockBeforePost:
         issue = {"number": 42, "title": "Test issue", "url": "https://github.com/owner/myrepo/issues/42"}
 
         with (
-            mock.patch("urllib.request.urlopen", side_effect=fake_urlopen),
+            mock.patch("subprocess.run", side_effect=fake_run),
             mock.patch("deployment.deployment._dispatch_prompt", return_value="msg"),
+            mock.patch("deployment.deployment._is_issue_closed", return_value=False),
         ):
             _dispatch(self._make_ctx(), "owner/myrepo", issue, cfg)
 
         # O lock deve ter existido quando o POST foi feito
-        assert lock_existed_at_post_time, "urlopen nunca foi chamado"
+        assert lock_existed_at_post_time, "subprocess.run (curl) nunca foi chamado"
         assert lock_existed_at_post_time[0] is True, (
             "O lock NÃO existia quando o POST foi feito — race condition!"
         )

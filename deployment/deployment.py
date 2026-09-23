@@ -898,14 +898,36 @@ def _post_agent_session(
         method="POST",
     )
     try:
-        # Usar urllib.request.urlopen padrão (equivalente ao que curl faz).
-        # loopback_urlopen usa ProxyHandler({}) + _NoRedirect que pode fechar
-        # a conexão de forma que o gateway interprete como cancelamento.
-        with _u.urlopen(req, timeout=10) as resp:
-            resp.read(1)
+        # Usar subprocess curl em vez de urllib — curl cria sessão Crew corretamente;
+        # urllib.request.urlopen cria sessão CLI por diferença no nível HTTP.
+        # Remover KIRO_SESSION_ID do ambiente: com essa variável presente, o
+        # gateway associa o POST à sessão atual (CLI) em vez de criar uma nova
+        # sessão Crew. Sem ela, o gateway cria a sessão Crew corretamente.
+        _env = {k: v for k, v in os.environ.items() if k != "KIRO_SESSION_ID"}
+        result = subprocess.run(
+            [
+                "curl", "-s", "-m", "10",
+                "-X", "POST", f"http://localhost:{port}/api/chat",
+                "-H", "Content-Type: application/json",
+                "-H", f"X-Internal-Secret: {secret}",
+                "-H", f"X-Session-Key: dashboard:{slot}",
+                "--data-raw", body.decode(),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=12,
+            check=False,
+            env=_env,
+        )
+        if result.returncode not in (0, 28):  # 28 = timeout (stream aberto, ok)
+            logger.error(
+                "deployment: curl falhou (exit %s) ao despachar slot %s: %s",
+                result.returncode, slot, result.stderr[:200],
+            )
+            return False
     except Exception as exc:
         logger.error(
-            "deployment: falha ao despachar sessão via loopback (slot %s): %s",
+            "deployment: falha ao despachar sessão via curl (slot %s): %s",
             slot, exc,
         )
         return False
