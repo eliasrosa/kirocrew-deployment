@@ -43,7 +43,11 @@
             "every": 300,
             "enabled": true,
             "persistent_session": false,
-            "silent": true
+            "silent": true,
+            "secrets": [
+                "KIROCREW_WEBHOOK_URL",
+                "KIROCREW_WEBHOOK_TOKEN"
+            ]
         },
         {
             "name": "flow-review-waiting",
@@ -51,7 +55,11 @@
             "every": 180,
             "enabled": true,
             "persistent_session": false,
-            "silent": true
+            "silent": true,
+            "secrets": [
+                "KIROCREW_WEBHOOK_URL",
+                "KIROCREW_WEBHOOK_TOKEN"
+            ]
         },
         {
             "name": "flow-review-approved",
@@ -67,7 +75,11 @@
             "every": 3600,
             "enabled": true,
             "persistent_session": false,
-            "silent": true
+            "silent": true,
+            "secrets": [
+                "KIROCREW_WEBHOOK_URL",
+                "KIROCREW_WEBHOOK_TOKEN"
+            ]
         },
         {
             "name": "flow-merge-conflict",
@@ -75,7 +87,11 @@
             "every": 300,
             "enabled": true,
             "persistent_session": false,
-            "silent": true
+            "silent": true,
+            "secrets": [
+                "KIROCREW_WEBHOOK_URL",
+                "KIROCREW_WEBHOOK_TOKEN"
+            ]
         },
         {
             "name": "flow-qa-waiting",

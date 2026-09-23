@@ -5,8 +5,9 @@
 o estado de cada task vive em **labels `flow:*`** na própria issue, e o polling
 é **zero-token**.
 
-> ⚠️ **Não é standalone.** Depende do Kiro Crew rodando na máquina: usa o loopback
-> interno do gateway (`POST /api/chat`) e o formato de *cron de script* do Kiro Crew.
+> ⚠️ **Não é standalone.** Depende do Kiro Crew rodando na máquina: dispara sessões
+> de agente via o webhook do dashboard (`POST /api/hooks/agent`) e usa o formato de
+> *cron de script* do Kiro Crew. Veja [Dispatch de sessões](#dispatch-de-sessões-webhook) abaixo.
 
 ## Princípios
 
@@ -67,6 +68,28 @@ squads/*.yaml → SquadConfig → scan_candidates() → executor.decide() → de
 3. `deployment.run()` executa a ação: dispara sessão one-shot, notifica humano ou aplica rebrand de template.
 
 A sessão one-shot **nunca mergeia e nunca faz deploy**. Ela entrega o PR em `flow:review-waiting` e encerra.
+
+### Dispatch de sessões (webhook)
+
+Os crons de estágio que precisam acordar uma sessão de agente (`flow-develop-waiting`,
+`flow-review-waiting`, `flow-merge-conflict`) despacham via **POST ao webhook do
+dashboard** do Kiro Crew. Isso funciona nos crons `script`-based, cujo `ScriptContext`
+não expõe `_port`/`_secret` do gateway (a causa raiz da issue #212, em que a label era
+trocada mas nenhuma sessão era criada).
+
+Duas variáveis de ambiente controlam o transporte (registre-as como **Secrets do cron**
+no dashboard → Schedule → cron → Secrets):
+
+| Variável | Default | Descrição |
+|---|---|---|
+| `KIROCREW_WEBHOOK_URL` | `http://localhost:5478/api/hooks/agent` | Endpoint do webhook do dashboard. |
+| `KIROCREW_WEBHOOK_TOKEN` | *(vazio)* | Token Bearer do webhook configurado (Settings → Webhooks). Nunca é hard-coded. |
+
+Quando `KIROCREW_WEBHOOK_TOKEN` está setado, o dispatch faz
+`POST {KIROCREW_WEBHOOK_URL}` com header `Authorization: Bearer <token>`. Quando o token
+está **vazio**, cai no comportamento legado de loopback interno (`POST /api/chat` com
+`X-Internal-Secret`/`X-Session-Key`), preservando os crons `message`-based. O scan em si
+continua **zero-token** — o webhook só é chamado quando há um candidato real na fila.
 
 ## Fluxos disponíveis (Fase 1)
 

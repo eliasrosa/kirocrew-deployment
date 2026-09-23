@@ -741,6 +741,126 @@ _DEV_PROMPT_FALLBACK = (
 )
 
 
+# ── Transporte de dispatch: webhook do dashboard (preferido) ou loopback ──
+# Endpoint padrão do webhook do dashboard do kirocrew (Settings → Webhooks).
+# O token NUNCA é hard-coded — vem de KIROCREW_WEBHOOK_TOKEN (secret do cron).
+_WEBHOOK_URL_DEFAULT = "http://localhost:5478/api/hooks/agent"
+
+
+def _webhook_url() -> str:
+    """URL do webhook do dashboard para despachar sessões de agente.
+
+    Lida de ``KIROCREW_WEBHOOK_URL`` (secret/env do cron); default aponta para
+    o endpoint do dashboard local.
+    """
+    return os.environ.get("KIROCREW_WEBHOOK_URL", _WEBHOOK_URL_DEFAULT)
+
+
+def _webhook_token() -> str:
+    """Token Bearer do webhook, lido de ``KIROCREW_WEBHOOK_TOKEN`` (secret do cron).
+
+    Vazio por padrão — quando vazio, o dispatch usa o fallback loopback interno.
+    """
+    return os.environ.get("KIROCREW_WEBHOOK_TOKEN", "")
+
+
+def _post_agent_session(
+    ctx: object,
+    message: str,
+    *,
+    slot: str,
+    cfg: dict,
+) -> bool:
+    """Despacha uma sessão de agente (fire-and-forget).
+
+    Transporte preferido: POST ao webhook do dashboard (``KIROCREW_WEBHOOK_URL``)
+    com header ``Authorization: Bearer <KIROCREW_WEBHOOK_TOKEN>``.  Isso funciona
+    para crons ``script``-based cujo ``ScriptContext`` NÃO possui ``_port``/
+    ``_secret`` (causa raiz da issue #212).
+
+    Fallback: quando nenhum token de webhook está configurado, usa o antigo
+    loopback interno (``http://localhost:{ctx._port}/api/chat`` com
+    ``X-Internal-Secret``/``X-Session-Key``), preservando o comportamento dos
+    crons ``message``-based.  O acesso a ``_port``/``_secret`` é protegido com
+    ``getattr`` para não lançar ``AttributeError`` num ctx que não os tenha.
+
+    O corpo é idêntico nos dois transportes.  Exceções são engolidas/logadas,
+    como no comportamento fire-and-forget original.
+
+    Retorna ``True`` quando o POST foi emitido com sucesso e ``False`` quando o
+    dispatch falhou ou foi abortado (POST com erro, ou ausência de
+    token/``_port``/``_secret``).  Chamadores que precisam distinguir sucesso de
+    falha para o operador (ex.: ``_dispatch_reviewer``) podem ramificar nesse
+    retorno; os demais tratam como fire-and-forget e ignoram o valor.
+    """
+    import urllib.request as _u
+
+    body = json.dumps({
+        "message": message,
+        "agent": cfg.get("agent") or "kirocrew",
+        "slot": slot,
+        "memory_mode": "temporary",
+    }).encode()
+
+    token = _webhook_token()
+    if token:
+        # ── Transporte preferido: webhook do dashboard ──────────────────
+        req = _u.Request(
+            _webhook_url(),
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            method="POST",
+        )
+        try:
+            with _u.urlopen(req, timeout=10) as resp:
+                resp.read(1)
+        except Exception as exc:
+            logger.error(
+                "deployment: falha ao despachar sessão via webhook (slot %s): %s",
+                slot, exc,
+            )
+            return False
+        return True
+
+    # ── Fallback: loopback interno (/api/chat) para ctx message-based ──────
+    port = getattr(ctx, "_port", None)
+    secret = getattr(ctx, "_secret", None)
+    if port is None or secret is None:
+        logger.error(
+            "deployment: dispatch abortado (slot %s) — sem KIROCREW_WEBHOOK_TOKEN "
+            "e ctx sem _port/_secret (ScriptContext). Configure o secret do webhook.",
+            slot,
+        )
+        return False
+
+    job = getattr(ctx, "job", None)
+    job_id = getattr(job, "id", "") if job is not None else ""
+    req = _u.Request(
+        f"http://localhost:{port}/api/chat",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Internal-Secret": secret,
+            "X-Session-Key": f"cron:{job_id}",
+        },
+        method="POST",
+    )
+    try:
+        from kiro_crew.loopback_http import loopback_urlopen  # type: ignore[import]
+        with loopback_urlopen(req, timeout=3) as resp:
+            resp.read(1)
+    except Exception as exc:
+        logger.error(
+            "deployment: falha ao despachar sessão via loopback (slot %s): %s",
+            slot, exc,
+        )
+        return False
+    return True
+
+
 def _dispatch_prompt(
     repo: str,
     issue: dict,
@@ -886,8 +1006,6 @@ def _dispatch(
     segundo aborta silenciosamente.  Isso fecha a janela de race entre o
     POST e o momento em que a sessão spawnada deixa rastro (worktree, label).
     """
-    import urllib.request as _u
-
     # ── Guard: issue CLOSED → não despachar (fix #163) ───────────────────
     # Cobre a race onde a PR canônica mergeia (fechando a issue via "Closes #N")
     # enquanto o cron ainda vê crewflow:todo na cache de labels.  O state da
@@ -919,28 +1037,7 @@ def _dispatch(
             repo, issue["number"], exc,
         )
         return
-    body = json.dumps({
-        "message": message,
-        "agent": cfg.get("agent") or "kirocrew",
-        "slot": slot,
-        "memory_mode": "temporary",
-    }).encode()
-    req = _u.Request(
-        f"http://localhost:{ctx._port}/api/chat",  # type: ignore[attr-defined]
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "X-Internal-Secret": ctx._secret,  # type: ignore[attr-defined]
-            "X-Session-Key": f"cron:{ctx.job.id}",  # type: ignore[attr-defined]
-        },
-        method="POST",
-    )
-    try:
-        from kiro_crew.loopback_http import loopback_urlopen  # type: ignore[import]
-        with loopback_urlopen(req, timeout=3) as resp:
-            resp.read(1)
-    except Exception:
-        pass
+    _post_agent_session(ctx, message, slot=slot, cfg=cfg)
 
 
 # ── Conversão ScanResult → formato legado do dispatch ────────────────────
@@ -2259,8 +2356,6 @@ def _dispatch_rework(
         )
         return
 
-    import urllib.request as _u
-
     short = repo.split("/")[-1]
     slot = f"esteira-{short}-{issue['number']}"
 
@@ -2273,35 +2368,11 @@ def _dispatch_rework(
         )
         return
 
-    body = json.dumps({
-        "message": message,
-        "agent": cfg.get("agent") or "kirocrew",
-        "slot": slot,
-        "memory_mode": "temporary",
-    }).encode()
-    req = _u.Request(
-        f"http://localhost:{ctx._port}/api/chat",  # type: ignore[attr-defined]
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "X-Internal-Secret": ctx._secret,  # type: ignore[attr-defined]
-            "X-Session-Key": f"cron:{ctx.job.id}",  # type: ignore[attr-defined]
-        },
-        method="POST",
+    _post_agent_session(ctx, message, slot=slot, cfg=cfg)
+    logger.info(
+        "deployment: rework one-shot despachado para %s#%s (PR #%s, iter %s)",
+        repo, issue["number"], pr_number, iteration,
     )
-    try:
-        from kiro_crew.loopback_http import loopback_urlopen  # type: ignore[import]
-        with loopback_urlopen(req, timeout=3) as resp:
-            resp.read(1)
-        logger.info(
-            "deployment: rework one-shot despachado para %s#%s (PR #%s, iter %s)",
-            repo, issue["number"], pr_number, iteration,
-        )
-    except Exception as exc:
-        logger.error(
-            "deployment: falha ao despachar rework para %s#%s: %s",
-            repo, issue["number"], exc,
-        )
 
 
 def _conflict_resolver_has_active(repo: str, issue_number: int) -> bool:
@@ -2425,8 +2496,6 @@ def _dispatch_conflict_resolver(
         )
         return
 
-    import urllib.request as _u
-
     short = repo.split("/")[-1]
     slot = f"esteira-{short}-{issue['number']}"
 
@@ -2439,35 +2508,11 @@ def _dispatch_conflict_resolver(
         )
         return
 
-    body = json.dumps({
-        "message": message,
-        "agent": cfg.get("agent") or "kirocrew",
-        "slot": slot,
-        "memory_mode": "temporary",
-    }).encode()
-    req = _u.Request(
-        f"http://localhost:{ctx._port}/api/chat",  # type: ignore[attr-defined]
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "X-Internal-Secret": ctx._secret,  # type: ignore[attr-defined]
-            "X-Session-Key": f"cron:{ctx.job.id}",  # type: ignore[attr-defined]
-        },
-        method="POST",
+    _post_agent_session(ctx, message, slot=slot, cfg=cfg)
+    logger.info(
+        "deployment: conflict resolver despachado para %s#%s (PR #%s)",
+        repo, issue["number"], pr_number,
     )
-    try:
-        from kiro_crew.loopback_http import loopback_urlopen  # type: ignore[import]
-        with loopback_urlopen(req, timeout=3) as resp:
-            resp.read(1)
-        logger.info(
-            "deployment: conflict resolver despachado para %s#%s (PR #%s)",
-            repo, issue["number"], pr_number,
-        )
-    except Exception as exc:
-        logger.error(
-            "deployment: falha ao despachar conflict resolver para %s#%s: %s",
-            repo, issue["number"], exc,
-        )
 
 
 def _is_issue_closed(repo: str, issue_number: int) -> bool:
@@ -2570,43 +2615,25 @@ def _dispatch_reviewer(
             repo, pr_number, exc_sha,
         )
 
-    import urllib.request as _u
-    body = json.dumps({
-        "message": _reviewer_prompt(repo, pr_number, issue_number, head_sha=head_sha),
-        "agent": cfg.get("agent") or "kirocrew",
-        "slot": slot,
-        "memory_mode": "temporary",
-    }).encode()
-    req = _u.Request(
-        f"http://localhost:{ctx._port}/api/chat",  # type: ignore[attr-defined]
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "X-Internal-Secret": ctx._secret,  # type: ignore[attr-defined]
-            "X-Session-Key": f"cron:{ctx.job.id}",  # type: ignore[attr-defined]
-        },
-        method="POST",
-    )
-    try:
-        from kiro_crew.loopback_http import loopback_urlopen  # type: ignore[import]
-        with loopback_urlopen(req, timeout=3) as resp:
-            resp.read(1)
-        logger.info(
-            "deployment: reviewer one-shot despachado para %s PR #%s (issue #%s)",
+    message = _reviewer_prompt(repo, pr_number, issue_number, head_sha=head_sha)
+    if not _post_agent_session(ctx, message, slot=slot, cfg=cfg):
+        logger.error(
+            "deployment: falha ao despachar reviewer one-shot para %s PR #%s (issue #%s)",
             repo, pr_number, issue_number,
         )
         ctx.notify(  # type: ignore[attr-defined]
-            f"KiroCrew Flow: sessão one-shot do reviewer despachada — "
+            f"KiroCrew Flow: falha ao despachar reviewer — "
             f"{repo} PR #{pr_number} (issue #{issue_number}).{vm}"
         )
-    except Exception as exc:
-        logger.error(
-            "deployment: falha ao despachar reviewer para %s#%s: %s",
-            repo, issue_number, exc,
-        )
-        ctx.notify(  # type: ignore[attr-defined]
-            f"KiroCrew Flow: falha ao despachar reviewer para {repo}#{issue_number}.{vm}"
-        )
+        return
+    logger.info(
+        "deployment: reviewer one-shot despachado para %s PR #%s (issue #%s)",
+        repo, pr_number, issue_number,
+    )
+    ctx.notify(  # type: ignore[attr-defined]
+        f"KiroCrew Flow: sessão one-shot do reviewer despachada — "
+        f"{repo} PR #{pr_number} (issue #{issue_number}).{vm}"
+    )
 
 
 def _post_reviewer_result_on_pr(
