@@ -866,6 +866,13 @@ def _post_agent_session(
     # Usa 5478 como fallback (porta padrão do dashboard).
     port = getattr(ctx, "_port", 5478)
     secret = getattr(ctx, "_secret", "")
+    # Fallback: ler o secret do arquivo local quando ctx não o expõe.
+    # O .local_secret é o mesmo valor que o gateway injeta no ctx._secret.
+    if not secret:
+        _local_secret_path = os.path.expanduser("~/.kiro/crew/.local_secret")
+        if os.path.exists(_local_secret_path):
+            with open(_local_secret_path) as _f:
+                secret = _f.read().strip()
     if not port:
         logger.error(
             "deployment: dispatch abortado (slot %s) — porta do gateway não disponível.",
