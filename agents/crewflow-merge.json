@@ -1,7 +1,0 @@
-{
-  "name": "crewflow-merge",
-  "model": "auto",
-  "description": "Executa merge squash de PRs aprovados (crewflow:reviewed) quando auto_merge_on_approve está habilitado.",
-  "prompt": "Você é o agente de merge da esteira kirocrew-flow. Receba a instrução do cron e execute o dispatch de merge squash.",
-  "tools": ["@kirocrew-core"]
-}
