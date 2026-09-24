@@ -798,83 +798,22 @@ def _post_agent_session(
 ) -> bool:
     """Despacha uma sessão de agente (fire-and-forget).
 
-    Transporte preferido: POST ao webhook do dashboard (``KIROCREW_WEBHOOK_URL``)
-    com header ``Authorization: Bearer <KIROCREW_WEBHOOK_TOKEN>``.  Isso funciona
-    para crons ``script``-based cujo ``ScriptContext`` NÃO possui ``_port``/
-    ``_secret`` (causa raiz da issue #212).
+    Fluxo de 2 calls via loopback interno (X-Internal-Secret):
 
-    Fallback: quando nenhum token de webhook está configurado, usa o antigo
-    loopback interno (``http://localhost:{ctx._port}/api/chat`` com
-    ``X-Internal-Secret``/``X-Session-Key``), preservando o comportamento dos
-    crons ``message``-based.  O acesso a ``_port``/``_secret`` é protegido com
-    ``getattr`` para não lançar ``AttributeError`` num ctx que não os tenha.
+    1. POST /api/chat/slots  → registra o slot no estado do gateway (idempotente).
+    2. POST /api/chat        → envia a mensagem com X-Session-Key: dashboard:{slot}.
 
-    O corpo é idêntico nos dois transportes.  Exceções são engolidas/logadas,
-    como no comportamento fire-and-forget original.
+    O gateway só aceita X-Session-Key: dashboard:{slot} quando o slot já existe.
+    Com o slot registrado no step 1, o POST cria sessão dashboard_esteira-* visível
+    no sidebar em vez de sessão CLI.
 
-    Retorna ``True`` quando o POST foi emitido com sucesso e ``False`` quando o
-    dispatch falhou ou foi abortado (POST com erro, ou ausência de
-    token/``_port``/``_secret``).  Chamadores que precisam distinguir sucesso de
-    falha para o operador (ex.: ``_dispatch_reviewer``) podem ramificar nesse
-    retorno; os demais tratam como fire-and-forget e ignoram o valor.
+    Retorna True quando os dois POSTs foram bem-sucedidos, False caso contrário.
+    Exceções são engolidas/logadas (fire-and-forget).
     """
     import urllib.request as _u
 
-    body = json.dumps({
-        "message": message,
-        "agent": cfg.get("agent") or "kirocrew",
-        "slot": slot,
-        "memory_mode": "temporary",
-    }).encode()
-
-    token = _webhook_token(cfg)
-    if token:
-        # ── Transporte preferido: webhook do dashboard ──────────────────
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-            "Origin": _webhook_url(cfg).rsplit("/api/", 1)[0],
-        }
-        # Assinatura HMAC-SHA256 quando o webhook exige (signing secret).
-        # String assinada = "<timestamp>.<raw body>"; header sha256=<hex>.
-        # Timestamp deve estar dentro de 300s do relógio do gateway.
-        secret = _webhook_secret(cfg)
-        if secret:
-            import hashlib
-            import hmac
-            import time as _time
-
-            ts = str(int(_time.time()))
-            signed = f"{ts}.".encode() + body
-            sig = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
-            headers["X-KiroCrew-Timestamp"] = ts
-            headers["X-KiroCrew-Signature"] = f"sha256={sig}"
-
-        req = _u.Request(
-            _webhook_url(cfg),
-            data=body,
-            headers=headers,
-            method="POST",
-        )
-        try:
-            with _u.urlopen(req, timeout=10) as resp:
-                resp.read(1)
-        except Exception as exc:
-            logger.error(
-                "deployment: falha ao despachar sessão via webhook (slot %s): %s",
-                slot, exc,
-            )
-            return False
-        return True
-
-    # ── Fallback: loopback interno (/api/chat/slots + /api/chat) ──────────────
-    # ctx._port e ctx._secret existem no ScriptContext do runtime real do gateway —
-    # o preview de cron não os simula, mas em produção estão presentes.
-    # Usa 5478 como fallback (porta padrão do dashboard).
     port = getattr(ctx, "_port", 5478)
     secret = getattr(ctx, "_secret", "")
-    # Fallback: ler o secret do arquivo local quando ctx não o expõe.
-    # O .local_secret é o mesmo valor que o gateway injeta no ctx._secret.
     if not secret:
         _local_secret_path = os.path.expanduser("~/.kiro/crew/.local_secret")
         if os.path.exists(_local_secret_path):
@@ -887,15 +826,10 @@ def _post_agent_session(
         )
         return False
 
-    # ── Step 1: criar o slot (POST /api/chat/slots) ────────────────────────
-    # O gateway só aceita X-Session-Key: dashboard:{slot} no /api/chat quando
-    # o slot já existe no seu estado interno. Sem este step, o POST vai para
-    # sessão CLI em vez de criar sessão dashboard: visível no sidebar.
-    # Este call é idempotente: se o slot já existe, retorna o slot existente.
-    slot_body = json.dumps({
-        "name": slot,
-        "agent": cfg.get("agent") or "kirocrew",
-    }).encode()
+    agent = cfg.get("agent") or "kirocrew"
+
+    # ── Step 1: criar o slot (/api/chat/slots) ─────────────────────────────
+    slot_body = json.dumps({"name": slot, "agent": agent}).encode()
     slot_req = _u.Request(
         f"http://localhost:{port}/api/chat/slots",
         data=slot_body,
@@ -909,18 +843,19 @@ def _post_agent_session(
         with _u.urlopen(slot_req, timeout=10) as resp:
             resp.read(1)
     except Exception as exc:
-        logger.error(
-            "deployment: falha ao criar slot %s: %s",
-            slot, exc,
-        )
+        logger.error("deployment: falha ao criar slot %s: %s", slot, exc)
         return False
 
-    # ── Step 2: enviar a mensagem (POST /api/chat) ─────────────────────────
-    # Agora que o slot existe, o gateway reconhece X-Session-Key: dashboard:{slot}
-    # e cria a sessão como dashboard_esteira-* (visível no sidebar).
+    # ── Step 2: enviar a mensagem (/api/chat) ──────────────────────────────
+    chat_body = json.dumps({
+        "message": message,
+        "agent": agent,
+        "slot": slot,
+        "memory_mode": "temporary",
+    }).encode()
     chat_req = _u.Request(
         f"http://localhost:{port}/api/chat",
-        data=body,
+        data=chat_body,
         headers={
             "Content-Type": "application/json",
             "X-Internal-Secret": secret,
@@ -932,10 +867,7 @@ def _post_agent_session(
         with _u.urlopen(chat_req, timeout=12) as resp:
             resp.read(1)
     except Exception as exc:
-        logger.error(
-            "deployment: falha ao despachar sessão (slot %s): %s",
-            slot, exc,
-        )
+        logger.error("deployment: falha ao despachar sessão (slot %s): %s", slot, exc)
         return False
     return True
 

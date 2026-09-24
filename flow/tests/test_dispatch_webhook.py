@@ -1,19 +1,16 @@
-"""Testes do transporte de dispatch via webhook (issue #212).
+"""Testes do transporte de dispatch via loopback interno (issue #212, #224).
 
 Cobre ``deployment.deployment._post_agent_session`` — o helper compartilhado
 que os quatro dispatchers (_dispatch/_dispatch_rework/_dispatch_conflict_resolver/
 _dispatch_reviewer) usam para acordar sessões de agente:
 
-  1. Quando ``KIROCREW_WEBHOOK_TOKEN`` está setado, faz POST ao webhook do
-     dashboard (``KIROCREW_WEBHOOK_URL``) com header ``Authorization: Bearer``
-     e corpo JSON correto.
-  2. Quando o token está vazio, cai no fallback loopback interno (/api/chat)
-     e NÃO chama o webhook; num ctx sem ``_port``/``_secret`` (ScriptContext)
-     não lança ``AttributeError``.
+  1. Faz POST /api/chat/slots para registrar o slot no gateway (idempotente).
+  2. Faz POST /api/chat com X-Session-Key: dashboard:{slot} para criar sessão
+     dashboard_esteira-* visível no sidebar.
   3. O scan é zero-token: numa fila vazia (nenhum candidato), nenhum dispatch/
-     webhook é acionado.
+     POST é acionado.
 
-NUNCA toca um socket real — o POST é sempre mockado.
+NUNCA toca um socket real — os POSTs são sempre mockados.
 """
 
 from __future__ import annotations
@@ -34,8 +31,6 @@ import pytest  # noqa: E402
 from deployment.deployment import (  # noqa: E402
     _dispatch_reviewer,
     _post_agent_session,
-    _webhook_token,
-    _webhook_url,
     run_dev,
 )
 
@@ -47,8 +42,10 @@ _WEBHOOK_URL_DEFAULT = "http://localhost:5478/api/hooks/agent"
 # ---------------------------------------------------------------------------
 
 def _make_script_ctx() -> mock.MagicMock:
-    """ctx de cron ``script``-based: NÃO tem _port/_secret (causa da issue #212)."""
-    ctx = mock.MagicMock(spec=["notify", "job"])
+    """ctx de cron ``script``-based: tem _port/_secret via ScriptContext."""
+    ctx = mock.MagicMock()
+    ctx._port = 5000
+    ctx._secret = "s3cr3t"
     ctx.job.id = "test-job"
     return ctx
 
@@ -104,161 +101,11 @@ def _make_scan_result(state_label: str) -> object:
 
 
 # ---------------------------------------------------------------------------
-# Config helpers
+# _post_agent_session — fluxo create slot + send
 # ---------------------------------------------------------------------------
 
-class TestWebhookConfig:
-    def test_webhook_url_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("KIROCREW_WEBHOOK_URL", raising=False)
-        assert _webhook_url() == _WEBHOOK_URL_DEFAULT
-
-    def test_webhook_url_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("KIROCREW_WEBHOOK_URL", "https://example.test/hook")
-        assert _webhook_url() == "https://example.test/hook"
-
-    def test_webhook_token_default_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("KIROCREW_WEBHOOK_TOKEN", raising=False)
-        assert _webhook_token() == ""
-
-    def test_webhook_token_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("KIROCREW_WEBHOOK_TOKEN", "tok-123")
-        assert _webhook_token() == "tok-123"
-
-
-# ---------------------------------------------------------------------------
-# _post_agent_session — webhook path
-# ---------------------------------------------------------------------------
-
-class TestPostAgentSessionWebhook:
-    def test_posts_to_webhook_with_bearer_and_body(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Com token setado: POST ao webhook com Authorization Bearer e corpo correto."""
-        monkeypatch.setenv("KIROCREW_WEBHOOK_TOKEN", "tok-abc")
-        monkeypatch.setenv("KIROCREW_WEBHOOK_URL", "https://hooks.test/agent")
-
-        captured: dict = {}
-
-        class _FakeResp:
-            def __enter__(self) -> _FakeResp:
-                return self
-
-            def __exit__(self, *a: object) -> Literal[False]:
-                return False
-
-            def read(self, _n: int = -1) -> bytes:
-                return b""
-
-        def _fake_urlopen(req: object, timeout: float = 0) -> _FakeResp:
-            captured["url"] = req.full_url  # type: ignore[attr-defined]
-            captured["headers"] = dict(req.headers)  # type: ignore[attr-defined]
-            captured["data"] = req.data  # type: ignore[attr-defined]
-            captured["method"] = req.get_method()  # type: ignore[attr-defined]
-            captured["timeout"] = timeout
-            return _FakeResp()
-
-        ctx = _make_script_ctx()
-        with mock.patch("urllib.request.urlopen", side_effect=_fake_urlopen) as mock_open:
-            _post_agent_session(
-                ctx, "Implemente a issue #42", slot="esteira-repo-42",
-                cfg=_base_config(agent="crewflow-dev"),
-            )
-
-        mock_open.assert_called_once()
-        assert captured["url"] == "https://hooks.test/agent"
-        assert captured["method"] == "POST"
-        # Header keys são capitalizadas por urllib.Request
-        assert captured["headers"]["Authorization"] == "Bearer tok-abc"
-        assert captured["headers"]["Content-type"] == "application/json"
-        body = json.loads(captured["data"])
-        assert body["message"] == "Implemente a issue #42"
-        assert body["slot"] == "esteira-repo-42"
-        assert body["agent"] == "crewflow-dev"
-        assert body["memory_mode"] == "temporary"
-        assert captured["timeout"] == 10
-
-    def test_webhook_default_url_when_env_unset(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("KIROCREW_WEBHOOK_TOKEN", "tok-abc")
-        monkeypatch.delenv("KIROCREW_WEBHOOK_URL", raising=False)
-
-        captured: dict = {}
-
-        def _fake_urlopen(req: object, timeout: float = 0):  # type: ignore[no-untyped-def]
-            captured["url"] = req.full_url  # type: ignore[attr-defined]
-            return mock.MagicMock(
-                __enter__=lambda s: s, __exit__=lambda *a: False, read=lambda n=-1: b""
-            )
-
-        ctx = _make_script_ctx()
-        with mock.patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-            _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
-
-        assert captured["url"] == _WEBHOOK_URL_DEFAULT
-
-    def test_webhook_agent_defaults_to_kirocrew(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("KIROCREW_WEBHOOK_TOKEN", "tok-abc")
-        captured: dict = {}
-
-        def _fake_urlopen(req: object, timeout: float = 0):  # type: ignore[no-untyped-def]
-            captured["data"] = req.data  # type: ignore[attr-defined]
-            return mock.MagicMock(
-                __enter__=lambda s: s, __exit__=lambda *a: False, read=lambda n=-1: b""
-            )
-
-        ctx = _make_script_ctx()
-        cfg = _base_config()
-        cfg.pop("agent")
-        with mock.patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-            _post_agent_session(ctx, "msg", slot="slot-1", cfg=cfg)
-
-        assert json.loads(captured["data"])["agent"] == "kirocrew"
-
-    def test_webhook_swallows_exceptions(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Fire-and-forget: falha do POST ao webhook não propaga, retorna False."""
-        monkeypatch.setenv("KIROCREW_WEBHOOK_TOKEN", "tok-abc")
-        ctx = _make_script_ctx()
-        with mock.patch(
-            "urllib.request.urlopen", side_effect=OSError("connection refused")
-        ):
-            # Não deve levantar; sinaliza falha
-            assert _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config()) is False
-
-    def test_webhook_returns_true_on_success(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """POST bem-sucedido ao webhook retorna True."""
-        monkeypatch.setenv("KIROCREW_WEBHOOK_TOKEN", "tok-abc")
-        ctx = _make_script_ctx()
-
-        def _fake_urlopen(req: object, timeout: float = 0):  # type: ignore[no-untyped-def]
-            return mock.MagicMock(
-                __enter__=lambda s: s, __exit__=lambda *a: False, read=lambda n=-1: b""
-            )
-
-        with mock.patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-            assert _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config()) is True
-
-
-# ---------------------------------------------------------------------------
-# _post_agent_session — fallback loopback path (token vazio)
-# ---------------------------------------------------------------------------
-
-class TestPostAgentSessionLoopbackFallback:
-    def test_no_token_uses_loopback_not_webhook(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Sem token: usa urlopen para /api/chat/slots + /api/chat, NÃO chama o webhook endpoint."""
-        monkeypatch.delenv("KIROCREW_WEBHOOK_TOKEN", raising=False)
-        monkeypatch.setattr("os.path.exists", lambda p: False if ".local_secret" in str(p) else __import__("os.path", fromlist=["exists"]).exists(p))
-
-        calls: list = []
-
+class TestPostAgentSessionLoopback:
+    def _fake_urlopen(self, calls: list) -> object:
         class _FakeResp:
             def __enter__(self) -> "_FakeResp":
                 return self
@@ -267,44 +114,155 @@ class TestPostAgentSessionLoopbackFallback:
             def read(self, _n: int = -1) -> bytes:
                 return b""
 
-        def fake_urlopen(req: object, timeout: float = 0) -> _FakeResp:
+        def fake(req: object, timeout: float = 0) -> _FakeResp:
             calls.append(req.full_url)  # type: ignore[attr-defined]
             return _FakeResp()
 
-        ctx = _make_message_ctx()
-        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        return fake
+
+    def test_faz_post_create_slot_e_chat(self) -> None:
+        """Dois POSTs em sequência: /api/chat/slots depois /api/chat."""
+        calls: list = []
+        ctx = _make_script_ctx()
+        with mock.patch("urllib.request.urlopen", side_effect=self._fake_urlopen(calls)):
+            result = _post_agent_session(ctx, "msg", slot="esteira-repo-42", cfg=_base_config())
+
+        assert result is True
+        assert any("api/chat/slots" in url for url in calls), f"slots não chamado: {calls}"
+        assert any(url.endswith("/api/chat") for url in calls), f"chat não chamado: {calls}"
+
+    def test_slot_create_antes_do_chat(self) -> None:
+        """O /api/chat/slots deve ser chamado ANTES do /api/chat."""
+        calls: list = []
+        ctx = _make_script_ctx()
+        with mock.patch("urllib.request.urlopen", side_effect=self._fake_urlopen(calls)):
+            _post_agent_session(ctx, "msg", slot="esteira-repo-42", cfg=_base_config())
+
+        slots_idx = next(i for i, u in enumerate(calls) if "api/chat/slots" in u)
+        chat_idx = next(i for i, u in enumerate(calls) if u.endswith("/api/chat"))
+        assert slots_idx < chat_idx
+
+    def test_chat_envia_corpo_correto(self) -> None:
+        """O POST /api/chat inclui message, slot, agent e memory_mode."""
+        captured: dict = {}
+
+        class _FakeResp:
+            def __enter__(self) -> "_FakeResp": return self
+            def __exit__(self, *a: object) -> bool: return False
+            def read(self, _n: int = -1) -> bytes: return b""
+
+        call_count = 0
+
+        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
+            nonlocal call_count
+            call_count += 1
+            url = req.full_url  # type: ignore[attr-defined]
+            if url.endswith("/api/chat"):
+                captured["data"] = req.data  # type: ignore[attr-defined]
+                captured["session_key"] = req.get_header("X-session-key")  # type: ignore[attr-defined]
+            return _FakeResp()
+
+        ctx = _make_script_ctx()
+        with mock.patch("urllib.request.urlopen", side_effect=fake):
+            _post_agent_session(ctx, "Implemente #42", slot="esteira-repo-42",
+                                cfg=_base_config(agent="crewflow-dev"))
+
+        body = json.loads(captured["data"])
+        assert body["message"] == "Implemente #42"
+        assert body["slot"] == "esteira-repo-42"
+        assert body["agent"] == "crewflow-dev"
+        assert body["memory_mode"] == "temporary"
+        assert captured["session_key"] == "dashboard:esteira-repo-42"
+
+    def test_retorna_false_se_create_slot_falha(self) -> None:
+        """Falha no step 1 (criar slot) → retorna False sem chamar /api/chat."""
+        calls: list = []
+        ctx = _make_script_ctx()
+
+        class _FakeResp:
+            def __enter__(self) -> "_FakeResp": return self
+            def __exit__(self, *a: object) -> bool: return False
+            def read(self, _n: int = -1) -> bytes: return b""
+
+        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
+            url = req.full_url  # type: ignore[attr-defined]
+            calls.append(url)
+            if "api/chat/slots" in url:
+                raise OSError("connection refused")
+            return _FakeResp()
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake):
+            result = _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
+
+        assert result is False
+        assert not any(u.endswith("/api/chat") for u in calls), "chat não deve ser chamado se slots falhou"
+
+    def test_retorna_false_se_chat_falha(self) -> None:
+        """Falha no step 2 (chat) → retorna False."""
+        ctx = _make_script_ctx()
+
+        class _FakeResp:
+            def __enter__(self) -> "_FakeResp": return self
+            def __exit__(self, *a: object) -> bool: return False
+            def read(self, _n: int = -1) -> bytes: return b""
+
+        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
+            url = req.full_url  # type: ignore[attr-defined]
+            if url.endswith("/api/chat"):
+                raise OSError("connection refused")
+            return _FakeResp()
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake):
+            result = _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
+
+        assert result is False
+
+    def test_usa_local_secret_quando_ctx_nao_tem(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """ctx sem _secret → lê de ~/.kiro/crew/.local_secret."""
+        secret_file = tmp_path / ".local_secret"
+        secret_file.write_text("my-local-secret")
+
+        ctx = mock.MagicMock(spec=["notify", "job"])
+        ctx._port = 5000
+        ctx.job.id = "test-job"
+
+        monkeypatch.setattr(
+            "os.path.expanduser",
+            lambda p: str(secret_file) if ".local_secret" in p else p,
+        )
+
+        captured: dict = {}
+
+        class _FakeResp:
+            def __enter__(self) -> "_FakeResp": return self
+            def __exit__(self, *a: object) -> bool: return False
+            def read(self, _n: int = -1) -> bytes: return b""
+
+        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
+            url = req.full_url  # type: ignore[attr-defined]
+            if "api/chat/slots" in url:
+                captured["secret"] = req.get_header("X-internal-secret")  # type: ignore[attr-defined]
+            return _FakeResp()
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake):
             _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
 
-        # Step 1: criar slot
-        assert any("api/chat/slots" in url for url in calls), f"api/chat/slots não chamado: {calls}"
-        # Step 2: enviar mensagem
-        assert any(url.endswith("/api/chat") for url in calls), f"api/chat não chamado: {calls}"
-        # Não deve ter chamado o webhook endpoint
-        assert not any("hooks/agent" in url for url in calls)
-
-    def test_no_token_script_ctx_no_attribute_error(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Sem token, ctx sem _port/_secret e sem .local_secret: retorna False sem AttributeError."""
-        monkeypatch.delenv("KIROCREW_WEBHOOK_TOKEN", raising=False)
-        monkeypatch.setattr("os.path.exists", lambda p: False if ".local_secret" in str(p) else __import__("os.path", fromlist=["exists"]).exists(p))
-
-        ctx = _make_script_ctx()  # sem _port/_secret
-        with mock.patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
-            result = _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
-            # OSError no step 1 (criar slot) → retorna False
-            assert result is False
+        assert captured.get("secret") == "my-local-secret"
 
 
 # ---------------------------------------------------------------------------
-# Scan zero-token — fila vazia não aciona dispatch/webhook
+# Scan zero-token — fila vazia não aciona dispatch/POST
 # ---------------------------------------------------------------------------
 
 class TestZeroTokenScan:
     def test_empty_queue_no_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """run_dev com fila vazia: nenhum _dispatch e nenhum POST ao webhook."""
-        monkeypatch.setenv("KIROCREW_WEBHOOK_TOKEN", "tok-abc")
-        ctx = _make_script_ctx()
+        """run_dev com fila vazia: nenhum _dispatch e nenhum POST."""
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "s3cr3t"
+        ctx.job.id = "test-job"
 
         with (
             mock.patch("deployment.deployment._load_config", return_value=_base_config()),
@@ -312,7 +270,7 @@ class TestZeroTokenScan:
             mock.patch("deployment.deployment.open_cache") as mock_cache,
             mock.patch("deployment.deployment.provider_for") as mock_pf,
             mock.patch("deployment.deployment._dispatch") as mock_dispatch,
-            mock.patch("urllib.request.urlopen") as mock_webhook,
+            mock.patch("urllib.request.urlopen") as mock_urlopen,
         ):
             mock_cache.return_value.__enter__ = mock.MagicMock(
                 return_value=sqlite3.connect(":memory:"))
@@ -321,11 +279,14 @@ class TestZeroTokenScan:
             run_dev(ctx)
 
         mock_dispatch.assert_not_called()
-        mock_webhook.assert_not_called()
+        mock_urlopen.assert_not_called()
 
     def test_candidate_triggers_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """run_dev com um candidato: _dispatch é chamado exatamente uma vez."""
-        ctx = _make_script_ctx()
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "s3cr3t"
+        ctx.job.id = "test-job"
         result = _make_scan_result("flow:develop-waiting")
 
         with (
@@ -350,16 +311,11 @@ class TestZeroTokenScan:
 
 
 # ---------------------------------------------------------------------------
-# Reviewer — sinalização de sucesso/falha do dispatch (issues #2/#3 do review)
+# Reviewer — sinalização de sucesso/falha do dispatch
 # ---------------------------------------------------------------------------
 
 class TestReviewerDispatchSignalling:
-    """O reviewer é o único dispatcher que reporta falha ao operador via notify.
-
-    Garante que a notify de sucesso só dispara quando o POST teve sucesso e que
-    a notify de falha ('falha ao despachar reviewer') volta a disparar quando
-    ``_post_agent_session`` sinaliza falha (regressão do review v1).
-    """
+    """O reviewer é o único dispatcher que reporta falha ao operador via notify."""
 
     def _patches(self, pr_found: bool = True):  # type: ignore[no-untyped-def]
         pr_json = json.dumps([{"number": 7}]) if pr_found else "[]"
@@ -373,7 +329,10 @@ class TestReviewerDispatchSignalling:
     def test_reviewer_notifies_success_when_post_succeeds(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        ctx = _make_script_ctx()
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "s3cr3t"
+        ctx.job.id = "test-job"
         issue = {"number": 42, "title": "Test"}
         with (
             mock.patch("deployment.deployment._is_issue_closed", return_value=False),
@@ -395,7 +354,10 @@ class TestReviewerDispatchSignalling:
     def test_reviewer_notifies_failure_when_post_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        ctx = _make_script_ctx()
+        ctx = mock.MagicMock()
+        ctx._port = 5000
+        ctx._secret = "s3cr3t"
+        ctx.job.id = "test-job"
         issue = {"number": 42, "title": "Test"}
         with (
             mock.patch("deployment.deployment._is_issue_closed", return_value=False),
