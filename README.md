@@ -311,6 +311,15 @@ Garantias do modo dry-run:
 
 Ver [`docs/ROADMAP.md`](docs/ROADMAP.md) para detalhes.
 
+## Smoke test do fluxo completo ✅
+
+O fluxo `develop → review → merge` foi validado end-to-end via [issue #230](https://github.com/eliasrosa/kirocrew-flow/issues/230):
+
+1. Issue entrou em `flow:develop-waiting` → cron despachou sessão sidebar.
+2. Agente implementou e abriu PR com `flow:review-waiting`.
+3. Reviewer automático analisou e aprovou → `flow:review-approved`.
+4. Merge squash automático executado → issue fechada com `flow:done`.
+
 ## Segurança / privacidade
 
 - Repos, chat_id e paths vivem no `config.yaml` (gitignored). O `config.example.yaml` só tem placeholders.
