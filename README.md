@@ -325,3 +325,4 @@ O fluxo `develop → review → merge` foi validado end-to-end via [issue #230](
 
 - Repos, chat_id e paths vivem no `config.yaml` (gitignored). O `config.example.yaml` só tem placeholders.
 - O disparo usa o segredo interno do gateway apenas em loopback (localhost).
+
