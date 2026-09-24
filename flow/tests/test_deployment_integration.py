@@ -2809,11 +2809,11 @@ class TestIssueClosedGuardDispatch:
 
 
 class TestReviewerNunCriabranchOuPR:
-    """reviewer.md contém regras explícitas contra criar branch/commit/PR."""
+    """review_waiting.md contém regras explícitas contra criar branch/commit/PR."""
 
     def _reviewer_md(self) -> str:
         import pathlib
-        path = pathlib.Path(__file__).parent.parent / "prompts" / "reviewer.md"
+        path = pathlib.Path(__file__).parent.parent / "prompts" / "review_waiting.md"
         return path.read_text()
 
     def test_reviewer_proibe_criar_branch(self) -> None:
@@ -2924,12 +2924,12 @@ class TestPromptsClosedGuard:
         return path.read_text()
 
     def test_dev_md_tem_guard_closed(self) -> None:
-        body = self._read_prompt("dev")
+        body = self._read_prompt("develop_waiting")
         assert "CLOSED" in body
         assert "exit 0" in body or "encerrando" in body.lower()
 
     def test_reviewer_md_tem_guard_closed(self) -> None:
-        body = self._read_prompt("reviewer")
+        body = self._read_prompt("review_waiting")
         assert "CLOSED" in body
         assert "exit 0" in body or "encerrando" in body.lower()
 
@@ -2939,13 +2939,13 @@ class TestPromptsClosedGuard:
         assert "exit 0" in body or "encerrando" in body.lower()
 
     def test_conflict_md_tem_guard_closed(self) -> None:
-        body = self._read_prompt("conflict")
+        body = self._read_prompt("merge_conflict")
         assert "CLOSED" in body
         assert "exit 0" in body or "encerrando" in body.lower()
 
     def test_guard_e_primeiro_passo_em_dev(self) -> None:
         """O guard deve ser o passo 1 — verificado antes de qualquer ação."""
-        body = self._read_prompt("dev")
+        body = self._read_prompt("develop_waiting")
         # Passo 1 deve conter "CLOSED"
         lines = body.splitlines()
         passo1_start = next((i for i, ln in enumerate(lines) if ln.strip().startswith("1.")), None)
@@ -2955,12 +2955,12 @@ class TestPromptsClosedGuard:
 
     def test_guard_e_primeiro_passo_em_reviewer(self) -> None:
         """O guard deve ser o passo 1 — verificado antes de qualquer ação."""
-        body = self._read_prompt("reviewer")
+        body = self._read_prompt("review_waiting")
         lines = body.splitlines()
         passo1_start = next((i for i, ln in enumerate(lines) if ln.strip().startswith("1.")), None)
-        assert passo1_start is not None, "Passo 1 não encontrado em reviewer.md"
+        assert passo1_start is not None, "Passo 1 não encontrado em review_waiting.md"
         passo1_text = "\n".join(lines[passo1_start:passo1_start + 10])
-        assert "CLOSED" in passo1_text, "Passo 1 de reviewer.md não contém guard CLOSED"
+        assert "CLOSED" in passo1_text, "Passo 1 de review_waiting.md não contém guard CLOSED"
 
     def test_guard_e_primeiro_passo_em_rework(self) -> None:
         body = self._read_prompt("rework")
@@ -2971,16 +2971,16 @@ class TestPromptsClosedGuard:
         assert "CLOSED" in passo1_text, "Passo 1 de rework.md não contém guard CLOSED"
 
     def test_guard_e_primeiro_passo_em_conflict(self) -> None:
-        body = self._read_prompt("conflict")
+        body = self._read_prompt("merge_conflict")
         lines = body.splitlines()
         passo1_start = next((i for i, ln in enumerate(lines) if ln.strip().startswith("1.")), None)
-        assert passo1_start is not None, "Passo 1 não encontrado em conflict.md"
+        assert passo1_start is not None, "Passo 1 não encontrado em merge_conflict.md"
         passo1_text = "\n".join(lines[passo1_start:passo1_start + 10])
-        assert "CLOSED" in passo1_text, "Passo 1 de conflict.md não contém guard CLOSED"
+        assert "CLOSED" in passo1_text, "Passo 1 de merge_conflict.md não contém guard CLOSED"
 
     def test_prompts_referencia_issue_163(self) -> None:
         """Referência ao bug #163 para rastreabilidade em ao menos um prompt."""
-        prompts = ["dev", "reviewer", "rework", "conflict"]
+        prompts = ["develop_waiting", "review_waiting", "rework", "merge_conflict"]
         has_ref = any("#163" in self._read_prompt(s) for s in prompts)
         assert has_ref, "Nenhum prompt referencia o bug #163 para rastreabilidade"
 

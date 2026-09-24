@@ -916,7 +916,7 @@ def _dispatch_prompt(
 
     try:
         return render_prompt(
-            "dev",
+            "develop_waiting",
             fallback=_DEV_PROMPT_FALLBACK,
             repo=repo,
             repo_short=short,
@@ -2221,7 +2221,7 @@ def _reviewer_prompt(repo: str, pr_number: int, issue_number: int, head_sha: str
 
     try:
         return render_prompt(
-            "reviewer",
+            "review_waiting",
             fallback=_reviewer_fallback,
             repo=repo,
             repo_short=short,
@@ -2510,7 +2510,7 @@ def _conflict_prompt(
 
     try:
         return render_prompt(
-            "conflict",
+            "merge_conflict",
             fallback=_CONFLICT_PROMPT_FALLBACK,
             repo=repo,
             repo_short=short,

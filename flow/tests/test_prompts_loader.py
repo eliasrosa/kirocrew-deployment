@@ -141,7 +141,7 @@ class TestRealTemplates:
 
     def test_dev_template_real_renderiza_sem_erro(self) -> None:
         result = render_prompt(
-            "dev",
+            "develop_waiting",
             repo="owner/myrepo",
             repo_short="myrepo",
             issue_number="42",
@@ -164,7 +164,7 @@ class TestRealTemplates:
 
     def test_dev_template_real_contem_worktree_path(self) -> None:
         result = render_prompt(
-            "dev",
+            "develop_waiting",
             repo="owner/myrepo",
             repo_short="myrepo",
             issue_number="99",
@@ -182,7 +182,7 @@ class TestRealTemplates:
 
     def test_dev_template_real_com_vault_step(self) -> None:
         result = render_prompt(
-            "dev",
+            "develop_waiting",
             repo="owner/myrepo",
             repo_short="myrepo",
             issue_number="1",
@@ -200,7 +200,7 @@ class TestRealTemplates:
 
     def test_dev_template_real_com_prompt_extra(self) -> None:
         result = render_prompt(
-            "dev",
+            "develop_waiting",
             repo="owner/myrepo",
             repo_short="myrepo",
             issue_number="1",
@@ -219,7 +219,7 @@ class TestRealTemplates:
     def test_dev_template_real_le_comentarios_da_issue(self) -> None:
         """Passo 1 (CONTEXTO) deve instruir a leitura dos comentários da issue."""
         result = render_prompt(
-            "dev",
+            "develop_waiting",
             repo="owner/myrepo",
             repo_short="myrepo",
             issue_number="42",
@@ -237,7 +237,7 @@ class TestRealTemplates:
 
     def test_reviewer_template_real_renderiza_sem_erro(self) -> None:
         result = render_prompt(
-            "reviewer",
+            "review_waiting",
             repo="owner/myrepo",
             repo_short="myrepo",
             pr_number="5",
@@ -257,7 +257,7 @@ class TestRealTemplates:
 
     def test_reviewer_template_real_session_title(self) -> None:
         result = render_prompt(
-            "reviewer",
+            "review_waiting",
             repo="owner/myrepo",
             repo_short="myrepo",
             pr_number="10",
@@ -271,7 +271,7 @@ class TestRealTemplates:
     def test_reviewer_template_real_le_comentarios_issue_e_pr(self) -> None:
         """Passos 1-2 devem instruir a leitura dos comentários da issue e do PR."""
         result = render_prompt(
-            "reviewer",
+            "review_waiting",
             repo="owner/myrepo",
             repo_short="myrepo",
             pr_number="5",
@@ -286,7 +286,7 @@ class TestRealTemplates:
     def test_reviewer_template_verifica_ci(self) -> None:
         """Passo 4: reviewer deve verificar o status da pipeline de CI."""
         result = render_prompt(
-            "reviewer",
+            "review_waiting",
             repo="owner/myrepo",
             repo_short="myrepo",
             pr_number="5",
@@ -301,7 +301,7 @@ class TestRealTemplates:
     def test_reviewer_template_ci_vermelho_bloqueia(self) -> None:
         """CI vermelho deve bloquear aprovação mesmo que o código esteja correto."""
         result = render_prompt(
-            "reviewer",
+            "review_waiting",
             repo="owner/myrepo",
             repo_short="myrepo",
             pr_number="5",
@@ -315,7 +315,7 @@ class TestRealTemplates:
     def test_reviewer_template_posta_nos_dois_lugares(self) -> None:
         """Resultado completo deve ser postado tanto no PR quanto na issue."""
         result = render_prompt(
-            "reviewer",
+            "review_waiting",
             repo="owner/myrepo",
             repo_short="myrepo",
             pr_number="5",
@@ -333,7 +333,7 @@ class TestRealTemplates:
     def test_reviewer_template_aprovado_somente_com_ci_verde_e_sem_comentarios(self) -> None:
         """A decisão de aprovação deve exigir CI verde + zero comentários."""
         result = render_prompt(
-            "reviewer",
+            "review_waiting",
             repo="owner/myrepo",
             repo_short="myrepo",
             pr_number="5",
@@ -349,7 +349,7 @@ class TestRealTemplates:
     def test_reviewer_template_contem_head_sha_injetado(self) -> None:
         """O prompt deve incluir o SHA injetado para que o reviewer saiba qual HEAD revisar."""
         result = render_prompt(
-            "reviewer",
+            "review_waiting",
             repo="owner/myrepo",
             repo_short="myrepo",
             pr_number="5",
@@ -363,7 +363,7 @@ class TestRealTemplates:
     def test_reviewer_template_instrui_confirmar_sha_atual(self) -> None:
         """O reviewer deve confirmar o SHA atual via gh pr view --json headRefOid."""
         result = render_prompt(
-            "reviewer",
+            "review_waiting",
             repo="owner/myrepo",
             repo_short="myrepo",
             pr_number="5",

@@ -103,10 +103,10 @@ class _ParityCase(NamedTuple):
 
 
 _STAGES: list[_ParityCase] = [
-    _ParityCase("dev", "_dispatch_prompt"),
-    _ParityCase("reviewer", "_reviewer_prompt"),
+    _ParityCase("develop_waiting", "_dispatch_prompt"),
+    _ParityCase("review_waiting", "_reviewer_prompt"),
     _ParityCase("rework", "_rework_prompt"),
-    _ParityCase("conflict", "_conflict_prompt"),
+    _ParityCase("merge_conflict", "_conflict_prompt"),
 ]
 
 
@@ -163,10 +163,10 @@ def test_dispatch_fornece_pelo_menos_as_variaveis_do_fallback(
 
     # Tenta localizar o fallback pelo padrão de nome de constante
     fallback_patterns = {
-        "dev": "_DEV_PROMPT_FALLBACK",
-        "reviewer": "_reviewer_fallback",  # variável local, não constante de módulo
+        "develop_waiting": "_DEV_PROMPT_FALLBACK",
+        "review_waiting": "_reviewer_fallback",  # variável local, não constante de módulo
         "rework": "_REWORK_PROMPT_FALLBACK",
-        "conflict": "_CONFLICT_PROMPT_FALLBACK",
+        "merge_conflict": "_CONFLICT_PROMPT_FALLBACK",
     }
     const_name = fallback_patterns.get(case.stage)
     if const_name is None or const_name.startswith("_reviewer"):

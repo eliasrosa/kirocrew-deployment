@@ -190,7 +190,7 @@ class TestReprocessamentoPROriginal:
         """conflict.md deve proibir abrir PR nova."""
         from flow.prompts.loader import render_prompt
         rendered = render_prompt(
-            "conflict",
+            "merge_conflict",
             repo="owner/repo",
             repo_short="repo",
             issue_number="42",
@@ -219,7 +219,7 @@ class TestConflictPrompt:
         """conflict.md deve renderizar com todas as variáveis obrigatórias."""
         from flow.prompts.loader import render_prompt
         rendered = render_prompt(
-            "conflict",
+            "merge_conflict",
             repo="owner/repo",
             repo_short="repo",
             issue_number="42",
@@ -243,7 +243,7 @@ class TestConflictPrompt:
         """conflict.md deve incluir a branch base para rebase."""
         from flow.prompts.loader import render_prompt
         rendered = render_prompt(
-            "conflict",
+            "merge_conflict",
             repo="owner/repo",
             repo_short="repo",
             issue_number="42",
