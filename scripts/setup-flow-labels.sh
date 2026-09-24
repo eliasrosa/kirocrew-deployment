@@ -2,7 +2,7 @@
 # KiroCrew Flow — aplica as labels do namespace `flow:` num repo (idempotente via --force).
 # Uso: ./scripts/setup-flow-labels.sh owner/repo [owner/repo ...]
 #
-# 15 labels de estado + 2 modificadores transversais.
+# 15 labels de estado + 3 modificadores transversais.
 # Tipo e prioridade ficam no Jira/GitHub nativo — não são labels de fluxo.
 #
 # Para migrar de crewflow:* para flow:*, use o script migrate-labels.sh (TODO).
@@ -51,6 +51,8 @@ LABELS=(
   "flow:blocked|DC2626|Bloqueado em qualquer estagio - para tudo"
   # Cron de conflito resolve via rebase e remove esta label
   "flow:merge-conflict|F97316|PR com conflito de merge - cron resolve via rebase"
+  # Lock interno: reviewer em andamento ou resultado pendente (anti-loop por SHA)
+  "flow:reviewed|7C3AED|Lock interno: reviewer em andamento ou resultado pendente"
 )
 
 for repo in "$@"; do
