@@ -50,7 +50,7 @@ Duas dimensões independentes:
 | Dimensão | Cardinalidade | Exemplos |
 |---|---|---|
 | **Estado** (`flow:*`) | exatamente 1 | `flow:develop-waiting`, `flow:review-waiting`, `flow:done` |
-| **Modificador** (`flow:*`) | 0..N, sobrepõem | `flow:blocked`, `flow:merge-conflict`, `flow:reviewed` |
+| **Modificador** (`flow:*`) | 0..N, sobrepõem | `flow:blocked`, `flow:merge-conflict`, `flow:review-running` |
 | **Metadado** (`crewflow:*`) | 0..N | `crewflow:feature`, `crewflow:p1`, `crewflow:blocked` |
 
 > Labels de estado legadas (`crewflow:todo`, `crewflow:review`, etc.) foram deprecadas.
