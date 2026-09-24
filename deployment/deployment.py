@@ -3127,29 +3127,50 @@ def _run_stage(ctx: object, stage: str) -> None:
         pr_mergeable: str | None = None
         if result.current_state is State.REVIEW_WAITING:
             import contextlib
+            _rw_repo = (
+                result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+                or (repos[0] if repos else "")
+            )
+            _rw_issue_number = int(result.item.key.split("/issues/")[-1]) if "/issues/" in result.item.key else 0
+            logger.info(
+                "deployment[%s]: review_waiting — issue=%s modifiers=%s",
+                stage, result.item.key, result.modifiers,
+            )
             with contextlib.suppress(Exception):
-                _repo = (
-                    result.item.key.split("/issues/")[0].replace("https://github.com/", "")
-                    or (repos[0] if repos else "")
-                )
-                _issue_number = int(result.item.key.split("/issues/")[-1]) if "/issues/" in result.item.key else 0
-                if _issue_number and hasattr(provider, "get_pr_for_issue"):
-                    _pr = provider.get_pr_for_issue(_repo, _issue_number)
+                if _rw_issue_number and hasattr(provider, "get_pr_for_issue"):
+                    _pr = provider.get_pr_for_issue(_rw_repo, _rw_issue_number)
                     if _pr:
                         pr_head_sha = _pr.get("headRefOid") or _pr.get("headRefName")
                         pr_mergeable = _pr.get("mergeable")  # "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
+                        logger.info(
+                            "deployment[%s]: PR encontrado para %s#%s — "
+                            "pr=%s sha=%s mergeable=%s",
+                            stage, _rw_repo, _rw_issue_number,
+                            _pr.get("number"), pr_head_sha, pr_mergeable,
+                        )
+                    else:
+                        logger.warning(
+                            "deployment[%s]: PR não encontrado para %s#%s "
+                            "(branch feat/issue-%s ou Closes #%s não localizado)",
+                            stage, _rw_repo, _rw_issue_number,
+                            _rw_issue_number, _rw_issue_number,
+                        )
 
         decision = decide(result, state_comment=state_comment, squad=squad, pr_head_sha=pr_head_sha, pr_mergeable=pr_mergeable)
 
         template = resolve_template(result, squad)
         logger.info(
-            "deployment[%s]: issue=%s template=%s action=%s",
-            stage, result.item.key, template, decision.action,
+            "deployment[%s]: issue=%s template=%s action=%s reason=%s",
+            stage, result.item.key, template, decision.action, decision.reason,
         )
 
         # Aplica filtro por estágio: só processa ações deste cron
         if decision.action.value not in allowed_actions:
             if decision.action is ActionKind.SKIP:
+                logger.debug(
+                    "deployment[%s]: %s ignorada (SKIP — %s)",
+                    stage, result.item.key, decision.reason,
+                )
                 continue
             # Ação de outro estágio — silêncio; o cron do estágio certo vai pegar
             logger.debug(
@@ -3374,6 +3395,77 @@ def _run_stage(ctx: object, stage: str) -> None:
                 logger.error(
                     "deployment[reviewer]: erro ao despachar reviewer para %s#%s: %s",
                     repo, issue_number, exc,
+                )
+
+        # ── Remediação de flow:reviewed stale (issue #233) ───────────────
+        # Quando o dispatcher aplica flow:reviewed atomicamente antes de lançar
+        # a sessão, e essa sessão morre ou falha sem postar o ReviewerResult,
+        # a issue fica em REVIEW_WAITING + REVIEWED sem resultado indefinidamente.
+        # O executor retorna SKIP nesses casos (aguardando resultado que nunca chega).
+        # Esta seção detecta e corrige o estado: se não há sessão ativa do reviewer
+        # E não há ReviewerResult no state_comment, remove flow:reviewed para que
+        # o próximo ciclo do cron possa redespachar o reviewer corretamente.
+        from flow.audit.state_comment import get_reviewer_result_from_comment
+        for _stale_r in scan_results:
+            if _stale_r.current_state is not State.REVIEW_WAITING:
+                continue
+            if Modifier.REVIEWED not in _stale_r.modifiers:
+                continue
+            _stale_repo = (
+                _stale_r.item.key.split("/issues/")[0].replace("https://github.com/", "")
+                or (repos[0] if repos else "")
+            )
+            _stale_num_str = _stale_r.item.key.split("/issues/")[-1] if "/issues/" in _stale_r.item.key else "0"
+            _stale_num = int(_stale_num_str) if _stale_num_str.isdigit() else 0
+            if not _stale_num:
+                continue
+            # Sessão ativa → não é stale, reviewer ainda está rodando
+            if _reviewer_has_active(_stale_repo, _stale_num):
+                logger.debug(
+                    "deployment[reviewer]: %s#%s — reviewed presente, sessão ativa → aguardando resultado",
+                    _stale_repo, _stale_num,
+                )
+                continue
+            # Lê state_comment para verificar se há ReviewerResult
+            _stale_sc: str | None = None
+            import contextlib
+            with contextlib.suppress(Exception):
+                _stale_sc = provider.get_state_comment(_stale_repo, _stale_r.item.key)
+            _stale_result = get_reviewer_result_from_comment(_stale_sc)
+            if _stale_result is not None:
+                # Há resultado — executor vai processar normalmente
+                logger.debug(
+                    "deployment[reviewer]: %s#%s — reviewed presente com resultado → executor vai processar",
+                    _stale_repo, _stale_num,
+                )
+                continue
+            # flow:reviewed sem sessão ativa e sem resultado: estado stale — remediar
+            logger.warning(
+                "deployment[reviewer]: flow:reviewed STALE em %s#%s — "
+                "sem sessão ativa e sem ReviewerResult. Removendo flow:reviewed para "
+                "permitir novo dispatch no próximo ciclo.",
+                _stale_repo, _stale_num,
+            )
+            try:
+                from flow.adapters import github_client as _gh_stale
+                _gh_stale.edit_issue_labels(
+                    _stale_repo, _stale_num,
+                    add=[],
+                    remove=["flow:reviewed"],
+                )
+                logger.info(
+                    "deployment[reviewer]: flow:reviewed removido de %s#%s (remediação stale)",
+                    _stale_repo, _stale_num,
+                )
+                if chat_id:
+                    ctx.notify(  # type: ignore[attr-defined]
+                        f"KiroCrew Flow [reviewer]: flow:reviewed stale removido de "
+                        f"{_stale_repo}#{_stale_num} — próximo ciclo vai redespachar o reviewer."
+                    )
+            except Exception as _stale_exc:
+                logger.error(
+                    "deployment[reviewer]: erro ao remediar flow:reviewed stale em %s#%s: %s",
+                    _stale_repo, _stale_num, _stale_exc,
                 )
 
         # Aplica flow:merge-conflict nas PRs com conflito detectado
