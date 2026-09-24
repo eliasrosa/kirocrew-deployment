@@ -39,7 +39,7 @@
     "crons": [
         {
             "name": "flow-develop-waiting",
-            "script": "~/.kiro/crew/crons/deployment/flow/dev.py:run",
+            "script": "~/.kiro/crew/crons/deployment/flow/develop_waiting.py:run",
             "every": 300,
             "enabled": true,
             "persistent_session": false,
@@ -51,7 +51,7 @@
         },
         {
             "name": "flow-review-waiting",
-            "script": "~/.kiro/crew/crons/deployment/flow/reviewer.py:run",
+            "script": "~/.kiro/crew/crons/deployment/flow/review_waiting.py:run",
             "every": 180,
             "enabled": true,
             "persistent_session": false,
@@ -83,7 +83,7 @@
         },
         {
             "name": "flow-merge-conflict",
-            "script": "~/.kiro/crew/crons/deployment/flow/conflict.py:run",
+            "script": "~/.kiro/crew/crons/deployment/flow/merge_conflict.py:run",
             "every": 300,
             "enabled": true,
             "persistent_session": false,
@@ -95,7 +95,7 @@
         },
         {
             "name": "flow-qa-waiting",
-            "script": "~/.kiro/crew/crons/deployment/flow/qa_notify.py:run",
+            "script": "~/.kiro/crew/crons/deployment/flow/qa_waiting.py:run",
             "every": 600,
             "enabled": true,
             "persistent_session": false,

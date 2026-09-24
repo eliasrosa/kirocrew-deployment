@@ -19,7 +19,6 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Literal
 from unittest import mock
 
 _REPO_ROOT = str(Path(__file__).parent.parent.parent)
@@ -107,10 +106,10 @@ def _make_scan_result(state_label: str) -> object:
 class TestPostAgentSessionLoopback:
     def _fake_urlopen(self, calls: list) -> object:
         class _FakeResp:
-            def __enter__(self) -> "_FakeResp":
+            def __enter__(self) -> _FakeResp:
                 return self
-            def __exit__(self, *a: object) -> bool:
-                return False
+            def __exit__(self, *a: object) -> None:
+                return None
             def read(self, _n: int = -1) -> bytes:
                 return b""
 
@@ -147,8 +146,8 @@ class TestPostAgentSessionLoopback:
         captured: dict = {}
 
         class _FakeResp:
-            def __enter__(self) -> "_FakeResp": return self
-            def __exit__(self, *a: object) -> bool: return False
+            def __enter__(self) -> _FakeResp: return self
+            def __exit__(self, *a: object) -> None: return None
             def read(self, _n: int = -1) -> bytes: return b""
 
         call_count = 0
@@ -180,8 +179,8 @@ class TestPostAgentSessionLoopback:
         ctx = _make_script_ctx()
 
         class _FakeResp:
-            def __enter__(self) -> "_FakeResp": return self
-            def __exit__(self, *a: object) -> bool: return False
+            def __enter__(self) -> _FakeResp: return self
+            def __exit__(self, *a: object) -> None: return None
             def read(self, _n: int = -1) -> bytes: return b""
 
         def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
@@ -202,8 +201,8 @@ class TestPostAgentSessionLoopback:
         ctx = _make_script_ctx()
 
         class _FakeResp:
-            def __enter__(self) -> "_FakeResp": return self
-            def __exit__(self, *a: object) -> bool: return False
+            def __enter__(self) -> _FakeResp: return self
+            def __exit__(self, *a: object) -> None: return None
             def read(self, _n: int = -1) -> bytes: return b""
 
         def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
@@ -236,8 +235,8 @@ class TestPostAgentSessionLoopback:
         captured: dict = {}
 
         class _FakeResp:
-            def __enter__(self) -> "_FakeResp": return self
-            def __exit__(self, *a: object) -> bool: return False
+            def __enter__(self) -> _FakeResp: return self
+            def __exit__(self, *a: object) -> None: return None
             def read(self, _n: int = -1) -> bytes: return b""
 
         def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]

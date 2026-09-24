@@ -35,7 +35,7 @@ echo "  ✅ deployment.py copiado"
 mkdir -p "$CRONS_DIR/deployment/flow"
 cp "$REPO_ROOT/deployment/flow/__init__.py" "$CRONS_DIR/deployment/__init__.py" 2>/dev/null || true
 cp "$REPO_ROOT/deployment/flow/__init__.py" "$CRONS_DIR/deployment/flow/__init__.py"
-for f in base dev reviewer merge review_approved qa_approved conflict rework qa_notify qa_refused watch_issue; do
+for f in base develop_waiting review_waiting merge review_approved qa_approved merge_conflict rework qa_waiting qa_refused watch_issue; do
     if [ -f "$REPO_ROOT/deployment/flow/${f}.py" ]; then
         cp "$REPO_ROOT/deployment/flow/${f}.py" "$CRONS_DIR/deployment/flow/${f}.py"
     fi
