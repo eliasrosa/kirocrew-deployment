@@ -829,7 +829,7 @@ def _post_agent_session(
     agent = cfg.get("agent") or "kirocrew"
 
     # ── Step 1: criar o slot (/api/chat/slots) ─────────────────────────────
-    slot_body = json.dumps({"name": slot, "agent": agent}).encode()
+    slot_body = json.dumps({"name": slot, "agent": agent, "memory_mode": "temporary"}).encode()
     slot_req = _u.Request(
         f"http://localhost:{port}/api/chat/slots",
         data=slot_body,
@@ -851,7 +851,6 @@ def _post_agent_session(
         "message": message,
         "agent": agent,
         "slot": slot,
-        "memory_mode": "temporary",
     }).encode()
     chat_req = _u.Request(
         f"http://localhost:{port}/api/chat",

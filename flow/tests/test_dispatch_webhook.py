@@ -171,7 +171,7 @@ class TestPostAgentSessionLoopback:
         assert body["message"] == "Implemente #42"
         assert body["slot"] == "esteira-repo-42"
         assert body["agent"] == "crewflow-dev"
-        assert body["memory_mode"] == "temporary"
+        assert "memory_mode" not in body  # memory_mode vai no create slot, não no send
         assert captured["session_key"] == "dashboard:esteira-repo-42"
 
     def test_retorna_false_se_create_slot_falha(self) -> None:
