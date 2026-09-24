@@ -92,20 +92,20 @@ squads/*.yaml
 | Entrypoint | Estado alvo | Ação | Intervalo recomendado |
 |---|---|---|---|
 | `run_dev` | `flow:develop-waiting` | `DISPATCH_DEV` — implementa + abre PR | 600s (10 min) |
-| `run_reviewer` | `flow:review-waiting` (sem `flow:reviewed`) | `DISPATCH_REVIEWER` — code review | 300s (5 min) |
+| `review_waiting.py:run` | `flow:review-waiting` (sem `flow:review-running`) | `DISPATCH_REVIEWER` — code review | 300s (5 min) |
 | `run_review_approved` | `flow:review-approved` | `MERGE_PR` → `flow:qa-waiting` | 120s (2 min) |
 | `run_qa_approved` | `flow:qa-approved` | `MERGE_PR` → `flow:done` | 120s (2 min) |
 | `run_merge` | `flow:review-approved` ou `flow:qa-approved` | `MERGE_PR` — ambos (depreciado) | 120s (2 min) |
 | `run_conflito` | `flow:merge-conflict` | `DISPATCH_CONFLICT_RESOLVER` | 300s (5 min) |
 
-## Lock anti-loop: `flow:reviewed`
+## Lock anti-loop: `flow:review-running`
 
-Uma análise por SHA. O robô de review adiciona `flow:reviewed` ao iniciar a análise
+Uma análise por SHA. O robô de review adiciona `flow:review-running` ao iniciar a análise
 (lock interno). Quando o review termina:
-- Aprovado → move para `flow:review-approved` (remove `flow:review-waiting,flow:reviewed`)
+- Aprovado → move para `flow:review-approved` (remove `flow:review-waiting,flow:review-running`)
 - Reprovado → move para `flow:review-refused` (gate humano — não redespacha automaticamente)
 
-Quando o dev faz novo push, `flow:reviewed` é invalidado (novo SHA) e a próxima varredura
+Quando o dev faz novo push, `flow:review-running` é invalidado (novo SHA) e a próxima varredura
 dispara nova análise.
 
 ## Travas de segurança
@@ -133,7 +133,7 @@ dispara nova análise.
 | `crewflow:done` | `flow:done` |
 | `crewflow:blocked` | `flow:blocked` |
 | `crewflow:conflito` | `flow:merge-conflict` |
-| `crewflow:reviewed` | `flow:reviewed` (lock interno) |
+| `crewflow:reviewed` | `flow:review-running` (lock interno) |
 | `crewflow:running` | eliminado (absorvido em `flow:develop-running`) |
 | `crewflow:changes-requested` | eliminado (substituído por `flow:review-refused`) |
 

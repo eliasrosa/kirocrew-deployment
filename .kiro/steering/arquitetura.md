@@ -40,8 +40,9 @@ flow/
 ├── audit/
 │   └── state_comment.py        — render/parse do <!-- KIRO-FLOW-STATE -->
 ├── prompts/                    ← templates MD editáveis por estágio (Fase 2)
-│   ├── dev.md                  — prompt do dev (implementa + abre PR)
-│   ├── reviewer.md             — prompt do reviewer (code review)
+│   ├── develop_waiting.md      — prompt do dev (implementa + abre PR)
+│   ├── review_waiting.md       — prompt do reviewer (code review)
+│   ├── merge_conflict.md       — prompt de resolução de conflito de merge
 │   └── loader.py               — render_prompt(): carrega, interpola e valida
 └── config/
     ├── squad.py                — SquadConfig, RoutingRule, load_squad()
@@ -254,10 +255,10 @@ Os prompts das sessões one-shot (dev e reviewer) vivem em arquivos MD editávei
 
 | Arquivo | Sessão | Quando é usado |
 |---|---|---|
-| `dev.md` | implementação inicial | `DISPATCH_DEV` — issue em `flow:develop-waiting` |
-| `reviewer.md` | code review | `DISPATCH_REVIEWER` — issue em `flow:review-waiting` |
+| `develop_waiting.md` | implementação inicial | `DISPATCH_DEV` — issue em `flow:develop-waiting` |
+| `review_waiting.md` | code review | `DISPATCH_REVIEWER` — issue em `flow:review-waiting` |
 | `rework.md` | re-trabalho pós-review | `DISPATCH_REWORK` — issue com `flow:review-refused` |
-| `conflict.md` | resolução de conflito | `DISPATCH_CONFLICT_RESOLVER` — issue com `crewflow:conflito` |
+| `merge_conflict.md` | resolução de conflito | `DISPATCH_CONFLICT_RESOLVER` — issue com `flow:merge-conflict` |
 
 ### Monitor zero-token da issue (efeito colateral do dispatch DEV)
 
@@ -282,14 +283,14 @@ junto dos demais módulos de `deployment/flow/`.
 ### Ciclo de re-trabalho (flow:review-refused)
 
 Quando o reviewer reprova, o motor adiciona `flow:review-refused` à issue (removendo
-`flow:review-waiting` e `crewflow:reviewed`) e despacha uma sessão `rework` que:
+`flow:review-waiting` e `flow:review-running`) e despacha uma sessão `rework` que:
 1. Lê os pedidos de mudança nos comentários do PR
 2. Aplica as correções na **mesma branch/PR** (nunca cria PR novo)
-3. Commita e faz push (o novo SHA invalida `crewflow:reviewed` automaticamente)
+3. Commita e faz push (o novo SHA invalida `flow:review-running` automaticamente)
 4. Volta a issue para `flow:review-waiting` (remove `flow:review-refused`)
 
 Quando o reviewer aprova, o motor adiciona `flow:review-waiting-ok` (removendo
-`flow:review-waiting` e `crewflow:reviewed`). O cron `run_merge` lê `review-ok`
+`flow:review-waiting` e `flow:review-running`). O cron `run_merge` lê `review-ok`
 e executa o merge squash, sem precisar ler o state_comment.
 
 Teto de iterações: `gates.exceeded_review_iterations()` controla o cap (default 3).
@@ -356,9 +357,9 @@ alternativo escapa à detecção e pode criar uma segunda PR silenciosamente
 
 | Template | Branch usada |
 |----------|-------------|
-| `dev.md` | cria `feat/issue-{{issue_number}}` |
+| `develop_waiting.md` | cria `feat/issue-{{issue_number}}` |
 | `rework.md` | usa a `feat/issue-{{issue_number}}` existente |
-| `conflict.md` | usa a `feat/issue-{{issue_number}}` existente |
-| `reviewer.md` | **não cria branch** — apenas lê e comenta |
+| `merge_conflict.md` | usa a `feat/issue-{{issue_number}}` existente |
+| `review_waiting.md` | **não cria branch** — apenas lê e comenta |
 
 Se uma sessão criar qualquer branch fora deste padrão, é um bug a reportar.

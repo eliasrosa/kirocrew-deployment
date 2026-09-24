@@ -219,8 +219,9 @@ Ver `.kiro/steering/arquitetura.md` para convenções de código e como adiciona
 ### Editar o prompt de uma sessão one-shot
 
 Os prompts ficam em `flow/prompts/`:
-- `dev.md` — sessão de implementação (o agente que abre o PR)
-- `reviewer.md` — sessão de code review
+- `develop_waiting.md` — sessão de implementação (o agente que abre o PR)
+- `review_waiting.md` — sessão de code review
+- `merge_conflict.md` — resolução de conflito de merge
 
 Edite o MD livremente. Placeholders usam `{{nome}}`. Se um placeholder referenciar
 uma variável que o motor não fornece, o dispatch **falha explicitamente** (fail-closed)
@@ -241,7 +242,7 @@ embutido em `deployment.py`.
 > O cron detecta **em runtime** via `deployment.version` e notifica quando o script instalado
 > diverge do repo.
 
-### Comportamento do reviewer (`reviewer.md`)
+### Comportamento do reviewer (`review_waiting.md`)
 
 O agente reviewer valida o PR como **gate único** antes do approve:
 
@@ -250,7 +251,7 @@ O agente reviewer valida o PR como **gate único** antes do approve:
 3. **Analisa o código** — corretude, testes, estilo e convenções do steering do repo.
 4. **Decide com as três condições**: CI verde + zero comentários não resolvidos no PR + sem blockers técnicos.
 5. **Posta o resultado completo nos DOIS lugares** — PR e issue — com: o que foi feito, o resultado, o link e todas as informações.
-6. **Aplica `flow:reviewed`** somente quando as três condições são satisfeitas. Com `auto_merge_on_approve: true` no squad config, o motor faz merge squash automático; sem a flag (default), para em `flow:reviewed` aguardando merge manual.
+6. **Aplica `flow:review-running`** somente quando as três condições são satisfeitas. Com `auto_merge_on_approve: true` no squad config, o motor faz merge squash automático; sem a flag (default), para em `flow:review-running` aguardando merge manual.
 
 ## Desenvolvimento
 

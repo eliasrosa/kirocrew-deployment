@@ -150,7 +150,7 @@ Modificadores de estado (0..N, namespace `flow:*`):
 ```
 flow:blocked         # para tudo (prioridade sobre o estado)
 flow:merge-conflict  # PR com conflito — cron resolve via rebase
-flow:reviewed        # lock anti-loop de code review (interno)
+flow:review-running  # lock anti-loop de code review (interno)
 ```
 
 Metadado (tipo e prioridade, namespace `crewflow:*`):
