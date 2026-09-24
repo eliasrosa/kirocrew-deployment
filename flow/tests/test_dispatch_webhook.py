@@ -253,31 +253,34 @@ class TestPostAgentSessionLoopbackFallback:
     def test_no_token_uses_loopback_not_webhook(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Sem token: usa subprocess curl para /api/chat, NÃO chama o webhook endpoint."""
+        """Sem token: usa urlopen para /api/chat/slots + /api/chat, NÃO chama o webhook endpoint."""
         monkeypatch.delenv("KIROCREW_WEBHOOK_TOKEN", raising=False)
         monkeypatch.setattr("os.path.exists", lambda p: False if ".local_secret" in str(p) else __import__("os.path", fromlist=["exists"]).exists(p))
 
-        captured: dict = {}
+        calls: list = []
 
-        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
-            # Captura URL e headers dos args do curl
-            captured["cmd"] = cmd
-            result = mock.MagicMock()
-            result.returncode = 0
-            result.stdout = ""
-            result.stderr = ""
-            return result
+        class _FakeResp:
+            def __enter__(self) -> "_FakeResp":
+                return self
+            def __exit__(self, *a: object) -> bool:
+                return False
+            def read(self, _n: int = -1) -> bytes:
+                return b""
+
+        def fake_urlopen(req: object, timeout: float = 0) -> _FakeResp:
+            calls.append(req.full_url)  # type: ignore[attr-defined]
+            return _FakeResp()
 
         ctx = _make_message_ctx()
-        with mock.patch("subprocess.run", side_effect=fake_run):
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
             _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
 
-        assert captured.get("cmd") is not None
-        cmd = captured["cmd"]
-        # Verifica URL, secret e session-key nos args do curl
-        assert "http://localhost:5000/api/chat" in cmd
-        assert any("X-Internal-Secret" in str(a) for a in cmd)
-        assert any("dashboard:slot-1" in str(a) for a in cmd)
+        # Step 1: criar slot
+        assert any("api/chat/slots" in url for url in calls), f"api/chat/slots não chamado: {calls}"
+        # Step 2: enviar mensagem
+        assert any(url.endswith("/api/chat") for url in calls), f"api/chat não chamado: {calls}"
+        # Não deve ter chamado o webhook endpoint
+        assert not any("hooks/agent" in url for url in calls)
 
     def test_no_token_script_ctx_no_attribute_error(
         self, monkeypatch: pytest.MonkeyPatch
@@ -287,14 +290,9 @@ class TestPostAgentSessionLoopbackFallback:
         monkeypatch.setattr("os.path.exists", lambda p: False if ".local_secret" in str(p) else __import__("os.path", fromlist=["exists"]).exists(p))
 
         ctx = _make_script_ctx()  # sem _port/_secret
-        # Mock subprocess.run para simular falha do curl (sem conexão)
-        fail_result = mock.MagicMock()
-        fail_result.returncode = 7  # curl: couldn't connect
-        fail_result.stdout = ""
-        fail_result.stderr = "curl: (7) Failed to connect"
-        with mock.patch("subprocess.run", return_value=fail_result):
+        with mock.patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
             result = _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
-            # returncode 7 não é 0 nem 28 → retorna False
+            # OSError no step 1 (criar slot) → retorna False
             assert result is False
 
 

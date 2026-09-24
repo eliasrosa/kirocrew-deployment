@@ -867,7 +867,7 @@ def _post_agent_session(
             return False
         return True
 
-    # ── Fallback: loopback interno (/api/chat) ─────────────────────────────
+    # ── Fallback: loopback interno (/api/chat/slots + /api/chat) ──────────────
     # ctx._port e ctx._secret existem no ScriptContext do runtime real do gateway —
     # o preview de cron não os simula, mas em produção estão presentes.
     # Usa 5478 como fallback (porta padrão do dashboard).
@@ -887,7 +887,38 @@ def _post_agent_session(
         )
         return False
 
-    req = _u.Request(
+    # ── Step 1: criar o slot (POST /api/chat/slots) ────────────────────────
+    # O gateway só aceita X-Session-Key: dashboard:{slot} no /api/chat quando
+    # o slot já existe no seu estado interno. Sem este step, o POST vai para
+    # sessão CLI em vez de criar sessão dashboard: visível no sidebar.
+    # Este call é idempotente: se o slot já existe, retorna o slot existente.
+    slot_body = json.dumps({
+        "name": slot,
+        "agent": cfg.get("agent") or "kirocrew",
+    }).encode()
+    slot_req = _u.Request(
+        f"http://localhost:{port}/api/chat/slots",
+        data=slot_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Internal-Secret": secret,
+        },
+        method="POST",
+    )
+    try:
+        with _u.urlopen(slot_req, timeout=10) as resp:
+            resp.read(1)
+    except Exception as exc:
+        logger.error(
+            "deployment: falha ao criar slot %s: %s",
+            slot, exc,
+        )
+        return False
+
+    # ── Step 2: enviar a mensagem (POST /api/chat) ─────────────────────────
+    # Agora que o slot existe, o gateway reconhece X-Session-Key: dashboard:{slot}
+    # e cria a sessão como dashboard_esteira-* (visível no sidebar).
+    chat_req = _u.Request(
         f"http://localhost:{port}/api/chat",
         data=body,
         headers={
@@ -898,36 +929,11 @@ def _post_agent_session(
         method="POST",
     )
     try:
-        # Usar subprocess curl em vez de urllib — curl cria sessão Crew corretamente;
-        # urllib.request.urlopen cria sessão CLI por diferença no nível HTTP.
-        # Remover KIRO_SESSION_ID do ambiente: com essa variável presente, o
-        # gateway associa o POST à sessão atual (CLI) em vez de criar uma nova
-        # sessão Crew. Sem ela, o gateway cria a sessão Crew corretamente.
-        _env = {k: v for k, v in os.environ.items() if k != "KIRO_SESSION_ID"}
-        result = subprocess.run(
-            [
-                "curl", "-s", "-m", "10",
-                "-X", "POST", f"http://localhost:{port}/api/chat",
-                "-H", "Content-Type: application/json",
-                "-H", f"X-Internal-Secret: {secret}",
-                "-H", f"X-Session-Key: dashboard:{slot}",
-                "--data-raw", body.decode(),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=12,
-            check=False,
-            env=_env,
-        )
-        if result.returncode not in (0, 28):  # 28 = timeout (stream aberto, ok)
-            logger.error(
-                "deployment: curl falhou (exit %s) ao despachar slot %s: %s",
-                result.returncode, slot, result.stderr[:200],
-            )
-            return False
+        with _u.urlopen(chat_req, timeout=12) as resp:
+            resp.read(1)
     except Exception as exc:
         logger.error(
-            "deployment: falha ao despachar sessão via curl (slot %s): %s",
+            "deployment: falha ao despachar sessão (slot %s): %s",
             slot, exc,
         )
         return False

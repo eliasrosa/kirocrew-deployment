@@ -773,15 +773,25 @@ class TestDispatchAcquiresLockBeforePost:
 
         lock_existed_at_post_time: list[bool] = []
 
-        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
-            # O backstop lock agora fica em backstop/ (não direto no sessdir)
-            lock = tmp_path / "backstop" / "dispatch-myrepo-42.lock"
-            lock_existed_at_post_time.append(lock.exists())
-            result = mock.MagicMock()
-            result.returncode = 0
-            result.stdout = ""
-            result.stderr = ""
-            return result
+        class _FakeResp:
+            def __enter__(self) -> "_FakeResp":
+                return self
+            def __exit__(self, *a: object) -> bool:
+                return False
+            def read(self, _n: int = -1) -> bytes:
+                return b""
+
+        call_count = 0
+
+        def fake_urlopen(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
+            nonlocal call_count
+            call_count += 1
+            url = req.full_url  # type: ignore[attr-defined]
+            if url.endswith("/api/chat"):
+                # O backstop lock agora fica em backstop/ (não direto no sessdir)
+                lock = tmp_path / "backstop" / "dispatch-myrepo-42.lock"
+                lock_existed_at_post_time.append(lock.exists())
+            return _FakeResp()
 
         cfg = {
             "dev_root": str(tmp_path),
@@ -792,14 +802,14 @@ class TestDispatchAcquiresLockBeforePost:
         issue = {"number": 42, "title": "Test issue", "url": "https://github.com/owner/myrepo/issues/42"}
 
         with (
-            mock.patch("subprocess.run", side_effect=fake_run),
+            mock.patch("urllib.request.urlopen", side_effect=fake_urlopen),
             mock.patch("deployment.deployment._dispatch_prompt", return_value="msg"),
             mock.patch("deployment.deployment._is_issue_closed", return_value=False),
         ):
             _dispatch(self._make_ctx(), "owner/myrepo", issue, cfg)
 
-        # O lock deve ter existido quando o POST foi feito
-        assert lock_existed_at_post_time, "subprocess.run (curl) nunca foi chamado"
+        # O lock deve ter existido quando o POST /api/chat foi feito
+        assert lock_existed_at_post_time, "urlopen para /api/chat nunca foi chamado"
         assert lock_existed_at_post_time[0] is True, (
             "O lock NÃO existia quando o POST foi feito — race condition!"
         )
