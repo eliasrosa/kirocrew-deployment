@@ -56,7 +56,7 @@ Execute UMA vez, do início ao fim, e PARE:
    Se falhar e não conseguir corrigir, pare em `flow:blocked`.
 7. Faça push na branch existente (force-with-lease é seguro após rebase):
    `git push origin feat/issue-{{issue_number}} --force-with-lease`
-   Isso invalida `flow:reviewed` automaticamente (novo SHA).
+   Isso invalida `flow:review-running` automaticamente (novo SHA).
 8. Verifique que o PR voltou para estado mergeable:
    `gh pr view {{pr_number}} --repo {{repo}} --json mergeable,mergeStateStatus`
 9. Troque as labels: remove `flow:merge-conflict`, mantém `flow:review-waiting`:

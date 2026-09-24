@@ -103,7 +103,7 @@ def _make_pr(number: int = 42, labels: list[str] | None = None) -> dict:
 
 class TestHandlePushForRepo:
     def test_remove_reviewed_quando_presente(self) -> None:
-        pr = _make_pr(labels=["flow:review-waiting", "flow:reviewed", "phase-1"])
+        pr = _make_pr(labels=["flow:review-waiting", "flow:review-running", "phase-1"])
         with (
             mock.patch.object(handler, "_find_open_pr_for_branch", return_value=pr),
             mock.patch.object(handler.github_client, "set_labels") as mock_set,
@@ -135,7 +135,7 @@ class TestHandlePushForRepo:
     def test_loga_e_retorna_false_em_provider_error(self) -> None:
         from flow.ports.issue_provider import ProviderError
 
-        pr = _make_pr(labels=["flow:review-waiting", "flow:reviewed"])
+        pr = _make_pr(labels=["flow:review-waiting", "flow:review-running"])
         with (
             mock.patch.object(handler, "_find_open_pr_for_branch", return_value=pr),
             mock.patch.object(
@@ -150,7 +150,7 @@ class TestHandlePushForRepo:
 
     def test_auditoria_best_effort_nao_bloqueia(self) -> None:
         """Mesmo com erro na auditoria, o retorno deve ser True."""
-        pr = _make_pr(labels=["flow:review-waiting", "flow:reviewed"])
+        pr = _make_pr(labels=["flow:review-waiting", "flow:review-running"])
         with (
             mock.patch.object(handler, "_find_open_pr_for_branch", return_value=pr),
             mock.patch.object(handler.github_client, "set_labels"),
@@ -167,7 +167,7 @@ class TestHandlePushForRepo:
     def test_preserva_outras_labels(self) -> None:
         pr = _make_pr(labels=[
             "flow:review-waiting",
-            "flow:reviewed",
+            "flow:review-running",
             "phase-1",
             "flow:feature",
         ])
@@ -241,7 +241,7 @@ class TestWebhookRoute:
 
     def test_push_com_reviewed_retorna_removed(self) -> None:
         app = create_app(webhook_secret="")
-        pr = _make_pr(labels=["flow:review-waiting", "flow:reviewed"])
+        pr = _make_pr(labels=["flow:review-waiting", "flow:review-running"])
         with (
             mock.patch.object(handler, "_find_open_pr_for_branch", return_value=pr),
             mock.patch.object(handler.github_client, "set_labels"),

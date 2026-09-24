@@ -84,7 +84,7 @@ class TestDecideFeature:
     def test_review_marca_reviewed(self) -> None:
         r = _result(state=State.REVIEW_WAITING, labels=["flow:review-waiting", "flow:feature"])
         d = decide(r)
-        assert "flow:reviewed" in d.add_labels
+        assert "flow:review-running" in d.add_labels
 
     def test_dev_em_andamento_skip(self) -> None:
         r = _result(state=State.DEVELOP_RUNNING, labels=["flow:develop-running", "flow:develop-running"])
@@ -117,15 +117,15 @@ class TestDecideFeature:
 
 
 # ---------------------------------------------------------------------------
-# decide() — lock anti-loop flow:reviewed
+# decide() — lock anti-loop flow:review-running
 # ---------------------------------------------------------------------------
 
 class TestAntiLoopReviewed:
     def test_review_com_reviewed_sem_resultado_skip(self) -> None:
-        """flow:reviewed presente mas sem resultado do reviewer → SKIP (aguardando)."""
+        """flow:review-running presente mas sem resultado do reviewer → SKIP (aguardando)."""
         r = _result(
             state=State.REVIEW_WAITING,
-            labels=["flow:review-waiting", "flow:reviewed", "flow:feature"],
+            labels=["flow:review-waiting", "flow:review-running", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
         d = decide(r)
@@ -330,10 +330,10 @@ class TestGate2AutoMerge:
         return render(sc)
 
     def test_review_com_reviewed_sem_resultado_skip(self) -> None:
-        """flow:reviewed presente mas sem ReviewerResult → SKIP (reviewer ainda rodando)."""
+        """flow:review-running presente mas sem ReviewerResult → SKIP (reviewer ainda rodando)."""
         r = _result(
             state=State.REVIEW_WAITING,
-            labels=["flow:review-waiting", "flow:reviewed", "flow:feature"],
+            labels=["flow:review-waiting", "flow:review-running", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
         d = decide(r, state_comment=None)
@@ -345,7 +345,7 @@ class TestGate2AutoMerge:
         state_comment = self._make_review_result(approved=True, comments=[])
         r = _result(
             state=State.REVIEW_WAITING,
-            labels=["flow:review-waiting", "flow:reviewed", "flow:feature"],
+            labels=["flow:review-waiting", "flow:review-running", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
         d = decide(r, state_comment=state_comment, auto_merge_on_approve=True)
@@ -353,7 +353,7 @@ class TestGate2AutoMerge:
         # No novo fluxo: review aprovado → qa-waiting (não flow:done direto)
         assert "flow:qa-waiting" in d.add_labels
         assert "flow:review-waiting" in d.remove_labels
-        assert "flow:reviewed" in d.remove_labels
+        assert "flow:review-running" in d.remove_labels
 
     def test_review_com_reviewed_aprovado_com_comentarios_notifica_tl(self) -> None:
         """Reviewer aprovado mas com comentários → NOTIFY_HUMAN TL."""
@@ -363,7 +363,7 @@ class TestGate2AutoMerge:
         )
         r = _result(
             state=State.REVIEW_WAITING,
-            labels=["flow:review-waiting", "flow:reviewed", "flow:feature"],
+            labels=["flow:review-waiting", "flow:review-running", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
         d = decide(r, state_comment=state_comment)
@@ -379,7 +379,7 @@ class TestGate2AutoMerge:
         )
         r = _result(
             state=State.REVIEW_WAITING,
-            labels=["flow:review-waiting", "flow:reviewed", "flow:feature"],
+            labels=["flow:review-waiting", "flow:review-running", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
         d = decide(r, state_comment=state_comment)
@@ -387,28 +387,28 @@ class TestGate2AutoMerge:
         assert d.notify_role is HumanRole.TL
 
     def test_review_sem_reviewed_despacha_reviewer(self) -> None:
-        """Sem flow:reviewed → dispara o reviewer (caminho normal)."""
+        """Sem flow:review-running → dispara o reviewer (caminho normal)."""
         r = _result(
             state=State.REVIEW_WAITING,
             labels=["flow:review-waiting", "flow:feature"],
         )
         d = decide(r)
         assert d.action is ActionKind.DISPATCH_REVIEWER
-        assert "flow:reviewed" in d.add_labels
+        assert "flow:review-running" in d.add_labels
 
     def test_merge_pr_labels_corretas(self) -> None:
         """MERGE_PR deve adicionar qa-waiting e remover review+reviewed."""
         state_comment = self._make_review_result(approved=True, comments=[])
         r = _result(
             state=State.REVIEW_WAITING,
-            labels=["flow:review-waiting", "flow:reviewed", "flow:feature"],
+            labels=["flow:review-waiting", "flow:review-running", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
         d = decide(r, state_comment=state_comment, auto_merge_on_approve=True)
         assert d.action is ActionKind.MERGE_PR
         assert set(d.add_labels) == {"flow:qa-waiting"}
         assert "flow:review-waiting" in d.remove_labels
-        assert "flow:reviewed" in d.remove_labels
+        assert "flow:review-running" in d.remove_labels
 
     # ── SHA verification ──────────────────────────────────────────────
 
@@ -417,7 +417,7 @@ class TestGate2AutoMerge:
         state_comment = self._make_review_result(approved=True, comments=[])
         r = _result(
             state=State.REVIEW_WAITING,
-            labels=["flow:review-waiting", "flow:reviewed", "flow:feature"],
+            labels=["flow:review-waiting", "flow:review-running", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
         # SHA do PR mudou após a review (reviewer usou "abc123", PR agora em "deadbeef...")
@@ -441,7 +441,7 @@ class TestGate2AutoMerge:
 
         r = _result(
             state=State.REVIEW_WAITING,
-            labels=["flow:review-waiting", "flow:reviewed", "flow:feature"],
+            labels=["flow:review-waiting", "flow:review-running", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
         # Mesmo prefixo de 8 chars — SHA completo do PR pode ser maior
@@ -463,7 +463,7 @@ class TestGate2AutoMerge:
 
         r = _result(
             state=State.REVIEW_WAITING,
-            labels=["flow:review-waiting", "flow:reviewed", "flow:feature"],
+            labels=["flow:review-waiting", "flow:review-running", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
         d = decide(r, state_comment=state_comment, pr_head_sha="newsha123", auto_merge_on_approve=True)
@@ -474,7 +474,7 @@ class TestGate2AutoMerge:
         state_comment = self._make_review_result(approved=True, comments=[])
         r = _result(
             state=State.REVIEW_WAITING,
-            labels=["flow:review-waiting", "flow:reviewed", "flow:feature"],
+            labels=["flow:review-waiting", "flow:review-running", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
         d = decide(r, state_comment=state_comment, pr_head_sha=None, auto_merge_on_approve=True)
@@ -506,7 +506,7 @@ class TestAutoMergeOnApprove:
     def _result_review(self) -> ScanResult:
         return _result(
             state=State.REVIEW_WAITING,
-            labels=["flow:review-waiting", "flow:reviewed", "flow:feature"],
+            labels=["flow:review-waiting", "flow:review-running", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
 
@@ -604,7 +604,7 @@ class TestAutoMergeOnApprove:
         assert d.action is ActionKind.MERGE_PR
         assert "flow:qa-waiting" in d.add_labels
         assert "flow:review-waiting" in d.remove_labels
-        assert "flow:reviewed" in d.remove_labels
+        assert "flow:review-running" in d.remove_labels
 
 
 # ---------------------------------------------------------------------------

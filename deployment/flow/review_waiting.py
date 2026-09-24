@@ -1,6 +1,6 @@
 """KiroCrew Flow — cron de code review.
 
-Processa PRs em ``flow:review-waiting`` (sem ``flow:reviewed``) e despacha
+Processa PRs em ``flow:review-waiting`` (sem ``flow:review-running``) e despacha
 sessões one-shot do kiro-reviewer.
 
 Registro (uma vez):
@@ -28,7 +28,7 @@ except ImportError:
 def run(ctx: object) -> None:
     """Entrypoint do cron de code review.
 
-    Processa PRs em ``flow:review-waiting`` (sem ``flow:reviewed``) e
+    Processa PRs em ``flow:review-waiting`` (sem ``flow:review-running``) e
     despacha sessões one-shot do kiro-reviewer.
     Ideal com um modelo mais rápido e intervalo de 300s.
 

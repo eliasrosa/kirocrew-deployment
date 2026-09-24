@@ -202,7 +202,7 @@ class TestReworkCycle:
         """REVIEW_REFUSED é processado como gate humano."""
         r = _result(
             state=State.REVIEW_REFUSED,
-            labels=["flow:review-refused", "flow:reviewed", "flow:feature"],
+            labels=["flow:review-refused", "flow:review-running", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
         d = decide(r, state_comment=None)
@@ -237,14 +237,14 @@ class TestNotifyHumanAddsReviewFail:
         """Reviewer reprovado com comentários: NOTIFY_HUMAN TL + add review-fail."""
         state_comment = self._make_review_result(["Falta teste", "Lógica errada"])
         r = _result(
-            labels=["flow:review-waiting", "flow:reviewed", "flow:feature"],
+            labels=["flow:review-waiting", "flow:review-running", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
         d = decide(r, state_comment=state_comment)
         assert d.action is ActionKind.NOTIFY_HUMAN
         assert d.notify_role is HumanRole.TL
         assert "flow:review-refused" in d.add_labels
-        assert "flow:reviewed" in d.remove_labels
+        assert "flow:review-running" in d.remove_labels
 
     def test_aprovado_sem_comentarios_nao_adiciona_review_fail(self) -> None:
         """Reviewer aprovado sem comentários: MERGE_PR (caminho feliz, sem review-fail)."""
@@ -253,7 +253,7 @@ class TestNotifyHumanAddsReviewFail:
         state_comment = render(sc)
 
         r = _result(
-            labels=["flow:review-waiting", "flow:reviewed", "flow:feature"],
+            labels=["flow:review-waiting", "flow:review-running", "flow:feature"],
             modifiers={Modifier.REVIEWED},
         )
         d = decide(r, state_comment=state_comment, auto_merge_on_approve=True)

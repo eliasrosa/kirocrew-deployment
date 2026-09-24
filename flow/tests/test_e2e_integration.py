@@ -138,16 +138,16 @@ class TestFeatureFlowE2E:
 
         decision = decide(r, squad=squad)
         assert decision.action is ActionKind.DISPATCH_REVIEWER
-        assert "flow:reviewed" in decision.add_labels
+        assert "flow:review-running" in decision.add_labels
 
     def test_review_com_reviewed_skip(
         self, squad: SquadConfig, conn: sqlite3.Connection
     ) -> None:
-        """Issue em flow:review-waiting + flow:reviewed → SKIP (lock anti-loop)."""
+        """Issue em flow:review-waiting + flow:review-running → SKIP (lock anti-loop)."""
         item = _item(
             "https://github.com/owner/api-gateway2/issues/42",
             "[api-gateway2] Fix",
-            ["flow:review-waiting", "flow:reviewed", "flow:feature"],
+            ["flow:review-waiting", "flow:review-running", "flow:feature"],
         )
         provider = _mock_provider({"flow:review-waiting": [item]})
         cfg = _scan_cfg(squad)

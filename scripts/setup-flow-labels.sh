@@ -52,7 +52,7 @@ LABELS=(
   # Cron de conflito resolve via rebase e remove esta label
   "flow:merge-conflict|F97316|PR com conflito de merge - cron resolve via rebase"
   # Lock interno: reviewer em andamento ou resultado pendente (anti-loop por SHA)
-  "flow:reviewed|7C3AED|Lock interno: reviewer em andamento ou resultado pendente"
+  "flow:review-running|7C3AED|Lock interno: reviewer em andamento ou resultado pendente"
 )
 
 for repo in "$@"; do

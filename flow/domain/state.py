@@ -103,7 +103,7 @@ class Modifier(StrEnum):
 
     # Modificador interno de lock anti-loop (não exposto como label de negócio)
     # Mantido como enum para uso interno pelo executor/deployment.
-    REVIEWED       = "flow:reviewed"        # lock anti-loop interno: já analisado neste SHA
+    REVIEWED       = "flow:review-running"  # lock anti-loop interno: já analisado neste SHA
 
 
 # Modificadores que impedem dispatch mesmo com o estado correto.

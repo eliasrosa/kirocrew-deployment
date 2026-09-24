@@ -366,7 +366,7 @@ class TestRunReviewer:
 
 class TestRunMerge:
     def _make_merge_result(self) -> object:
-        """ScanResult em flow:review-waiting + flow:reviewed com ReviewerResult aprovado."""
+        """ScanResult em flow:review-waiting + flow:review-running com ReviewerResult aprovado."""
         from flow.audit.state_comment import StateComment, render
         from flow.domain.gates import WorkItem
         from flow.domain.state import Modifier, State
@@ -383,7 +383,7 @@ class TestRunMerge:
             item=WorkItem(
                 key="https://github.com/owner/repo/issues/42",
                 title="[owner/repo] Feature X",
-                labels=frozenset(["flow:review-waiting", "flow:reviewed"]),
+                labels=frozenset(["flow:review-waiting", "flow:review-running"]),
             ),
             current_state=State.REVIEW_WAITING,
             modifiers=frozenset([Modifier.REVIEWED]),
@@ -625,7 +625,7 @@ class TestEstagioIsolamento:
             item=WorkItem(
                 key="https://github.com/owner/repo/issues/42",
                 title="[owner/repo] Feature X",
-                labels=frozenset(["flow:review-waiting", "flow:reviewed"]),
+                labels=frozenset(["flow:review-waiting", "flow:review-running"]),
             ),
             current_state=State.REVIEW_WAITING,
             modifiers=frozenset([Modifier.REVIEWED]),

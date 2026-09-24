@@ -247,7 +247,7 @@ class TestAutoMergeIntegration:
         return ctx
 
     def _make_review_scan_result(self) -> object:
-        """ScanResult em flow:review-waiting com flow:reviewed."""
+        """ScanResult em flow:review-waiting com flow:review-running."""
         from flow.audit.state_comment import StateComment, render
         from flow.domain.gates import WorkItem
         from flow.domain.state import Modifier, State
@@ -264,7 +264,7 @@ class TestAutoMergeIntegration:
             item=WorkItem(
                 key="https://github.com/owner/repo/issues/42",
                 title="[owner/repo] Feature X",
-                labels=frozenset(["flow:review-waiting", "flow:reviewed", "flow:feature"]),
+                labels=frozenset(["flow:review-waiting", "flow:review-running", "flow:feature"]),
             ),
             current_state=State.REVIEW_WAITING,
             modifiers=frozenset([Modifier.REVIEWED]),
@@ -294,7 +294,7 @@ class TestAutoMergeIntegration:
             item=WorkItem(
                 key="https://github.com/owner/repo/issues/42",
                 title="[owner/repo] Feature X",
-                labels=frozenset(["flow:review-waiting", "flow:reviewed", "flow:feature"]),
+                labels=frozenset(["flow:review-waiting", "flow:review-running", "flow:feature"]),
             ),
             current_state=State.REVIEW_WAITING,
             modifiers=frozenset([Modifier.REVIEWED]),
@@ -322,7 +322,7 @@ class TestAutoMergeIntegration:
             mock.patch("flow.adapters.github_client.merge_pull_request",
                        return_value={"merged": True}),
             mock.patch("flow.adapters.github_client.get_work_item",
-                       return_value={"labels": ["flow:review-waiting", "flow:reviewed", "flow:feature"]}),
+                       return_value={"labels": ["flow:review-waiting", "flow:review-running", "flow:feature"]}),
             mock.patch("flow.adapters.github_client.set_labels"),
             mock.patch("flow.adapters.github_client.upsert_pr_review_comment"),
             mock.patch("flow.adapters.github_client.get_state_comment", return_value=state_body),
@@ -1172,7 +1172,7 @@ class TestRunDispatchReviewer:
         return ctx
 
     def _make_review_scan_result(self) -> object:
-        """ScanResult em flow:review-waiting sem flow:reviewed (antes do dispatch)."""
+        """ScanResult em flow:review-waiting sem flow:review-running (antes do dispatch)."""
         from flow.domain.gates import WorkItem
         from flow.domain.state import State
         from flow.scan.scanner import ScanResult
@@ -3246,7 +3246,7 @@ class TestAtomicLabelLockBeforeDispatch:
     - edit_issue_labels chamado ANTES de _dispatch / _dispatch_reviewer
     - Se edit_issue_labels lança, _dispatch NÃO é chamado (fail-closed)
     - Estágio dev: develop-waiting → develop-running antes do dispatch
-    - Estágio reviewer: flow:reviewed adicionado antes do dispatch_reviewer
+    - Estágio reviewer: flow:review-running adicionado antes do dispatch_reviewer
     """
 
     def _make_ctx(self) -> object:
@@ -3288,7 +3288,7 @@ class TestAtomicLabelLockBeforeDispatch:
         )
 
     def _make_reviewer_scan_result(self) -> object:
-        """ScanResult em flow:review-waiting sem flow:reviewed — candidato a DISPATCH_REVIEWER."""
+        """ScanResult em flow:review-waiting sem flow:review-running — candidato a DISPATCH_REVIEWER."""
         from flow.domain.gates import WorkItem
         from flow.domain.state import State
         from flow.scan.scanner import ScanResult
@@ -3485,7 +3485,7 @@ class TestAtomicLabelLockBeforeDispatch:
         mock_dispatch_rev.assert_not_called()
 
     def test_reviewer_edit_labels_adiciona_reviewed_em_run_stage(self) -> None:
-        """_run_stage[reviewer]: edit_issue_labels deve adicionar flow:reviewed."""
+        """_run_stage[reviewer]: edit_issue_labels deve adicionar flow:review-running."""
         from deployment.deployment import _run_stage
 
         ctx = self._make_ctx()
@@ -3513,8 +3513,8 @@ class TestAtomicLabelLockBeforeDispatch:
             mock_cache.return_value = mock.MagicMock(spec=["close"])
             _run_stage(ctx, "reviewer")
 
-        assert "flow:reviewed" in captured.get("add", []), (
-            "edit_issue_labels deve adicionar flow:reviewed antes do dispatch do reviewer"
+        assert "flow:review-running" in captured.get("add", []), (
+            "edit_issue_labels deve adicionar flow:review-running antes do dispatch do reviewer"
         )
 
 
@@ -3559,7 +3559,7 @@ class TestEditIssueLabelsTransport:
             return "https://github.com/owner/repo/issues/42\n"
 
         with mock.patch.object(t, "_run_raw", side_effect=fake_run_raw):
-            t.edit_issue_labels("owner/repo", 1, add=["flow:reviewed"], remove=[])
+            t.edit_issue_labels("owner/repo", 1, add=["flow:review-running"], remove=[])
 
         assert "--add-label" in captured
         assert "--remove-label" not in captured

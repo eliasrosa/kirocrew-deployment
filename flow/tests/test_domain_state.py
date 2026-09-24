@@ -129,7 +129,7 @@ class TestParseModifiers:
         assert Modifier.BLOCKED in result
 
     def test_extrai_multiplos_modificadores(self) -> None:
-        labels = {"flow:blocked", "flow:reviewed", "flow:merge-conflict", "documentation"}
+        labels = {"flow:blocked", "flow:review-running", "flow:merge-conflict", "documentation"}
         result = parse_modifiers(labels)
         assert result == frozenset({Modifier.BLOCKED, Modifier.REVIEWED, Modifier.MERGE_CONFLICT})
 
@@ -175,7 +175,7 @@ class TestIsDispatchable:
         assert not is_dispatchable(None, frozenset())
 
     def test_hml_bypass_nao_impede_dispatch(self) -> None:
-        """flow:reviewed é lock anti-loop, não para o dispatch de uma nova issue."""
+        """flow:review-running é lock anti-loop, não para o dispatch de uma nova issue."""
         assert is_dispatchable(State.DEVELOP_WAITING, frozenset({Modifier.REVIEWED}))
 
     def test_reviewed_nao_impede_dispatch(self) -> None:

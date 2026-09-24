@@ -138,7 +138,7 @@ class TestConflitoCycle:
     def test_conflito_tem_prioridade_sobre_reviewed(self) -> None:
         """CONFLITO + REVIEWED → DISPATCH_CONFLICT_RESOLVER (conflito tem prioridade)."""
         r = _result(
-            labels=["flow:review-waiting", "flow:merge-conflict", "flow:reviewed",
+            labels=["flow:review-waiting", "flow:merge-conflict", "flow:review-running",
                     "flow:feature"],
             modifiers={Modifier.MERGE_CONFLICT, Modifier.REVIEWED},
         )

@@ -70,7 +70,7 @@ Execute UMA vez, do início ao fim, e PARE:
    Se qualquer check falhar e você não conseguir corrigir, marque `flow:blocked` e ENCERRE. **Não faça push com CI vermelho.**
 9. Faça commit e push na branch existente:
    `git add -A && git commit -m "fix: aplicar pedidos de mudança do reviewer (iteração {{iteration}})" && git push origin feat/issue-{{issue_number}}`
-   Isso invalida o lock anti-loop `flow:reviewed` (novo SHA).
+   Isso invalida o lock anti-loop `flow:review-running` (novo SHA).
 10. Atualize o state_comment da issue incrementando `review_iterations`:
    - Leia o comentário atual: `gh issue view {{issue_number}} --repo {{repo}} --comments`
    - Incremente o campo `**Iterações de review:**` (ou adicione-o se ausente)

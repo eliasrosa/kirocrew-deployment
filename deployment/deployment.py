@@ -1833,13 +1833,13 @@ def run(ctx: object) -> None:
                 )
                 continue
             try:
-                # Lock atômico: adiciona flow:reviewed ANTES de lançar o reviewer (issue #207).
+                # Lock atômico: adiciona flow:review-running ANTES de lançar o reviewer (issue #207).
                 # Isso fecha a janela de race entre crons concorrentes que poderiam
                 # redespachar o mesmo PR enquanto o reviewer ainda está rodando.
                 from flow.adapters import github_client as _gh
                 _gh.edit_issue_labels(
                     repo, issue_number,
-                    add=["flow:reviewed"],
+                    add=["flow:review-running"],
                     remove=[],
                 )
                 _dispatch_reviewer(ctx, repo, issue, cfg)
@@ -2207,9 +2207,9 @@ def _reviewer_prompt(repo: str, pr_number: int, issue_number: int, head_sha: str
         "   — não {{head_sha}} hardcoded, pois a PR pode ter avançado entre o dispatch e a execução.\n"
         "   IMPORTANTE: o ReviewerResult PERMANECE na issue — é o que o scan lê pra decidir MERGE_PR.\n"
         "10. Se aprovado (zero comentários + CI verde): troque as labels da issue:\n"
-        "    `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"flow:review-approved\" --remove-label \"flow:review-waiting,flow:reviewed\"`\n"
+        "    `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"flow:review-approved\" --remove-label \"flow:review-waiting,flow:review-running\"`\n"
         "11. Se tem comentários ou CI vermelho: troque as labels da issue (gate humano):\n"
-        "    `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"flow:review-refused\" --remove-label \"flow:review-waiting,flow:reviewed\"`\n"
+        "    `gh issue edit {{issue_number}} --repo {{repo}} --add-label \"flow:review-refused\" --remove-label \"flow:review-waiting,flow:review-running\"`\n"
         "12. ENCERRE.\n\n"
         "### Regras críticas\n\n"
         "- UMA passada. Terminou, acabou. NÃO entre em loop.\n"
@@ -2287,7 +2287,7 @@ _REWORK_PROMPT_FALLBACK = (
     "**Não faça push com CI vermelho.**\n"
     "7. Faça commit e push na branch existente:\n"
     "   `git add -A && git commit -m \"fix: aplicar pedidos de mudança do reviewer (iteração {{iteration}})\" && git push origin feat/issue-{{issue_number}}`\n"
-    "   Isso invalida `flow:reviewed` automaticamente (novo SHA).\n"
+    "   Isso invalida `flow:review-running` automaticamente (novo SHA).\n"
     "8. Atualize o state_comment da issue incrementando `review_iterations`:\n"
     "   - Leia o comentário atual: `gh issue view {{issue_number}} --repo {{repo}} --comments`\n"
     "   - Incremente o campo `**Iterações de review:**` (ou adicione-o se ausente)\n"
@@ -2849,7 +2849,7 @@ def _execute_auto_merges(
                 new_labels = _apply_state_transition(
                     item_data.get("labels", []),
                     State.DONE,
-                    remove_modifiers=("flow:review-approved", "flow:reviewed"),
+                    remove_modifiers=("flow:review-approved", "flow:review-running"),
                 )
                 gh_client.set_labels(repo, str(issue_number), new_labels)
             except Exception as exc:
@@ -3381,13 +3381,13 @@ def _run_stage(ctx: object, stage: str) -> None:
                 )
                 continue
             try:
-                # Lock atômico: adiciona flow:reviewed ANTES de lançar o reviewer (issue #207).
+                # Lock atômico: adiciona flow:review-running ANTES de lançar o reviewer (issue #207).
                 # Fecha a janela de race entre crons concorrentes que poderiam
                 # redespachar o mesmo PR enquanto o reviewer ainda está rodando.
                 from flow.adapters import github_client as _gh
                 _gh.edit_issue_labels(
                     repo, issue_number,
-                    add=["flow:reviewed"],
+                    add=["flow:review-running"],
                     remove=[],
                 )
                 _dispatch_reviewer(ctx, repo, issue, cfg)
@@ -3397,13 +3397,13 @@ def _run_stage(ctx: object, stage: str) -> None:
                     repo, issue_number, exc,
                 )
 
-        # ── Remediação de flow:reviewed stale (issue #233) ───────────────
-        # Quando o dispatcher aplica flow:reviewed atomicamente antes de lançar
+        # ── Remediação de flow:review-running stale (issue #233) ───────────────
+        # Quando o dispatcher aplica flow:review-running atomicamente antes de lançar
         # a sessão, e essa sessão morre ou falha sem postar o ReviewerResult,
         # a issue fica em REVIEW_WAITING + REVIEWED sem resultado indefinidamente.
         # O executor retorna SKIP nesses casos (aguardando resultado que nunca chega).
         # Esta seção detecta e corrige o estado: se não há sessão ativa do reviewer
-        # E não há ReviewerResult no state_comment, remove flow:reviewed para que
+        # E não há ReviewerResult no state_comment, remove flow:review-running para que
         # o próximo ciclo do cron possa redespachar o reviewer corretamente.
         from flow.audit.state_comment import get_reviewer_result_from_comment
         for _stale_r in scan_results:
@@ -3439,10 +3439,10 @@ def _run_stage(ctx: object, stage: str) -> None:
                     _stale_repo, _stale_num,
                 )
                 continue
-            # flow:reviewed sem sessão ativa e sem resultado: estado stale — remediar
+            # flow:review-running sem sessão ativa e sem resultado: estado stale — remediar
             logger.warning(
-                "deployment[reviewer]: flow:reviewed STALE em %s#%s — "
-                "sem sessão ativa e sem ReviewerResult. Removendo flow:reviewed para "
+                "deployment[reviewer]: flow:review-running STALE em %s#%s — "
+                "sem sessão ativa e sem ReviewerResult. Removendo flow:review-running para "
                 "permitir novo dispatch no próximo ciclo.",
                 _stale_repo, _stale_num,
             )
@@ -3451,20 +3451,20 @@ def _run_stage(ctx: object, stage: str) -> None:
                 _gh_stale.edit_issue_labels(
                     _stale_repo, _stale_num,
                     add=[],
-                    remove=["flow:reviewed"],
+                    remove=["flow:review-running"],
                 )
                 logger.info(
-                    "deployment[reviewer]: flow:reviewed removido de %s#%s (remediação stale)",
+                    "deployment[reviewer]: flow:review-running removido de %s#%s (remediação stale)",
                     _stale_repo, _stale_num,
                 )
                 if chat_id:
                     ctx.notify(  # type: ignore[attr-defined]
-                        f"KiroCrew Flow [reviewer]: flow:reviewed stale removido de "
+                        f"KiroCrew Flow [reviewer]: flow:review-running stale removido de "
                         f"{_stale_repo}#{_stale_num} — próximo ciclo vai redespachar o reviewer."
                     )
             except Exception as _stale_exc:
                 logger.error(
-                    "deployment[reviewer]: erro ao remediar flow:reviewed stale em %s#%s: %s",
+                    "deployment[reviewer]: erro ao remediar flow:review-running stale em %s#%s: %s",
                     _stale_repo, _stale_num, _stale_exc,
                 )
 
@@ -3625,7 +3625,7 @@ def run_dev(ctx: object) -> None:
 def run_reviewer(ctx: object) -> None:
     """Entrypoint do cron de code review.
 
-    Processa PRs em ``flow:review-waiting`` (sem ``flow:reviewed``) e
+    Processa PRs em ``flow:review-waiting`` (sem ``flow:review-running``) e
     despacha sessões one-shot do kiro-reviewer.
     Ideal com um modelo mais rápido e intervalo de 300s.
 

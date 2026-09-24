@@ -314,8 +314,8 @@ def decide(
             remove_labels=("flow:qa-approved",),
         )
 
-    # ── Lock anti-loop: flow:reviewed (interno) ───────────────────────
-    # flow:reviewed é lock interno anti-loop de SHA —
+    # ── Lock anti-loop: flow:review-running (interno) ────────────────
+    # flow:review-running é lock interno anti-loop de SHA —
     # não carrega resultado de negócio. Quando presente em REVIEW_WAITING,
     # indica que o reviewer ainda está rodando ou acabou de processar mas
     # ainda não atualizou as labels semânticas.
@@ -327,7 +327,7 @@ def decide(
             # Reviewer ainda não postou resultado — aguardar
             return ExecutorDecision(
                 action=ActionKind.SKIP,
-                reason="flow:reviewed presente mas resultado do reviewer ainda não disponível — aguardando",
+                reason="flow:review-running presente mas resultado do reviewer ainda não disponível — aguardando",
             )
 
         # Verifica se houve push após a review: SHA do PR HEAD vs SHA do reviewer.
@@ -343,8 +343,8 @@ def decide(
                     f"SHA divergiu após review: PR HEAD={pr_head_sha[:8]} "
                     f"vs reviewer SHA={reviewer_result.sha[:8]} — re-revisão necessária"
                 ),
-                add_labels=("flow:reviewed",),
-                remove_labels=("flow:reviewed",),
+                add_labels=("flow:review-running",),
+                remove_labels=("flow:review-running",),
             )
 
         if reviewer_result.is_auto_mergeable:
@@ -361,7 +361,7 @@ def decide(
                 action=ActionKind.MERGE_PR,
                 reason="reviewer aprovado sem pedidos de mudança — merge squash automático",
                 add_labels=("flow:qa-waiting",),
-                remove_labels=("flow:review-waiting", "flow:reviewed"),
+                remove_labels=("flow:review-waiting", "flow:review-running"),
             )
 
         # Reviewer tem comentários — move para review-refused (gate humano)
@@ -371,7 +371,7 @@ def decide(
             reason=f"reviewer retornou pedidos de mudança: {comments_text}",
             notify_role=HumanRole.TL,
             add_labels=("flow:review-refused",),
-            remove_labels=("flow:reviewed", "flow:review-waiting"),
+            remove_labels=("flow:review-running", "flow:review-waiting"),
         )
 
     # ── Pré-condição COV (débito técnico em dev) ───────────────────────
@@ -421,7 +421,7 @@ def _decide_by_state(
         return ExecutorDecision(
             action=ActionKind.DISPATCH_REVIEWER,
             reason="issue em review: disparando análise automatizada de code review",
-            add_labels=("flow:reviewed",),
+            add_labels=("flow:review-running",),
         )
 
     if s is State.DEVELOP_RUNNING:

@@ -1,10 +1,10 @@
 """Handler de webhooks do GitHub para o KiroCrew Flow.
 
 Responsabilidade: receber eventos ``push`` do GitHub em PRs abertos e
-remover a label ``crewflow:reviewed`` da issue correspondente.
+remover a label ``flow:review-running`` da issue correspondente.
 
 Por que isso é necessário:
-    O lock anti-loop ``crewflow:reviewed`` impede que o kiro-reviewer
+    O lock anti-loop ``flow:review-running`` impede que o kiro-reviewer
     processe a mesma revisão duas vezes. Quando o dev faz um novo push,
     a label deve ser removida para que o próximo ciclo do scan dispare
     uma nova análise.
@@ -13,7 +13,7 @@ Fluxo do evento:
     1. GitHub envia POST /webhook com X-GitHub-Event: push
     2. O handler valida a assinatura HMAC-SHA256 (se WEBHOOK_SECRET configurado)
     3. Identifica o PR aberto associado ao branch do push via GitHub API
-    4. Remove ``crewflow:reviewed`` das labels da issue se presente
+    4. Remove ``flow:review-running`` das labels da issue se presente
     5. Registra a ação no comentário de auditoria <!-- KIRO-FLOW-STATE -->
 
 Servidor:
@@ -37,7 +37,7 @@ from flow.ports.issue_provider import ProviderError
 
 logger = logging.getLogger(__name__)
 
-LABEL_REVIEWED = "flow:reviewed"
+LABEL_REVIEWED = "flow:review-running"
 
 
 # ---------------------------------------------------------------------------
@@ -111,11 +111,11 @@ def _find_open_pr_for_branch(repo: str, branch: str) -> dict[str, Any] | None:
 
 
 # ---------------------------------------------------------------------------
-# Lógica principal: remover crewflow:reviewed
+# Lógica principal: remover flow:review-running
 # ---------------------------------------------------------------------------
 
 def handle_push_for_repo(repo: str, branch: str) -> bool:
-    """Processa um evento push: remove crewflow:reviewed do PR aberto.
+    """Processa um evento push: remove flow:review-running do PR aberto.
 
     Retorna True se a label foi removida, False caso contrário.
 
