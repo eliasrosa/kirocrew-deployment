@@ -812,7 +812,18 @@ def _post_agent_session(
     """
     import urllib.request as _u
 
-    port = getattr(ctx, "_port", 5478)
+    port = getattr(ctx, "_port", None)
+    # ctx._port fica fixado no registro do cron — se o gateway mudou de porta
+    # após o registro, o valor fica desatualizado. Detectar dinamicamente via socket.
+    _sock_pattern = os.path.expanduser("~/.kiro/crew/dashboard-*.sock")
+    _socks = glob.glob(_sock_pattern)
+    if _socks:
+        import re as _re
+        _m = _re.search(r"dashboard-(\d+)\.sock", _socks[0])
+        if _m:
+            port = int(_m.group(1))
+    if not port:
+        port = 5478  # fallback final
     secret = getattr(ctx, "_secret", "")
     if not secret:
         _local_secret_path = os.path.expanduser("~/.kiro/crew/.local_secret")
@@ -842,6 +853,14 @@ def _post_agent_session(
     try:
         with _u.urlopen(slot_req, timeout=10) as resp:
             resp.read(1)
+    except _u.HTTPError as exc:
+        if exc.code == 409:
+            # Slot já existe (tentativa anterior falhou após criar o slot).
+            # Reutilizar — prosseguir para o step 2.
+            logger.warning("deployment: slot %s já existe (409) — reutilizando para envio", slot)
+        else:
+            logger.error("deployment: falha ao criar slot %s: HTTP %s", slot, exc.code)
+            return False
     except Exception as exc:
         logger.error("deployment: falha ao criar slot %s: %s", slot, exc)
         return False
