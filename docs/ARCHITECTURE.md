@@ -187,6 +187,96 @@ O comentário não é só registro — é **fonte de pré-condições de merge**
 bloqueia o merge com `hml-bypass` se a seção de Exceções não tiver
 justificativa preenchida.
 
+## Protocolo cron ↔ agente
+
+O mecanismo de comunicação do sistema é **exclusivamente via labels de issue**. Cron
+Python e agente LLM nunca se chamam diretamente — toda a troca de estado acontece
+pelas labels `flow:*` aplicadas na issue.
+
+### Duas camadas com responsabilidades distintas
+
+| Camada | Execução | Responsabilidade |
+|---|---|---|
+| **Cron Python** | zero token | Lê labels → decide → aplica lock label → dispara sessão |
+| **Agente one-shot** | gasta token | Implementa/revisa → aplica label de resultado → posta comentário |
+
+### Diagrama do protocolo
+
+```
+Cron Python (zero token)          Issue (labels)       Agente one-shot
+deployment.py                     GitHub / Jira        (gasta token)
+
+scan_candidates()
+     │
+     ▼ detecta flow:develop-waiting
+executor.decide()
+     │ → DISPATCH_DEV
+     ▼
+set_labels()  ──────────► [ flow:develop-running ]
+     │                              │
+_dispatch() ─────────────────────► │ inicia sessão one-shot
+                                   │
+                                   ├─ implementa
+                                   ├─ abre PR
+                                   ├─ posta KIRO-FLOW-STATE comment
+                                   │
+                                   ▼
+                     [ flow:review-waiting ]  ◄── agente aplica label
+                                                   antes de encerrar
+
+scan_candidates()  ◄──── cron detecta mudança de label
+     │ detecta flow:review-waiting
+     ▼
+DISPATCH_REVIEWER → set_labels() → [ flow:review-running ]
+     │
+_dispatch() ─────────────────────► sessão one-shot (reviewer)
+                                   │
+                       aprovado:   ▼
+                     [ flow:review-approved ]  ◄── agente aplica label
+```
+
+### Tabela de labels — responsável e significado
+
+| Label | Quem aplica | Quando | Significado |
+|---|---|---|---|
+| `flow:briefing` | 🧠 humano | ao criar a demanda | TL/PM abriu a task |
+| `flow:planning-specs` | 🧠 dev | ao iniciar spec | Dev montando critérios |
+| `flow:planning-review` | 🧠 dev | ao pedir revisão | Aguardando aprovação humana |
+| `flow:develop-waiting` | 🧠 humano | ao priorizar | **Gatilho do cron** — próxima no scan |
+| `flow:develop-running` | 🤖 cron | ao despachar dev | Lock atômico antes de abrir sessão |
+| `flow:review-waiting` | 🤖 agente (dev) | ao abrir PR | Agente sinalizou que terminou |
+| `flow:review-running` | 🤖 cron | ao despachar reviewer | Lock anti-loop por SHA |
+| `flow:review-approved` | 🤖 agente (reviewer) | ao aprovar | Cron lê e avança para QA |
+| `flow:review-refused` | 🤖 agente (reviewer) | ao reprovar | Gate humano — fluxo para |
+| `flow:qa-waiting` | 🤖 cron | após merge/review-ok | Aguardando QA manual |
+| `flow:qa-testing` | 🧠 QA | ao iniciar testes | QA sinalizou que está testando |
+| `flow:qa-approved` | 🧠 QA | ao aprovar | Gatilho de merge (se auto-merge) |
+| `flow:qa-refused` | 🧠 QA | ao reprovar | Gate humano — fluxo para |
+| `flow:done` | 🤖 cron | após merge final | Issue concluída |
+| `flow:blocked` | 🧠 humano ou 🤖 agente | ao detectar bloqueio | Para tudo — prioridade sobre estado |
+| `flow:merge-conflict` | 🤖 cron | ao detectar conflito | Dispara sessão de resolução |
+
+> **Regra para o agente:** o agente one-shot nunca inicia uma sessão de outro agente
+> diretamente. Ao terminar, ele aplica a label de resultado (`flow:review-waiting`,
+> `flow:review-approved`, `flow:review-refused`, `flow:blocked`) e posta o comentário
+> `<!-- KIRO-FLOW-STATE -->`. O cron detecta a mudança no próximo ciclo e age.
+
+### Contrato de encerramento do agente
+
+Todo agente one-shot deve, ao encerrar com sucesso:
+
+1. Aplicar a label de resultado (ex: `flow:review-waiting`) e remover a de estado anterior (ex: `flow:develop-running`).
+2. Postar o comentário `<!-- KIRO-FLOW-STATE -->` com o histórico da transição.
+3. **Nunca chamar o cron, o próximo agente ou o webhook diretamente** — a label é o único canal de sinalização.
+
+Ao encerrar por bloqueio:
+
+1. Aplicar `flow:blocked`.
+2. Remover o estado anterior (`flow:develop-running`, `flow:review-running`, etc.).
+3. Comentar o motivo do bloqueio na issue.
+
+Diagrama de sequência completo: [`docs/fluxo.md`](fluxo.md).
+
 ## Detalhes técnicos: para desenvolvedores
 
 Ver `.kiro/steering/arquitetura.md` — cobre convenções de código (StrEnum,

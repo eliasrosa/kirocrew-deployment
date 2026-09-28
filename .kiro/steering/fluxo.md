@@ -33,6 +33,35 @@ Modificadores: `flow:blocked`, `flow:merge-conflict`.
 **Regra chave:** toda reprovação humana (`review-refused`, `qa-refused`) é gate humano
 — o fluxo para e aguarda decisão manual. Sem dispatch automático após reprovação.
 
+## Protocolo de comunicação cron ↔ agente
+
+**Cron Python e agente one-shot nunca se chamam diretamente.** A comunicação
+é exclusivamente via labels `flow:*` na issue.
+
+```
+Cron Python (zero token)
+  → lê labels → decide → aplica lock label → dispara sessão
+
+Agente one-shot (gasta token)
+  → implementa/revisa → aplica label de resultado → posta KIRO-FLOW-STATE
+
+Cron Python (zero token)
+  → detecta label de resultado → faz próxima transição
+```
+
+### Contrato do agente one-shot
+
+Ao encerrar com **sucesso**, o agente DEVE:
+
+1. Aplicar a label de resultado (ex: `flow:review-waiting`) e remover a anterior (ex: `flow:develop-running`).
+2. Postar o comentário `<!-- KIRO-FLOW-STATE -->` com o histórico.
+3. **Nunca chamar o cron, outro agente ou o webhook diretamente** — a label é o canal exclusivo.
+
+Ao encerrar por **bloqueio**, o agente DEVE:
+
+1. Aplicar `flow:blocked` e remover o estado ativo (ex: `flow:develop-running`).
+2. Comentar o motivo na issue.
+
 ## Labels — duas dimensões
 
 O modelo é **estado × modificador**. Um estado por vez; zero ou mais modificadores
@@ -59,12 +88,29 @@ sobrepostos. **Modificador de parada (`flow:blocked`) tem prioridade sobre o est
 ### Modificadores (0..N, sobrepõem)
 
 | Label | Significado |
-|---|---|
-| `flow:blocked` | Bloqueado — **para tudo** (prioridade sobre o estado) |
+|---|---|\n| `flow:blocked` | Bloqueado — **para tudo** (prioridade sobre o estado) |
 | `flow:merge-conflict` | PR com conflito de merge ou base desatualizada — cron resolve via rebase |
 
 **Gatilho único:** só `flow:develop-waiting` faz a esteira agir. Tudo antes dela é humano;
 tudo depois do PR também.
+
+### Quem aplica cada label
+
+| Label | Quem aplica | Quando |
+|---|---|---|
+| `flow:develop-waiting` | 🧠 humano | ao priorizar — **gatilho do cron** |
+| `flow:develop-running` | 🤖 cron | ao despachar sessão dev (lock atômico) |
+| `flow:review-waiting` | 🤖 agente (dev) | ao abrir PR e encerrar |
+| `flow:review-running` | 🤖 cron | ao despachar reviewer (lock anti-loop) |
+| `flow:review-approved` | 🤖 agente (reviewer) | ao aprovar o PR |
+| `flow:review-refused` | 🤖 agente (reviewer) | ao reprovar — gate humano |
+| `flow:qa-waiting` | 🤖 cron | após merge ou review-ok |
+| `flow:qa-testing` | 🧠 QA | ao iniciar testes |
+| `flow:qa-approved` | 🧠 QA | ao aprovar |
+| `flow:qa-refused` | 🧠 QA | ao reprovar — gate humano |
+| `flow:done` | 🤖 cron | após merge final |
+| `flow:blocked` | 🧠 humano ou 🤖 agente | ao detectar bloqueio |
+| `flow:merge-conflict` | 🤖 cron | ao detectar conflito de merge |
 
 ## Como o motor dispara (arquitetura hexagonal)
 

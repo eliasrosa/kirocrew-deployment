@@ -69,6 +69,33 @@ squads/*.yaml → SquadConfig → scan_candidates() → executor.decide() → de
 
 A sessão one-shot **nunca mergeia e nunca faz deploy**. Ela entrega o PR em `flow:review-waiting` e encerra.
 
+### Protocolo cron ↔ agente
+
+**Cron Python e agente LLM não se chamam diretamente** — toda a comunicação acontece via labels `flow:*` na issue.
+
+```
+Cron Python (zero token)
+  │  scan_candidates() detecta flow:develop-waiting
+  ▼
+  aplica flow:develop-running  ──────────────► [ issue atualizada ]
+  _dispatch() dispara sessão one-shot ───────► Agente (gasta token)
+                                                │  implementa + abre PR
+                                                ▼
+  scan_candidates() detecta mudança ◄───────── aplica flow:review-waiting
+  │
+  ▼
+  aplica flow:review-running ────────────────► Agente reviewer (gasta token)
+                                                │  lê PR + posta review
+                                                ▼
+  scan_candidates() detecta mudança ◄───────── aplica flow:review-approved
+  │                                               (ou flow:review-refused → gate humano)
+  ▼
+  merge squash → flow:qa-waiting → … → flow:done
+```
+
+Tabela completa de labels (quem aplica e quando): [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#protocolo-cron--agente).  
+Diagrama de sequência Mermaid: [`docs/fluxo.md`](docs/fluxo.md).
+
 ### Dispatch de sessões (webhook)
 
 Os crons de estágio que precisam acordar uma sessão de agente (`flow-develop-waiting`,
