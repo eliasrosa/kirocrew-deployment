@@ -112,6 +112,58 @@ tudo depois do PR também.
 | `flow:blocked` | 🧠 humano ou 🤖 agente | ao detectar bloqueio |
 | `flow:merge-conflict` | 🤖 cron | ao detectar conflito de merge |
 
+## Protocolo cron ↔ agente (duas camadas)
+
+O sistema tem **duas camadas distintas** que nunca se chamam diretamente:
+
+- **Cron Python (zero-token): orquestrador de estado.** Lê labels, decide a
+  transição, aplica a label de lock atomicamente antes de despachar
+  (ex.: `flow:develop-running`, `flow:review-running`), dispara a sessão e, no
+  ciclo seguinte, detecta a label de resultado e faz a próxima transição.
+- **Agente one-shot (gasta token): executor de trabalho.** Implementa, revisa ou
+  resolve conflito, aplica a label de resultado ao terminar
+  (ex.: `flow:review-waiting` ao abrir o PR, `flow:review-approved`/`flow:review-refused`
+  após o review) e posta o comentário `KIRO-FLOW-STATE`.
+
+As duas camadas se comunicam **exclusivamente via labels na issue** mais o
+comentário `KIRO-FLOW-STATE`.
+
+```mermaid
+sequenceDiagram
+    participant Cron as Cron Python (zero-token)
+    participant Issue as Issue (labels)
+    participant Agente as Agente one-shot (gasta token)
+
+    Cron->>Issue: lê labels flow:*
+    Note over Cron: decide a transição
+    Cron->>Issue: aplica lock label atomicamente (ex.: flow:develop-running)
+    Cron->>Agente: dispara sessão one-shot
+    Note over Agente: implementa / revisa / resolve conflito
+    Agente->>Issue: aplica label de resultado (ex.: flow:review-waiting)
+    Agente->>Issue: posta comentário KIRO-FLOW-STATE
+    Note over Cron: próximo ciclo zero-token
+    Cron->>Issue: detecta label de resultado
+    Note over Cron: faz a próxima transição
+```
+
+## Comunicação: só via labels (regra do agente)
+
+Regra de steering do agente one-shot:
+
+- O agente **NUNCA chama o cron diretamente.** Não existe callback, RPC ou
+  espera ativa entre as camadas.
+- Ao terminar, o agente **APENAS aplica a label de resultado** na issue
+  (ex.: `flow:review-waiting` ao abrir o PR, `flow:review-approved`/`flow:review-refused`
+  após o review) e **posta o comentário `KIRO-FLOW-STATE`**.
+- A label de lock (`flow:develop-running`, `flow:review-running`) já foi aplicada
+  atomicamente pelo cron/executor antes da sessão começar. O agente **não troca a
+  label de lock**: só aplica a label de resultado no fim (ver `flow/prompts/develop_waiting.md`).
+- O cron detecta a label de resultado no **próximo ciclo** zero-token e faz a
+  transição de estado.
+
+Isso mantém o gatilho único e os gates humanos intactos: o agente reporta resultado
+via label, e é o cron (ou um humano, nos gates) que decide o passo seguinte.
+
 ## Como o motor dispara (arquitetura hexagonal)
 
 O loop completo:
