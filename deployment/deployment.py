@@ -801,11 +801,10 @@ def _post_agent_session(
     Fluxo de 2 calls via loopback interno (X-Internal-Secret):
 
     1. POST /api/chat/slots  → registra o slot no estado do gateway (idempotente).
-    2. POST /api/chat        → envia a mensagem com X-Session-Key: dashboard:{slot}.
+    2. POST /api/chat        → envia a mensagem com slot_key no body (Kiro Crew 0.7.1+).
 
-    O gateway só aceita X-Session-Key: dashboard:{slot} quando o slot já existe.
-    Com o slot registrado no step 1, o POST cria sessão dashboard_esteira-* visível
-    no sidebar em vez de sessão CLI.
+    Kiro Crew 0.7.1: o campo ``slot_key`` substituiu o header ``X-Session-Key``
+    no body do POST /api/chat. O header foi removido.
 
     Retorna True quando os dois POSTs foram bem-sucedidos, False caso contrário.
     Exceções são engolidas/logadas (fire-and-forget).
@@ -866,10 +865,11 @@ def _post_agent_session(
         return False
 
     # ── Step 2: enviar a mensagem (/api/chat) ──────────────────────────────
+    # Kiro Crew 0.7.1: slot_key vai no body (não mais X-Session-Key no header).
     chat_body = json.dumps({
+        "slot_key": slot,
         "message": message,
         "agent": agent,
-        "slot": slot,
     }).encode()
     chat_req = _u.Request(
         f"http://localhost:{port}/api/chat",
@@ -877,7 +877,6 @@ def _post_agent_session(
         headers={
             "Content-Type": "application/json",
             "X-Internal-Secret": secret,
-            "X-Session-Key": f"dashboard:{slot}",
         },
         method="POST",
     )
