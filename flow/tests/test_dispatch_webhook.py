@@ -1,12 +1,13 @@
-"""Testes do transporte de dispatch via loopback interno (issue #212, #224).
+"""Testes do transporte de dispatch via loopback interno (issue #212, #224, #255).
 
 Cobre ``deployment.deployment._post_agent_session`` — o helper compartilhado
 que os quatro dispatchers (_dispatch/_dispatch_rework/_dispatch_conflict_resolver/
 _dispatch_reviewer) usam para acordar sessões de agente:
 
   1. Faz POST /api/chat/slots para registrar o slot no gateway (idempotente).
-  2. Faz POST /api/chat com X-Session-Key: dashboard:{slot} para criar sessão
-     dashboard_esteira-* visível no sidebar.
+  2. Faz POST /api/chat com ``slot_key`` no body para criar sessão
+     dashboard_esteira-* visível no sidebar (Kiro Crew 0.7.1+).
+     Antes do 0.7.1 usava-se X-Session-Key no header; agora não é enviado.
   3. O scan é zero-token: numa fila vazia (nenhum candidato), nenhum dispatch/
      POST é acionado.
 
@@ -142,7 +143,11 @@ class TestPostAgentSessionLoopback:
         assert slots_idx < chat_idx
 
     def test_chat_envia_corpo_correto(self) -> None:
-        """O POST /api/chat inclui message, slot, agent e memory_mode."""
+        """O POST /api/chat inclui slot_key, message e agent (Kiro Crew 0.7.1+).
+
+        slot_key substituiu o header X-Session-Key — o body agora traz o slot
+        e o header X-Session-Key não deve ser enviado.
+        """
         captured: dict = {}
 
         class _FakeResp:
@@ -168,10 +173,11 @@ class TestPostAgentSessionLoopback:
 
         body = json.loads(captured["data"])
         assert body["message"] == "Implemente #42"
-        assert body["slot"] == "esteira-repo-42"
+        assert body["slot_key"] == "esteira-repo-42"  # 0.7.1: slot_key no body
         assert body["agent"] == "crewflow-dev"
+        assert "slot" not in body, "campo 'slot' antigo não deve estar no body (0.7.1)"
         assert "memory_mode" not in body  # memory_mode vai no create slot, não no send
-        assert captured["session_key"] == "dashboard:esteira-repo-42"
+        assert captured["session_key"] is None, "X-Session-Key não deve ser enviado (0.7.1)"
 
     def test_retorna_false_se_create_slot_falha(self) -> None:
         """Falha no step 1 (criar slot) → retorna False sem chamar /api/chat."""
