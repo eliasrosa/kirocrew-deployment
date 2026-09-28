@@ -798,14 +798,18 @@ def _post_agent_session(
 ) -> bool:
     """Despacha uma sessão de agente (fire-and-forget).
 
-    Fluxo de 2 calls via loopback interno (X-Internal-Secret):
+    Fluxo de 2 calls via loopback interno (X-Internal-Secret), contrato 0.7.1:
 
     1. POST /api/chat/slots  → registra o slot no estado do gateway (idempotente).
-    2. POST /api/chat        → envia a mensagem com X-Session-Key: dashboard:{slot}.
+    2. POST /api/chat        → envia a mensagem com ``slot_key`` no corpo.
 
-    O gateway só aceita X-Session-Key: dashboard:{slot} quando o slot já existe.
-    Com o slot registrado no step 1, o POST cria sessão dashboard_esteira-* visível
-    no sidebar em vez de sessão CLI.
+    O gateway identifica o slot pelo campo ``slot_key`` do corpo do POST (não mais
+    pelo header X-Session-Key, removido no 0.7.1). Com o slot registrado no step 1,
+    o POST cria sessão dashboard_esteira-* visível no sidebar em vez de sessão CLI.
+
+    O secret de autenticação é lido de arquivo (``~/.kiro/crew/run/gateway-{port}.secret``
+    ou ``~/.kiro/crew/.local_secret``), com fallback para ``ctx._secret`` — o valor de
+    ctx fica fixado no registro do cron e não é atualizado após restart do gateway.
 
     Retorna True quando os dois POSTs foram bem-sucedidos, False caso contrário.
     Exceções são engolidas/logadas (fire-and-forget).
@@ -824,12 +828,22 @@ def _post_agent_session(
             port = int(_m.group(1))
     if not port:
         port = 5478  # fallback final
-    secret = getattr(ctx, "_secret", "")
-    if not secret:
-        _local_secret_path = os.path.expanduser("~/.kiro/crew/.local_secret")
-        if os.path.exists(_local_secret_path):
-            with open(_local_secret_path) as _f:
+    # Secret lido de arquivo primeiro — ctx._secret fica fixado no registro do
+    # cron e não é atualizado após restart do gateway (crons owner:none nunca
+    # recebem o secret novo). Precedência: gateway-{port}.secret → .local_secret
+    # → ctx._secret (fallback quando os arquivos não estão disponíveis).
+    secret = ""
+    for _secret_path in (
+        os.path.expanduser(f"~/.kiro/crew/run/gateway-{port}.secret"),
+        os.path.expanduser("~/.kiro/crew/.local_secret"),
+    ):
+        if os.path.exists(_secret_path):
+            with open(_secret_path) as _f:
                 secret = _f.read().strip()
+            if secret:
+                break
+    if not secret:
+        secret = getattr(ctx, "_secret", "")
     if not port:
         logger.error(
             "deployment: dispatch abortado (slot %s) — porta do gateway não disponível.",
@@ -866,10 +880,12 @@ def _post_agent_session(
         return False
 
     # ── Step 2: enviar a mensagem (/api/chat) ──────────────────────────────
+    # Contrato 0.7.1: o slot vai no campo ``slot_key`` do corpo; o header
+    # X-Session-Key foi removido.
     chat_body = json.dumps({
+        "slot_key": slot,
         "message": message,
         "agent": agent,
-        "slot": slot,
     }).encode()
     chat_req = _u.Request(
         f"http://localhost:{port}/api/chat",
@@ -877,7 +893,6 @@ def _post_agent_session(
         headers={
             "Content-Type": "application/json",
             "X-Internal-Secret": secret,
-            "X-Session-Key": f"dashboard:{slot}",
         },
         method="POST",
     )

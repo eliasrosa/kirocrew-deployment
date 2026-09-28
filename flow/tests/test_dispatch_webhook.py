@@ -5,7 +5,7 @@ que os quatro dispatchers (_dispatch/_dispatch_rework/_dispatch_conflict_resolve
 _dispatch_reviewer) usam para acordar sessões de agente:
 
   1. Faz POST /api/chat/slots para registrar o slot no gateway (idempotente).
-  2. Faz POST /api/chat com X-Session-Key: dashboard:{slot} para criar sessão
+  2. Faz POST /api/chat com slot_key no corpo (contrato 0.7.1) para criar sessão
      dashboard_esteira-* visível no sidebar.
   3. O scan é zero-token: numa fila vazia (nenhum candidato), nenhum dispatch/
      POST é acionado.
@@ -142,7 +142,11 @@ class TestPostAgentSessionLoopback:
         assert slots_idx < chat_idx
 
     def test_chat_envia_corpo_correto(self) -> None:
-        """O POST /api/chat inclui message, slot, agent e memory_mode."""
+        """Contrato 0.7.1: /api/chat inclui slot_key, message e agent no corpo.
+
+        O slot vai no campo ``slot_key`` do corpo (não mais ``slot``) e o header
+        X-Session-Key foi removido — o gateway identifica o slot pelo corpo.
+        """
         captured: dict = {}
 
         class _FakeResp:
@@ -168,10 +172,12 @@ class TestPostAgentSessionLoopback:
 
         body = json.loads(captured["data"])
         assert body["message"] == "Implemente #42"
-        assert body["slot"] == "esteira-repo-42"
+        assert body["slot_key"] == "esteira-repo-42"
         assert body["agent"] == "crewflow-dev"
+        assert "slot" not in body  # 0.7.1: o campo é slot_key, não slot
         assert "memory_mode" not in body  # memory_mode vai no create slot, não no send
-        assert captured["session_key"] == "dashboard:esteira-repo-42"
+        # 0.7.1: header X-Session-Key foi removido do POST /api/chat.
+        assert captured["session_key"] is None
 
     def test_retorna_false_se_create_slot_falha(self) -> None:
         """Falha no step 1 (criar slot) → retorna False sem chamar /api/chat."""
@@ -249,6 +255,94 @@ class TestPostAgentSessionLoopback:
             _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
 
         assert captured.get("secret") == "my-local-secret"
+
+    def _capture_secret_fake(self, captured: dict) -> object:
+        """Fake urlopen que captura o header X-Internal-Secret do step 1."""
+
+        class _FakeResp:
+            def __enter__(self) -> _FakeResp: return self
+            def __exit__(self, *a: object) -> None: return None
+            def read(self, _n: int = -1) -> bytes: return b""
+
+        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
+            url = req.full_url  # type: ignore[attr-defined]
+            if "api/chat/slots" in url:
+                captured["secret"] = req.get_header("X-internal-secret")  # type: ignore[attr-defined]
+            return _FakeResp()
+
+        return fake
+
+    def test_le_secret_do_arquivo_gateway_port(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Fix 3: secret é lido de ~/.kiro/crew/run/gateway-{port}.secret primeiro.
+
+        Mesmo com ctx._secret definido, o arquivo por porta tem precedência —
+        ctx._secret fica fixado no cron e desatualiza após restart do gateway.
+        """
+        gateway_secret = tmp_path / "gateway-5000.secret"
+        gateway_secret.write_text("fresh-gateway-secret\n")
+
+        def _fake_expanduser(p: str) -> str:
+            if "gateway-5000.secret" in p:
+                return str(gateway_secret)
+            return p
+
+        monkeypatch.setattr("os.path.expanduser", _fake_expanduser)
+
+        ctx = _make_script_ctx()  # tem _secret="s3cr3t"
+        captured: dict = {}
+        with mock.patch("urllib.request.urlopen", side_effect=self._capture_secret_fake(captured)):
+            _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
+
+        assert captured.get("secret") == "fresh-gateway-secret"
+
+    def test_secret_gateway_tem_precedencia_sobre_local(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Fix 3: gateway-{port}.secret vence .local_secret quando ambos existem."""
+        gateway_secret = tmp_path / "gateway-5000.secret"
+        gateway_secret.write_text("gateway-wins")
+        local_secret = tmp_path / ".local_secret"
+        local_secret.write_text("local-loses")
+
+        def _fake_expanduser(p: str) -> str:
+            if "gateway-5000.secret" in p:
+                return str(gateway_secret)
+            if ".local_secret" in p:
+                return str(local_secret)
+            return p
+
+        monkeypatch.setattr("os.path.expanduser", _fake_expanduser)
+
+        ctx = _make_script_ctx()
+        captured: dict = {}
+        with mock.patch("urllib.request.urlopen", side_effect=self._capture_secret_fake(captured)):
+            _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
+
+        assert captured.get("secret") == "gateway-wins"
+
+    def test_secret_fallback_para_ctx_quando_sem_arquivos(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fix 3: sem arquivos de secret, cai no fallback ctx._secret."""
+
+        def _fake_expanduser(p: str) -> str:
+            # Retorna caminhos inexistentes para forçar o fallback.
+            if "gateway-" in p and p.endswith(".secret"):
+                return "/nonexistent/gateway.secret"
+            if ".local_secret" in p:
+                return "/nonexistent/.local_secret"
+            return p
+
+        monkeypatch.setattr("os.path.expanduser", _fake_expanduser)
+
+        ctx = _make_script_ctx()  # _secret="s3cr3t"
+        captured: dict = {}
+        with mock.patch("urllib.request.urlopen", side_effect=self._capture_secret_fake(captured)):
+            _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
+
+        assert captured.get("secret") == "s3cr3t"
 
 
 # ---------------------------------------------------------------------------
