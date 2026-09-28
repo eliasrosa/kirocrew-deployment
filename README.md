@@ -170,7 +170,6 @@ Para instalar manualmente ou atualizar os scripts instalados:
 | `flow-qa-waiting` | `deployment/flow/qa_notify.py:run` | 600s | `flow:qa-waiting` → notifica QA |
 | `flow-qa-approved` | `deployment/flow/qa_approved.py:run` | 120s | `flow:qa-approved` → merge → done |
 | `flow-qa-refused` | `deployment/flow/qa_refused.py:run` | 3600s | `flow:qa-refused` → notifica TL+dev |
-| `flow-auto-update` | `flow_auto_update.py:run` | 300s | git pull + reinstala scripts |
 
 Para registrar manualmente (cron monolítico legado, todos os estágios em sequência):
 
@@ -267,6 +266,56 @@ python3 -m ruff check flow/ && python3 -m pytest flow/tests/ --cov=flow --cov-fa
 ```
 
 630 testes, cobertura ≥75% (piso do CI), ruff limpo.
+
+## Release Engineering
+
+O KiroCrew Flow usa [semantic-release](https://semantic-release.gitbook.io) para
+versionamento semântico automático.
+
+### Como funciona
+
+A cada push na branch `main`, o workflow `.github/workflows/release.yml`:
+
+1. Roda o CI (lint + mypy + testes)
+2. Analisa os commits desde a última tag para calcular o bump de versão:
+   - `feat:` → **minor** (nova funcionalidade)
+   - `fix:`, `perf:`, `refactor:` → **patch** (correção/melhoria)
+   - `BREAKING CHANGE` no footer do commit → **major**
+   - `docs:`, `test:`, `chore:`, `ci:` → sem release
+3. Atualiza `app.json` e `pyproject.toml` com a nova versão via `scripts/prepare-release.py`
+4. Gera/atualiza `CHANGELOG.md`
+5. Cria a tag `vX.Y.Z` e a release no GitHub
+
+Se nenhum commit elegível for encontrado (só `docs:`, `chore:`, etc.), o workflow
+encerra silenciosamente sem criar release.
+
+### Política de update (patch vs minor/major)
+
+| Tipo de bump | Política | Ação no usuário |
+|---|---|---|
+| **patch** (`fix:`, `perf:`) | Update automático seguro | `kirocrew app update kirocrew-flow` aplica sem riscos |
+| **minor** (`feat:`) | Notificação recomendada | Update manual — pode haver novas configurações opcionais |
+| **major** (breaking change) | **Update manual obrigatório** | Pode exigir migração de `deployment.config.yaml` ou squads |
+
+> O Kiro Crew invoca o hook `onUpdate` do `app.json` ao atualizar o app:
+> ```bash
+> pip install -e '.[dev,gateway]' && cd ui && npm run build && ./scripts/install-cron.sh
+> ```
+> O antigo cron `flow-auto-update` (git pull a cada 5 min) foi **removido** nesta versão.
+
+### Tags de canal
+
+| Tag | Branch | Uso |
+|---|---|---|
+| versão semântica (`v1.2.3`) | `main` | Release canônica |
+| `stable` | branch `stable` (promoção manual) | Versão validada para produção |
+
+Para promover uma versão para `stable`:
+```bash
+git checkout stable
+git merge v1.2.3  # ou git reset --hard v1.2.3
+git push origin stable
+```
 
 ## Dry-run — inspecionar sem despachar
 

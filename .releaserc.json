@@ -1,0 +1,75 @@
+{
+  "branches": [
+    "main",
+    {
+      "name": "stable",
+      "channel": "stable",
+      "prerelease": false
+    }
+  ],
+  "plugins": [
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "conventionalcommits",
+        "releaseRules": [
+          { "type": "feat",     "release": "minor" },
+          { "type": "fix",      "release": "patch" },
+          { "type": "perf",     "release": "patch" },
+          { "type": "refactor", "release": "patch" },
+          { "type": "docs",     "release": false },
+          { "type": "test",     "release": false },
+          { "type": "chore",    "release": false },
+          { "type": "ci",       "release": false },
+          { "breaking": true,   "release": "major" }
+        ]
+      }
+    ],
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "conventionalcommits",
+        "presetConfig": {
+          "types": [
+            { "type": "feat",     "section": "✨ Novidades" },
+            { "type": "fix",      "section": "🐛 Correções" },
+            { "type": "perf",     "section": "⚡ Performance" },
+            { "type": "refactor", "section": "♻️ Refatoração" },
+            { "type": "docs",     "section": "📚 Documentação",  "hidden": true },
+            { "type": "test",     "section": "🧪 Testes",        "hidden": true },
+            { "type": "chore",    "section": "🔧 Manutenção",    "hidden": true },
+            { "type": "ci",       "section": "🏗️ CI/CD",         "hidden": true }
+          ]
+        }
+      }
+    ],
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "python3 scripts/prepare-release.py ${nextRelease.version}"
+      }
+    ],
+    [
+      "@semantic-release/changelog",
+      {
+        "changelogFile": "CHANGELOG.md",
+        "changelogTitle": "# Changelog\n\nTodas as mudanças notáveis do KiroCrew Flow são documentadas aqui.\nFormato baseado em [Conventional Commits](https://conventionalcommits.org)."
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": [],
+        "successComment": false,
+        "failComment": false
+      }
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "assets": ["CHANGELOG.md", "app.json", "pyproject.toml"],
+        "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+      }
+    ]
+  ]
+}
