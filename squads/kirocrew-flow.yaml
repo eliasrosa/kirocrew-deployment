@@ -27,3 +27,11 @@ routing:
   - match: {labels: ["flow:feature"]}
     workflow: feature-flow
   - default: feature-flow
+
+# Configuração por repo — override de auto_dispatch / auto_merge por repo.
+# Omitir um campo = herda o global (auto_dispatch do deployment.config.yaml
+# e auto_merge_on_approve do workflow_params acima).
+repos_config:
+  - name: eliasrosa/kirocrew-flow
+    auto_dispatch: true
+    auto_merge: true

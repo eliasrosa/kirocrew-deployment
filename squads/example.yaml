@@ -43,6 +43,18 @@ workflow_params:
   #   true            — merge squash automático + delete branch + crewflow:done
   auto_merge_on_approve: false
 
+# Configuração por repositório — substitui as flags globais auto_dispatch e
+# auto_merge_on_approve para repos específicos. Útil quando a squad tem repos
+# com políticas diferentes (ex: merge manual num repo crítico, automático no outro).
+# Campos opcionais: omita para herdar o valor global.
+# repos_config:
+#   - name: org/api-gateway2
+#     auto_dispatch: true
+#     auto_merge: false   # merge manual neste repo, mesmo com auto_merge_on_approve: true global
+#   - name: org/api-subscription2
+#     auto_dispatch: true
+#     auto_merge: true
+
 # Regras de routing: issue com estas labels → usa este workflow
 # Avaliadas em ordem; a primeira que casar é usada.
 # O "default" é o fallback quando nenhuma regra casar.

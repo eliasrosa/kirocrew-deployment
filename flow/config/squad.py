@@ -45,6 +45,26 @@ class WorkflowParams:
     auto_merge_on_approve: bool = False  # merge automático após approve (opt-in)
 
 
+@dataclass(frozen=True, slots=True)
+class RepoConfig:
+    """Configuração específica por repositório.
+
+    Permite sobrepor flags globais (auto_dispatch, auto_merge) para um repo
+    individual. Campos ``None`` significam "usar o valor global como fallback".
+
+    Exemplo no squad YAML::
+
+        repos_config:
+          - name: org/api-gateway2
+            auto_dispatch: true
+            auto_merge: false   # merge manual neste repo
+    """
+
+    name: str
+    auto_dispatch: bool | None = None  # None = fallback ao global
+    auto_merge: bool | None = None     # None = fallback ao global
+
+
 @dataclass(slots=True)
 class SquadConfig:
     """Configuração de uma squad.
@@ -62,6 +82,7 @@ class SquadConfig:
     routing: list[RoutingRule] = field(default_factory=list)
     default_workflow: str = "feature-flow"
     dispatch_prompt_extra: str = ""  # texto adicional appendado ao prompt de dispatch
+    repo_configs: list[RepoConfig] = field(default_factory=list)  # config por repo
 
     def resolve_workflow(self, labels: frozenset[str]) -> str:
         """Retorna o nome do workflow para um conjunto de labels.
@@ -72,6 +93,39 @@ class SquadConfig:
             if rule.labels <= labels:  # todas as labels da regra estão presentes
                 return rule.workflow
         return self.default_workflow
+
+    def get_repo_config(self, repo: str) -> RepoConfig | None:
+        """Retorna a RepoConfig para o repo, ou None se não houver config específica.
+
+        Faz matching pelo nome exato e também sem o prefixo ``org/`` — ou seja,
+        ``owner/api-gateway2`` casa com ``api-gateway2`` e vice-versa.
+        """
+        repo_short = repo.split("/")[-1]
+        for rc in self.repo_configs:
+            rc_short = rc.name.split("/")[-1]
+            if rc.name == repo or rc_short == repo_short:
+                return rc
+        return None
+
+    def auto_dispatch_for(self, repo: str, global_auto_dispatch: bool) -> bool:
+        """Retorna a flag auto_dispatch efectiva para um repo.
+
+        Prioridade: config por repo > flag global.
+        """
+        rc = self.get_repo_config(repo)
+        if rc is not None and rc.auto_dispatch is not None:
+            return rc.auto_dispatch
+        return global_auto_dispatch
+
+    def auto_merge_for(self, repo: str, global_auto_merge: bool) -> bool:
+        """Retorna a flag auto_merge efectiva para um repo.
+
+        Prioridade: config por repo > flag global (workflow_params.auto_merge_on_approve).
+        """
+        rc = self.get_repo_config(repo)
+        if rc is not None and rc.auto_merge is not None:
+            return rc.auto_merge
+        return global_auto_merge
 
 
 # ---------------------------------------------------------------------------
@@ -169,12 +223,32 @@ def _parse_squad(raw: dict[str, Any], source: str = "<dict>") -> SquadConfig:
         routing=routing,
         default_workflow=default_workflow,
         dispatch_prompt_extra=str(raw.get("dispatch_prompt_extra") or "").strip(),
+        repo_configs=_parse_repo_configs(raw.get("repos_config") or []),
     )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _parse_repo_configs(raw_list: list) -> list[RepoConfig]:
+    """Parseia a lista repos_config do YAML em objetos RepoConfig."""
+    configs: list[RepoConfig] = []
+    for entry in raw_list:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not name or not isinstance(name, str):
+            continue
+        auto_dispatch: bool | None = None
+        if "auto_dispatch" in entry:
+            auto_dispatch = bool(entry["auto_dispatch"])
+        auto_merge: bool | None = None
+        if "auto_merge" in entry:
+            auto_merge = bool(entry["auto_merge"])
+        configs.append(RepoConfig(name=name.strip(), auto_dispatch=auto_dispatch, auto_merge=auto_merge))
+    return configs
+
 
 def _require(raw: dict, key: str, source: str) -> None:
     if not raw.get(key):
