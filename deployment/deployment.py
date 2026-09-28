@@ -1088,7 +1088,7 @@ def _create_issue_monitor(repo: str, issue_number: int) -> None:
             )
         else:
             logger.info("deployment[dev]: monitor zero-token '%s' criado", name)
-    except Exception as exc:  # noqa: BLE001 — fail-safe: dispatch não pode cair
+    except Exception as exc:
         logger.warning(
             "deployment[dev]: falha ao criar monitor '%s' (dispatch preservado): %s",
             name, exc,
@@ -1699,7 +1699,8 @@ def run(ctx: object) -> None:
     _conn_disp = open_cache(scan_cfg.squad_id)
 
     for repo, issue, _decision in dispatch_devs:
-        if not auto:
+        _auto_repo = _auto_for_repo(squad, repo, auto)
+        if not _auto_repo:
             adiadas.append((repo, issue))
             continue
         if vagas <= 0:
@@ -1852,7 +1853,7 @@ def run(ctx: object) -> None:
     if dispatch_reworks:
         for repo, issue, state_comment_rework in dispatch_reworks:
             issue_number = issue["number"]
-            if not auto:
+            if not _auto_for_repo(squad, repo, auto):
                 vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
                 ctx.notify(  # type: ignore[attr-defined]
                     f"KiroCrew Flow (Fase 1): re-trabalho pendente — "
@@ -1935,7 +1936,7 @@ def run(ctx: object) -> None:
     if conflict_resolvers:
         for repo, issue in conflict_resolvers:
             issue_number_cr = issue["number"]
-            if not auto:
+            if not _auto_for_repo(squad, repo, auto):
                 vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
                 ctx.notify(  # type: ignore[attr-defined]
                     f"KiroCrew Flow (Fase 1): conflito pendente — "
@@ -2790,6 +2791,40 @@ def _notify_reviewers(ctx: object, items: list, chat_id: str) -> None:
     )
 
 
+def _auto_for_repo(
+    squad: object | None,
+    repo: str,
+    global_auto_dispatch: bool,
+) -> bool:
+    """Retorna a flag auto_dispatch efectiva para um repo específico.
+
+    Prioridade: ``repos_config[repo].auto_dispatch`` > ``global_auto_dispatch``.
+    Quando não há SquadConfig ou o repo não tem config específica, usa o global.
+    """
+    if squad is None:
+        return global_auto_dispatch
+    from flow.config.squad import SquadConfig
+    sq: SquadConfig = squad  # type: ignore[assignment]
+    return sq.auto_dispatch_for(repo, global_auto_dispatch)
+
+
+def _auto_merge_for_repo(
+    squad: object | None,
+    repo: str,
+    global_auto_merge: bool,
+) -> bool:
+    """Retorna a flag auto_merge efectiva para um repo específico.
+
+    Prioridade: ``repos_config[repo].auto_merge`` > ``workflow_params.auto_merge_on_approve``.
+    Quando não há SquadConfig ou o repo não tem config específica, usa o global.
+    """
+    if squad is None:
+        return global_auto_merge
+    from flow.config.squad import SquadConfig
+    sq: SquadConfig = squad  # type: ignore[assignment]
+    return sq.auto_merge_for(repo, global_auto_merge)
+
+
 def _execute_auto_merges(
     ctx: object,
     items: list,
@@ -3279,7 +3314,8 @@ def _run_stage(ctx: object, stage: str) -> None:
         _conn_stage_disp = open_cache(scan_cfg.squad_id)
 
         for repo, issue, _decision in dispatch_devs:
-            if not auto:
+            _auto_repo = _auto_for_repo(squad, repo, auto)
+            if not _auto_repo:
                 adiadas.append((repo, issue))
                 continue
             if vagas <= 0:
@@ -3503,7 +3539,7 @@ def _run_stage(ctx: object, stage: str) -> None:
         # ── Despacha sessões de resolução de conflito de merge ───────────
         for repo, issue in conflict_resolvers:
             issue_number_cr = issue["number"]
-            if not auto:
+            if not _auto_for_repo(squad, repo, auto):
                 ctx.notify(  # type: ignore[attr-defined]
                     f"KiroCrew Flow [conflito] (Fase 1): conflito pendente — "
                     f"{repo}#{issue_number_cr}: {issue['title']}.{vm}\n"
@@ -3553,7 +3589,7 @@ def _run_stage(ctx: object, stage: str) -> None:
         # ── Despacha sessões de re-trabalho pós-review ───────────────────
         for repo, issue, state_comment_rework in dispatch_reworks:
             issue_number = issue["number"]
-            if not auto:
+            if not _auto_for_repo(squad, repo, auto):
                 ctx.notify(  # type: ignore[attr-defined]
                     f"KiroCrew Flow [conflito] (Fase 1): re-trabalho pendente — "
                     f"{repo}#{issue_number}: {issue['title']}.{vm}\n"

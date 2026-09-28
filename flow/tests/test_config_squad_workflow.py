@@ -634,3 +634,209 @@ class TestWorkflowTemplates:
         assert wf is not None
         errors = wf.validate()
         assert not any("inexistente" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# RepoConfig — configuração por repositório (issue #245)
+# ---------------------------------------------------------------------------
+
+class TestRepoConfig:
+    """Testes para RepoConfig e os métodos por-repo da SquadConfig."""
+
+    def _squad_with_repo_configs(self) -> object:
+        """Retorna um SquadConfig com dois repos configurados explicitamente."""
+        from flow.config.squad import RepoConfig, SquadConfig, WorkflowParams
+
+        sc = SquadConfig(
+            id="test",
+            name="Test Squad",
+            issue_provider="github",
+            projects=["org/api-gateway2", "org/api-subscription2"],
+            repos=frozenset(["org/api-gateway2", "api-gateway2",
+                             "org/api-subscription2", "api-subscription2"]),
+            workflow_template="versao-c",
+            workflow_params=WorkflowParams(auto_merge_on_approve=True),
+            repo_configs=[
+                RepoConfig(name="org/api-gateway2", auto_dispatch=True, auto_merge=False),
+                RepoConfig(name="org/api-subscription2", auto_dispatch=False, auto_merge=True),
+            ],
+        )
+        return sc
+
+    def test_get_repo_config_exato(self) -> None:
+        """get_repo_config retorna a config correta para nome exato."""
+        sc: SquadConfig = self._squad_with_repo_configs()  # type: ignore[assignment]
+        rc = sc.get_repo_config("org/api-gateway2")
+        assert rc is not None
+        assert rc.name == "org/api-gateway2"
+        assert rc.auto_dispatch is True
+        assert rc.auto_merge is False
+
+    def test_get_repo_config_short_name(self) -> None:
+        """get_repo_config casa pelo nome curto (sem org/)."""
+        sc: SquadConfig = self._squad_with_repo_configs()  # type: ignore[assignment]
+        rc = sc.get_repo_config("api-gateway2")  # sem prefixo org/
+        assert rc is not None
+        assert rc.auto_dispatch is True
+
+    def test_get_repo_config_inexistente_retorna_none(self) -> None:
+        """get_repo_config retorna None para repo sem config específica."""
+        sc: SquadConfig = self._squad_with_repo_configs()  # type: ignore[assignment]
+        assert sc.get_repo_config("org/outro-repo") is None
+
+    def test_auto_dispatch_for_usa_config_repo(self) -> None:
+        """auto_dispatch_for respeita a config por repo sobre o global."""
+        sc: SquadConfig = self._squad_with_repo_configs()  # type: ignore[assignment]
+        # gateway2 tem auto_dispatch=True, independente do global
+        assert sc.auto_dispatch_for("org/api-gateway2", global_auto_dispatch=False) is True
+        # subscription2 tem auto_dispatch=False, independente do global
+        assert sc.auto_dispatch_for("org/api-subscription2", global_auto_dispatch=True) is False
+
+    def test_auto_dispatch_for_fallback_global(self) -> None:
+        """auto_dispatch_for usa o global quando repo não tem config específica."""
+        sc: SquadConfig = self._squad_with_repo_configs()  # type: ignore[assignment]
+        assert sc.auto_dispatch_for("org/outro-repo", global_auto_dispatch=True) is True
+        assert sc.auto_dispatch_for("org/outro-repo", global_auto_dispatch=False) is False
+
+    def test_auto_merge_for_usa_config_repo(self) -> None:
+        """auto_merge_for respeita a config por repo sobre o global."""
+        sc: SquadConfig = self._squad_with_repo_configs()  # type: ignore[assignment]
+        # gateway2 tem auto_merge=False, mesmo que global=True
+        assert sc.auto_merge_for("org/api-gateway2", global_auto_merge=True) is False
+        # subscription2 tem auto_merge=True, mesmo que global=False
+        assert sc.auto_merge_for("org/api-subscription2", global_auto_merge=False) is True
+
+    def test_auto_merge_for_fallback_global(self) -> None:
+        """auto_merge_for usa o global quando repo não tem config específica."""
+        sc: SquadConfig = self._squad_with_repo_configs()  # type: ignore[assignment]
+        assert sc.auto_merge_for("org/outro-repo", global_auto_merge=True) is True
+        assert sc.auto_merge_for("org/outro-repo", global_auto_merge=False) is False
+
+    def test_parse_squad_com_repos_config(self) -> None:
+        """_parse_squad parseia corretamente repos_config do YAML."""
+        from flow.config.squad import _parse_squad
+
+        raw = {
+            "id": "minha-squad",
+            "issue_provider": "github",
+            "repos": ["org/api-gateway2", "org/api-subscription2"],
+            "repos_config": [
+                {"name": "org/api-gateway2", "auto_dispatch": True, "auto_merge": False},
+                {"name": "org/api-subscription2", "auto_dispatch": False},
+            ],
+        }
+        sc = _parse_squad(raw)
+        assert len(sc.repo_configs) == 2
+
+        rc_gw = sc.get_repo_config("org/api-gateway2")
+        assert rc_gw is not None
+        assert rc_gw.auto_dispatch is True
+        assert rc_gw.auto_merge is False
+
+        rc_sub = sc.get_repo_config("org/api-subscription2")
+        assert rc_sub is not None
+        assert rc_sub.auto_dispatch is False
+        assert rc_sub.auto_merge is None  # não especificado → None (fallback global)
+
+    def test_parse_squad_sem_repos_config(self) -> None:
+        """_parse_squad sem repos_config resulta em lista vazia."""
+        from flow.config.squad import _parse_squad
+
+        raw = {
+            "id": "minha-squad",
+            "issue_provider": "github",
+            "repos": ["org/api-gateway2"],
+        }
+        sc = _parse_squad(raw)
+        assert sc.repo_configs == []
+
+    def test_load_squad_yaml_com_repos_config(self) -> None:
+        """load_squad lê repos_config de arquivo YAML."""
+        from flow.config.squad import load_squad
+
+        yaml_content = """\
+id: cogna-squad
+issue_provider: github
+repos:
+  - org/api-gateway2
+  - org/api-subscription2
+repos_config:
+  - name: org/api-gateway2
+    auto_dispatch: true
+    auto_merge: false
+  - name: org/api-subscription2
+    auto_dispatch: true
+    auto_merge: true
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False
+        ) as f:
+            f.write(yaml_content)
+            tmp_path = f.name
+
+        try:
+            sc = load_squad(tmp_path)
+            assert len(sc.repo_configs) == 2
+            rc_gw = sc.get_repo_config("org/api-gateway2")
+            assert rc_gw is not None
+            assert rc_gw.auto_dispatch is True
+            assert rc_gw.auto_merge is False
+            rc_sub = sc.get_repo_config("org/api-subscription2")
+            assert rc_sub is not None
+            assert rc_sub.auto_merge is True
+        finally:
+            import os
+            os.unlink(tmp_path)
+
+    def test_repo_config_none_fields_sao_none(self) -> None:
+        """RepoConfig com campos omitidos deve ter None (não False/True)."""
+        from flow.config.squad import _parse_squad
+
+        raw = {
+            "id": "squad-x",
+            "issue_provider": "github",
+            "repos": ["org/repo-a"],
+            "repos_config": [
+                {"name": "org/repo-a"},  # sem auto_dispatch nem auto_merge
+            ],
+        }
+        sc = _parse_squad(raw)
+        rc = sc.get_repo_config("org/repo-a")
+        assert rc is not None
+        assert rc.auto_dispatch is None
+        assert rc.auto_merge is None
+
+    def test_auto_dispatch_for_sem_squad_usa_global(self) -> None:
+        """auto_dispatch_for com squad=None e sem repo_configs usa o global."""
+        from flow.config.squad import SquadConfig, WorkflowParams
+
+        sc = SquadConfig(
+            id="t",
+            name="T",
+            issue_provider="github",
+            projects=["org/repo"],
+            repos=frozenset(["org/repo", "repo"]),
+            workflow_template="versao-c",
+            workflow_params=WorkflowParams(),
+            repo_configs=[],  # sem config por repo
+        )
+        # Sem repo_config específico, usa o global
+        assert sc.auto_dispatch_for("org/repo", global_auto_dispatch=True) is True
+        assert sc.auto_dispatch_for("org/repo", global_auto_dispatch=False) is False
+
+    def test_auto_for_repo_com_squad_usa_repo_config(self) -> None:
+        """auto_dispatch_for com SquadConfig e repo com config específica usa a do repo."""
+        from flow.config.squad import RepoConfig, SquadConfig, WorkflowParams
+
+        sc = SquadConfig(
+            id="t",
+            name="T",
+            issue_provider="github",
+            projects=["org/repo"],
+            repos=frozenset(["org/repo", "repo"]),
+            workflow_template="versao-c",
+            workflow_params=WorkflowParams(),
+            repo_configs=[RepoConfig(name="org/repo", auto_dispatch=True)],
+        )
+        # global=False mas repo tem auto_dispatch=True
+        assert sc.auto_dispatch_for("org/repo", global_auto_dispatch=False) is True
