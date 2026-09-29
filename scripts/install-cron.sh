@@ -102,6 +102,7 @@ else
     echo "  ⚠️  Preencha $ENV_DST com os secrets reais:"
     echo "       KIROCREW_WEBHOOK_TOKEN=<token do webhook>"
     echo "       KIROCREW_WEBHOOK_SECRET=<signing secret>"
+    echo "       AZURE_DEVOPS_PAT=<PAT do Azure DevOps (se usar azure_devops)>"
 fi
 # 4. Grava hash de versão para detecção de script desatualizado
 # deployment.py verifica este arquivo no startup e avisa quando diverge do repo.

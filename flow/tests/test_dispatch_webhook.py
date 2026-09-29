@@ -708,6 +708,34 @@ class TestWebhookSecrets:
             "deployment.config.yaml não deve conter webhook_secret — use .env"
         )
 
+    def test_env_example_templates_cobrem_todos_os_secrets(self) -> None:
+        """Os templates .env.example devem conter TODOS os secrets declarados
+        em config.example.yaml (linha 4), para que o .env semeado pelo
+        install-cron.sh nunca fique defasado do conjunto real de secrets.
+        """
+        import re
+
+        repo_root = Path(__file__).parent.parent.parent
+
+        # Extrai o conjunto autoritativo de secrets da linha de comentário do
+        # config.example.yaml (ex.: "# Secrets (A, B, C) NÃO ficam aqui.").
+        config_text = (repo_root / "config.example.yaml").read_text()
+        match = re.search(r"Secrets\s*\(([^)]+)\)", config_text)
+        assert match is not None, "linha de secrets não encontrada em config.example.yaml"
+        secrets = [s.strip() for s in match.group(1).split(",") if s.strip()]
+        assert "AZURE_DEVOPS_PAT" in secrets, "AZURE_DEVOPS_PAT deve estar declarado"
+        assert "KIROCREW_WEBHOOK_TOKEN" in secrets
+        assert "KIROCREW_WEBHOOK_SECRET" in secrets
+
+        # Ambos os templates devem declarar cada secret (como VAR=).
+        for template in ("deployment/.env.example", ".env.example"):
+            content = (repo_root / template).read_text()
+            for secret in secrets:
+                assert f"{secret}=" in content, (
+                    f"{template} não declara {secret} — o template de secrets "
+                    f"está defasado do config.example.yaml"
+                )
+
     def test_dotenv_importerror_e_silencioso(self) -> None:
         """O bloco load_dotenv no deployment.py não deve quebrar quando python-dotenv não está instalado."""
         import contextlib
