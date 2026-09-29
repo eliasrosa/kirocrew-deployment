@@ -161,6 +161,50 @@ with mock.patch.object(transport, "fn"), pytest.raises(Error):
 4. **Obrigatório:** adicionar à tabela `CLIENTS` em `test_provider_parity.py`
 5. O `test_a_tabela_cobre_todos_os_providers_registrados` quebra até o passo 4
 
+> **Atenção — duas camadas distintas.** A seção acima trata dos **issue-providers**
+> (`github`/`jira`, em `flow/adapters/`), que resolvem *de onde vêm as issues*. As
+> operações de **SCM** (PR, review, merge, delete de branch) são uma camada
+> separada, em `flow/adapters/scm/` — ver a seção seguinte. Não confunda os dois
+> layers: um issue-provider `github` pode conviver com repos GitHub **e** Azure
+> DevOps no mesmo squad.
+
+## SCM: GitHub e Azure DevOps (`flow/adapters/scm/`)
+
+As operações sobre o repositório de código — abrir PR, listar/ler PR, merge,
+deletar branch, listar reviews, postar comentário — passam por uma **camada de
+SCM unificada** em `flow/adapters/scm/`. Isso permite que a esteira opere sobre
+**GitHub e Azure DevOps** com a mesma lógica de negócio.
+
+- **Factory** — `flow/adapters/scm/factory.py` expõe `ScmTransportFactory` +
+  `ScmRepoConfig`. A factory recebe um `ScmRepoConfig` (com o campo `scm` +
+  coordenadas do repo) e **delega ao transport correto por repo**. Lança
+  `ValueError` se o `scm` for desconhecido (suportados: `github`, `azure_devops`).
+- **Transports** — vivem em `flow/adapters/scm/`:
+  - `github.py` — re-exporta `flow/adapters/github_transport.py` (usa o `gh` CLI).
+  - `azure_devops.py` — REST API do Azure DevOps, autenticada por PAT
+    (`AZURE_DEVOPS_PAT`).
+- **Mesma superfície** — os dois transports expõem os mesmos métodos
+  (`create_pull_request`, `list_pull_requests`, `get_pull_request`,
+  `merge_pull_request`, `delete_branch`, `list_reviews`, `post_comment`), de modo
+  que o resto do motor não sabe qual SCM está por trás. `get_pr_for_issue` é
+  específico do GitHub (o ADO usa `list_pull_requests(source_branch='feat/issue-N')`).
+
+> **Nomenclatura:** o código usa **módulos** de transport chamados `github` e
+> `azure_devops` (não classes literais `GitHubTransport`/`AzureDevOpsTransport`).
+> O módulo `azure_devops` espelha a superfície do transport do GitHub. É o mesmo
+> padrão "adapters são módulos, não classes" da seção anterior — a factory é só a
+> fachada que escolhe entre eles.
+
+O SCM de cada repo é resolvido em `scm_config_from_repo_entry` (helper do
+factory) de duas formas:
+
+- **Explícito** — `scm: azure_devops` na entrada do repo, com `azure_org`,
+  `azure_project` e `azure_repo`. `scm` omitido → `github` (default).
+- **Detecção automática** — quando `scm` é omitido, `_infer_scm_from_name` infere
+  `azure_devops` se o `name`/`url` casar com `dev.azure.com/...` (com ou sem
+  `https://`); os campos são derivados do padrão
+  `dev.azure.com/<org>/<project>/<repo>`.
+
 ## Dependências de ambiente
 
 ### Para desenvolvimento e CI
@@ -186,6 +230,51 @@ no `squads/*.yaml`. Sem PyYAML, o `_mini_yaml` só suporta routing inline
 **Nunca copiar `deployment.py` manualmente** — usar `./scripts/install-cron.sh` que
 aplica o patch de sys.path automaticamente. Se copiado manualmente, o cron vai
 falhar com `ModuleNotFoundError: No module named 'flow'`.
+
+### Secrets — separação config/secret (`.env`)
+
+Config e secret vivem em lugares **separados**:
+
+- **Config não-secreto** — `deployment.config.yaml` (repos, chat_id, paths,
+  intervalos, `dry_run`). O template versionado é `config.example.yaml`, cujo
+  cabeçalho deixa explícito que **secrets NÃO ficam neste arquivo**.
+- **Secrets** — variáveis de ambiente / `.env` (gitignored). Os secrets atuais são
+  `KIROCREW_WEBHOOK_TOKEN`, `KIROCREW_WEBHOOK_SECRET` e `AZURE_DEVOPS_PAT`.
+  Templates versionados:
+  - `.env.example` — para desenvolvimento local.
+  - `deployment/.env.example` — equivalente que o `scripts/install-cron.sh`
+    **semeia** em `~/.kiro/crew/crons/.env`.
+
+Ao adicionar um novo secret, atualize os **dois** templates (`.env.example` e
+`deployment/.env.example`). Nunca hard-code um secret no `.py` nem no
+`deployment.config.yaml`.
+
+### Config por repo — `auto_dispatch` / `auto_merge`
+
+A config de squad suporta flags **por repositório** que sobrepõem os defaults
+globais (`flow/config/squad.py`): `RepoConfig(name, auto_dispatch, auto_merge)`, e
+os resolvedores `SquadConfig.auto_dispatch(repo)` / `SquadConfig.auto_merge(repo)`.
+Um campo `None` no `RepoConfig` significa "usar o fallback global".
+
+Duas fontes de declaração no squad YAML:
+
+- **Inline sob `repos:`** (issue #264) — cada item pode ser um mapa com `url`
+  (obrigatório) e os flags opcionais `auto_dispatch` / `auto_merge`:
+
+  ```yaml
+  repos:
+    - url: https://github.com/org/api-gateway2
+      auto_dispatch: true
+      auto_merge: false   # merge manual em PRD
+  ```
+
+- **Legado `repos_config:`** (issue #245) — mesma ideia, usando `name` no lugar de
+  `url`.
+
+**Precedência:** quando o mesmo repo aparece nas duas fontes, a entrada **inline**
+em `repos:` vence. Em qualquer caso, a config **por repo** vence o **fallback
+global** (`workflow_params.auto_merge_on_approve` para auto-merge; `auto_dispatch`
+global para dispatch). Ver `squads/example.yaml`.
 
 ## Instalação do cron
 

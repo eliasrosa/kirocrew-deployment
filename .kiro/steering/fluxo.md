@@ -12,9 +12,9 @@ priorizada, dispara uma **sessão de execução one-shot** que implementa e **ab
 PR** — uma passada, sem loop.
 
 > **Regra inviolável: a automação NUNCA faz deploy.** Ela entrega o PR no estado
-> `flow:review-waiting` e encerra (ou faz merge squash se `auto_merge_on_approve: true`
-> estiver configurado no squad config). Deploy é sempre manual.
-> Merge é **manual por padrão** (`auto_merge_on_approve: false`). Ative por squad
+> `flow:review-waiting` e encerra (ou faz merge squash se `auto_merge: true`
+> estiver configurado por repo no squad config). Deploy é sempre manual.
+> Merge é **manual por padrão** (`auto_merge: false`). Ative por repo no squad
 > config para habilitar merge squash automático após approve sem comentários.
 
 ## Fluxo completo (namespace flow:*)
