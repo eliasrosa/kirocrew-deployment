@@ -13,7 +13,7 @@ o estado de cada task vive em **labels `flow:*`** na própria issue, e o polling
 
 1. **A issue É o estado.** Label = estado atual, comentário = histórico auditável.
 2. **Zero-token no polling.** O scan é Python puro — token só gasto quando há trabalho real.
-3. **Merge é manual por padrão.** A automação abre o PR e para. Nenhum deploy automatizado. Auto-merge é opt-in por squad config (`auto_merge_on_approve: true`).
+3. **Merge é manual por padrão.** A automação abre o PR e para. Nenhum deploy automatizado. Auto-merge é opt-in por repo (`auto_merge: true` no `squads/*.yaml`) ou globalmente (`auto_merge_on_approve: true` em `workflow_params`).
 4. **Gates humanos são invioláveis.** Aprovação de spec, review e QA são sempre de pessoas.
 5. **Exceções são auditáveis.** O bypass do HML (hotfix direto pra PRD) exige justificativa e é rastreado.
 
@@ -118,6 +118,15 @@ está **vazio**, cai no comportamento legado de loopback interno (`POST /api/cha
 `X-Internal-Secret`/`X-Session-Key`), preservando os crons `message`-based. O scan em si
 continua **zero-token** — o webhook só é chamado quando há um candidato real na fila.
 
+**Fix: secret path do gateway (#263/#274).** No fallback loopback, o cron lê o secret
+em `~/.kiro/crew/run/gateway-{port}.secret` (atualizado a cada restart do gateway),
+com fallback para `~/.kiro/crew/.local_secret`. O `ctx._secret` injetado pelo runtime
+não é usado — fica stale após restart e causava 403 nos despachos.
+
+**Fix: slots órfãos (#267/#273).** Quando o Step 2 do dispatch (`POST /api/chat`)
+falha após o Step 1 já ter criado o slot, o cron deleta o slot automaticamente.
+Isso elimina as sessões "New Session…" fantasmas que apareciam no sidebar do dashboard.
+
 ## Fluxos disponíveis (Fase 1)
 
 | Template | Quando usar |
@@ -142,9 +151,18 @@ id: minha-squad
 name: Squad Exemplo
 issue_provider: jira   # ou github
 project: VGAT          # chave do projeto Jira
+
+# Repositórios da squad.
+# Forma simples (herda flags globais): - org/api-gateway2
+# Forma inline com flags por repo (auto_dispatch / auto_merge):
 repos:
-  - org/api-gateway2
-  - org/api-subscription2
+  - url: https://github.com/org/api-gateway2
+    auto_dispatch: true
+    auto_merge: false      # merge manual neste repo
+  - url: https://dev.azure.com/your-org/Projeto/_git/api-subscription2
+    auto_dispatch: true
+    auto_merge: true       # merge automático após approve
+
 workflow_template: versao-c
 routing:
   - match:
@@ -153,6 +171,11 @@ routing:
     workflow: hotfix-flow
   - default: feature-flow
 ```
+
+> **Suporte a Azure DevOps (#266):** URLs `dev.azure.com/.../_git/<repo>` são detectadas
+> automaticamente — o motor instancia `AzureDevOpsTransport` para operações de SCM
+> (abertura de PR, verificação de CI, merge). Requer `AZURE_DEVOPS_PAT` em `.env`.
+> GitHub continua sendo detectado por `github.com/` ou formato `owner/repo`.
 
 > **PyYAML (recomendado para routing complexo):** o parser embutido (`_mini_yaml`) suporta
 > escalares, listas simples, mapeamentos de 1 nível, e listas de dicts — tanto no formato
@@ -176,6 +199,18 @@ routing:
 # aplica o patch de sys.path e copia deployment.config.yaml (se não existir).
 # Edite ~/.kiro/crew/crons/deployment.config.yaml com seus paths.
 ```
+
+**Secrets via `.env` (#272):** os secrets saíram do `deployment.config.yaml` e
+agora vivem em `.env` (gitignored). Copie `.env.example` para `.env` e preencha:
+
+```bash
+cp .env.example .env
+# edite .env: AZURE_DEVOPS_PAT, KIROCREW_WEBHOOK_TOKEN, KIROCREW_WEBHOOK_SECRET
+```
+
+O `install-cron.sh` também copia `.env.example` como referência para
+`~/.kiro/crew/crons/deployment.env.example`. O `.env` com valores reais **nunca**
+é commitado.
 
 Se o App estiver instalado via `kirocrew app enable kirocrew-flow`, os crons são
 registrados automaticamente pelo gateway ao habilitar o App (via `app.json`).
@@ -288,7 +323,7 @@ O agente reviewer valida o PR como **gate único** antes do approve:
 3. **Analisa o código** — corretude, testes, estilo e convenções do steering do repo.
 4. **Decide com as três condições**: CI verde + zero comentários não resolvidos no PR + sem blockers técnicos.
 5. **Posta o resultado completo nos DOIS lugares** — PR e issue — com: o que foi feito, o resultado, o link e todas as informações.
-6. **Aplica `flow:review-running`** somente quando as três condições são satisfeitas. Com `auto_merge_on_approve: true` no squad config, o motor faz merge squash automático; sem a flag (default), para em `flow:review-running` aguardando merge manual.
+6. **Aplica `flow:review-running`** somente quando as três condições são satisfeitas. Com `auto_merge: true` no repo (ou `auto_merge_on_approve: true` global no squad config), o motor faz merge squash automático; sem a flag (default), para em `flow:review-running` aguardando merge manual.
 
 ## Desenvolvimento
 
