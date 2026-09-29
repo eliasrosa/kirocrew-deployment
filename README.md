@@ -13,7 +13,7 @@ o estado de cada task vive em **labels `flow:*`** na própria issue, e o polling
 
 1. **A issue É o estado.** Label = estado atual, comentário = histórico auditável.
 2. **Zero-token no polling.** O scan é Python puro — token só gasto quando há trabalho real.
-3. **Merge é manual por padrão.** A automação abre o PR e para. Nenhum deploy automatizado. Auto-merge é opt-in por squad config (`auto_merge_on_approve: true`).
+3. **Merge é manual por padrão.** A automação abre o PR e para. Nenhum deploy automatizado. Auto-merge é opt-in por repo via a flag `auto_merge` no squad config (com fallback global).
 4. **Gates humanos são invioláveis.** Aprovação de spec, review e QA são sempre de pessoas.
 5. **Exceções são auditáveis.** O bypass do HML (hotfix direto pra PRD) exige justificativa e é rastreado.
 
@@ -69,6 +69,43 @@ squads/*.yaml → SquadConfig → scan_candidates() → executor.decide() → de
 
 A sessão one-shot **nunca mergeia e nunca faz deploy**. Ela entrega o PR em `flow:review-waiting` e encerra.
 
+### Multi-SCM — GitHub e Azure DevOps
+
+A esteira suporta **GitHub e Azure DevOps** através de uma factory de transport
+unificada (`flow/adapters/scm/factory.py` — `ScmTransportFactory` +
+`ScmRepoConfig`). A mesma superfície de métodos (abrir PR, listar/mergear PR,
+listar reviews, postar comentário, deletar branch) vale para os dois providers;
+a factory delega ao transport correto por repo. Os transports vivem em
+`flow/adapters/scm/`: `github.py` (re-exporta `flow/adapters/github_transport.py`,
+que usa o `gh` CLI) e `azure_devops.py` (REST API do Azure DevOps, autenticada
+por PAT).
+
+O SCM de cada repo é resolvido de duas formas (ver `scm_config_from_repo_entry`
+e `_infer_scm_from_name`):
+
+- **Explícito** — declare `scm: azure_devops` na entrada do repo, junto com os
+  campos `azure_org`, `azure_project` e `azure_repo`:
+
+  ```yaml
+  repos:
+    - name: kdop/api-gateway2
+      scm: azure_devops
+      azure_org: https://dev.azure.com/kdop
+      azure_project: PlataformaCogna-MKTP-MVP
+      azure_repo: voomp-creators-api-gateway2
+    - name: org/frontend
+      scm: github          # default quando `scm` é omitido
+  ```
+
+- **Detecção automática** — quando `scm` é omitido, o SCM é inferido pela URL: um
+  `name`/`url` que começa com `dev.azure.com/` (com ou sem `https://`) é tratado
+  como `azure_devops`, e os campos `azure_org`/`azure_project`/`azure_repo` são
+  derivados do padrão `dev.azure.com/<org>/<project>/<repo>`. Qualquer outro
+  formato cai em `github`.
+
+A autenticação do Azure DevOps usa a variável de ambiente `AZURE_DEVOPS_PAT`
+(ver [`.env.example`](.env.example) e a seção [Segurança / privacidade](#segurança--privacidade)).
+
 ### Protocolo cron ↔ agente
 
 **Cron Python e agente LLM não se chamam diretamente** — toda a comunicação acontece via labels `flow:*` na issue.
@@ -118,6 +155,21 @@ está **vazio**, cai no comportamento legado de loopback interno (`POST /api/cha
 `X-Internal-Secret`/`X-Session-Key`), preservando os crons `message`-based. O scan em si
 continua **zero-token** — o webhook só é chamado quando há um candidato real na fila.
 
+**Secret interno do gateway (loopback).** No fallback de loopback, o segredo
+interno é resolvido por precedência (issue #263): primeiro
+`~/.kiro/crew/run/gateway-{port}.secret` (regenerado a cada restart do gateway),
+depois `~/.kiro/crew/.local_secret` e, como último recurso, o `ctx._secret`
+fixado no registro do cron. O `.local_secret` e o `ctx._secret` ficam
+desatualizados após um restart do gateway e causavam `403` no dispatch — por
+isso o `run/gateway-{port}.secret` vence.
+
+**Slots órfãos (issue #267).** O dispatch de loopback faz duas chamadas: Step 1
+(`POST /api/chat/slots`) cria o slot e Step 2 (`POST /api/chat`) envia a
+mensagem. Quando o Step 2 falha depois de o slot já ter sido criado, o slot
+órfão é **deletado automaticamente** (`_delete_orphan_slot` em
+`deployment/deployment.py`), para não ficar aparecendo como uma sessão
+'New Session...' vazia no sidebar do dashboard.
+
 ## Fluxos disponíveis (Fase 1)
 
 | Template | Quando usar |
@@ -154,6 +206,26 @@ routing:
   - default: feature-flow
 ```
 
+> **Config por repo (`auto_dispatch` / `auto_merge`).** Cada entrada de `repos:`
+> pode ser um mapa com `url` (obrigatório) e os flags opcionais `auto_dispatch`
+> e `auto_merge`, sobrepondo os defaults globais para aquele repo (issue #264).
+> A `url` aceita o formato completo (`github.com/...`, `dev.azure.com/...`) ou o
+> `owner/repo` puro:
+>
+> ```yaml
+> repos:
+>   - url: https://github.com/org/api-gateway2
+>     auto_dispatch: true
+>     auto_merge: false   # merge manual em PRD
+>   - url: https://dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/_git/api-subscription2
+>     auto_dispatch: true
+>     auto_merge: true
+> ```
+>
+> A forma legada `repos_config:` (issue #245) é equivalente e usa `name` no lugar
+> de `url`. Quando o mesmo repo aparece nas duas fontes, a entrada inline em
+> `repos:` vence. Omitir um flag = herda o global. Ver `squads/example.yaml`.
+
 > **PyYAML (recomendado para routing complexo):** o parser embutido (`_mini_yaml`) suporta
 > escalares, listas simples, mapeamentos de 1 nível, e listas de dicts — tanto no formato
 > inline (`{labels: [...]}`) quanto multi-linha. Para garantir compatibilidade total com YAML
@@ -173,8 +245,9 @@ routing:
 ./scripts/install-cron.sh
 
 # O script copia deployment.py, deployment/flow/, flow_update_check.py,
-# aplica o patch de sys.path e copia deployment.config.yaml (se não existir).
-# Edite ~/.kiro/crew/crons/deployment.config.yaml com seus paths.
+# aplica o patch de sys.path, copia deployment.config.yaml (se não existir) e
+# semeia ~/.kiro/crew/crons/.env a partir de deployment/.env.example (secrets).
+# Edite ~/.kiro/crew/crons/deployment.config.yaml com seus paths e o .env com os secrets.
 ```
 
 Se o App estiver instalado via `kirocrew app enable kirocrew-flow`, os crons são
@@ -288,7 +361,7 @@ O agente reviewer valida o PR como **gate único** antes do approve:
 3. **Analisa o código** — corretude, testes, estilo e convenções do steering do repo.
 4. **Decide com as três condições**: CI verde + zero comentários não resolvidos no PR + sem blockers técnicos.
 5. **Posta o resultado completo nos DOIS lugares** — PR e issue — com: o que foi feito, o resultado, o link e todas as informações.
-6. **Aplica `flow:review-running`** somente quando as três condições são satisfeitas. Com `auto_merge_on_approve: true` no squad config, o motor faz merge squash automático; sem a flag (default), para em `flow:review-running` aguardando merge manual.
+6. **Aplica `flow:review-running`** somente quando as três condições são satisfeitas. Com `auto_merge: true` para o repo no squad config, o motor faz merge squash automático; sem a flag (default), para em `flow:review-running` aguardando merge manual. O `auto_merge` é resolvido por repo (config inline em `repos:` ou legado em `repos_config:`), com fallback para a flag global de auto-merge do `workflow_params`.
 
 ## Desenvolvimento
 
@@ -349,6 +422,29 @@ Garantias do modo dry-run:
 
 Ver [`docs/ROADMAP.md`](docs/ROADMAP.md) para detalhes.
 
+## Release
+
+As releases são dirigidas pelos **conventional commits** via
+[`python-semantic-release`](https://python-semantic-release.readthedocs.io/): `feat`
+gera bump **minor**, `fix` gera **patch** e `feat!:`/`BREAKING CHANGE:` geram **major**
+(commits `docs`/`chore`/`refactor`/`test`/`style`/`ci` não cortam release). A pipeline
+`.github/workflows/release.yml` roda no GitHub Actions **após o CI passar** no `main` —
+ela é disparada por `workflow_run` do workflow `CI` e só prossegue se a conclusão foi
+`success`, de modo que um `main` vermelho nunca corta uma release. A cada release ela
+calcula a próxima versão, atualiza o CHANGELOG e cria a tag `vX.Y.Z`.
+
+Há dois canais de release:
+
+| Canal | Como avança | Uso |
+|---|---|---|
+| `latest` | Movido **automaticamente** pela pipeline a cada release. | Ponta — pode conter instabilidade. |
+| `stable` | Promovido **manualmente** após validação. | Versão validada para produção. |
+
+O `app.json` fixa `"channel": "stable"` por padrão, então uma instalação padrão do
+App consome o canal validado; o cron `flow-update-check` compara a versão instalada
+com esse canal e aplica a política de update. Consulte [`docs/RELEASE.md`](docs/RELEASE.md)
+para a política completa (auto vs manual, fontes de verdade da versão e mecanismo de update).
+
 ## Smoke test do fluxo completo ✅
 
 O fluxo `develop → review → merge` foi validado end-to-end via [issue #230](https://github.com/eliasrosa/kirocrew-flow/issues/230):
@@ -360,6 +456,13 @@ O fluxo `develop → review → merge` foi validado end-to-end via [issue #230](
 
 ## Segurança / privacidade
 
-- Repos, chat_id e paths vivem no `config.yaml` (gitignored). O `config.example.yaml` só tem placeholders.
-- O disparo usa o segredo interno do gateway apenas em loopback (localhost).
+- Repos, chat_id e paths vivem no `deployment.config.yaml` (gitignored). O `config.example.yaml` só tem placeholders.
+- **Secrets NÃO ficam no `deployment.config.yaml`.** Eles saem por variáveis de
+  ambiente / `.env` (gitignored): `KIROCREW_WEBHOOK_TOKEN`, `KIROCREW_WEBHOOK_SECRET`
+  e `AZURE_DEVOPS_PAT`. Use [`.env.example`](.env.example) como template para
+  desenvolvimento local. O `deployment/.env.example` é o template equivalente que o
+  `install-cron.sh` semeia em `~/.kiro/crew/crons/.env`; ambos listam o mesmo conjunto
+  de secrets. Ao adicionar um secret, atualize os dois arquivos.
+- O disparo usa o segredo interno do gateway apenas em loopback (localhost), com a
+  precedência de secret descrita em [Dispatch de sessões](#dispatch-de-sessões-webhook).
 
