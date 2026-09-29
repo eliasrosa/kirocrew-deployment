@@ -495,3 +495,118 @@ class TestScmConfigFromRepoEntry:
         config = scm_config_from_repo_entry(entry)
         factory = ScmTransportFactory(config)
         assert factory._config.scm == "github"
+
+
+# ---------------------------------------------------------------------------
+# Detecção automática de SCM por URL (_infer_scm_from_name, _parse_azure_devops_url)
+# ---------------------------------------------------------------------------
+
+class TestInferScmFromName:
+    def test_url_dev_azure_com_retorna_azure_devops(self) -> None:
+        from flow.adapters.scm.factory import _infer_scm_from_name
+        assert _infer_scm_from_name("dev.azure.com/kdop/Proj/repo") == "azure_devops"
+
+    def test_url_https_dev_azure_com_retorna_azure_devops(self) -> None:
+        from flow.adapters.scm.factory import _infer_scm_from_name
+        assert _infer_scm_from_name("https://dev.azure.com/kdop/Proj/repo") == "azure_devops"
+
+    def test_github_org_repo_retorna_github(self) -> None:
+        from flow.adapters.scm.factory import _infer_scm_from_name
+        assert _infer_scm_from_name("org/repo") == "github"
+
+    def test_nome_vazio_retorna_github(self) -> None:
+        from flow.adapters.scm.factory import _infer_scm_from_name
+        assert _infer_scm_from_name("") == "github"
+
+    def test_input_manipulado_nao_e_confundido_com_azure(self) -> None:
+        # Regressão CodeQL: str.lstrip() removia caracteres do conjunto, não o
+        # prefixo inteiro, permitindo que inputs manipulados como
+        # "shtpdev.azure.com/..." passassem pela sanitização. removeprefix()
+        # remove apenas a substring exata como prefixo.
+        from flow.adapters.scm.factory import _infer_scm_from_name
+        assert _infer_scm_from_name("shtpdev.azure.com/kdop/Proj/repo") == "github"
+
+
+class TestParseAzureDevOpsUrl:
+    def test_url_sem_schema(self) -> None:
+        from flow.adapters.scm.factory import _parse_azure_devops_url
+        result = _parse_azure_devops_url("dev.azure.com/kdop/PlataformaCogna/api-gateway2")
+        assert result["org"] == "https://dev.azure.com/kdop"
+        assert result["project"] == "PlataformaCogna"
+        assert result["repo"] == "api-gateway2"
+
+    def test_url_com_https(self) -> None:
+        from flow.adapters.scm.factory import _parse_azure_devops_url
+        result = _parse_azure_devops_url("https://dev.azure.com/kdop/PlataformaCogna/api-gateway2")
+        assert result["org"] == "https://dev.azure.com/kdop"
+        assert result["project"] == "PlataformaCogna"
+        assert result["repo"] == "api-gateway2"
+
+    def test_url_sem_suficientes_partes_retorna_vazio(self) -> None:
+        from flow.adapters.scm.factory import _parse_azure_devops_url
+        result = _parse_azure_devops_url("dev.azure.com/kdop")
+        assert result == {}
+
+    def test_url_github_retorna_vazio(self) -> None:
+        from flow.adapters.scm.factory import _parse_azure_devops_url
+        result = _parse_azure_devops_url("github.com/org/repo")
+        assert result == {}
+
+
+class TestScmConfigFromRepoEntryAutoDetect:
+    def test_url_azure_sem_scm_detecta_automaticamente(self) -> None:
+        entry = {
+            "name": "dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/voomp-creators-api-gateway2",
+        }
+        config = scm_config_from_repo_entry(entry)
+        assert config.scm == "azure_devops"
+        assert config.azure_org == "https://dev.azure.com/kdop"
+        assert config.azure_project == "PlataformaCogna-MKTP-MVP"
+        assert config.azure_repo == "voomp-creators-api-gateway2"
+
+    def test_url_https_azure_sem_scm_detecta_automaticamente(self) -> None:
+        entry = {
+            "name": "https://dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/voomp-creators-api-gateway2",
+        }
+        config = scm_config_from_repo_entry(entry)
+        assert config.scm == "azure_devops"
+        assert config.azure_org == "https://dev.azure.com/kdop"
+
+    def test_campos_explicitos_sobrepõem_url_derivada(self) -> None:
+        """Campos azure_* explícitos no YAML sobrepõem os derivados da URL."""
+        entry = {
+            "name": "dev.azure.com/kdop/Proj/repo",
+            "azure_project": "OutroProj",
+            "azure_repo": "outro-repo",
+        }
+        config = scm_config_from_repo_entry(entry)
+        assert config.scm == "azure_devops"
+        assert config.azure_project == "OutroProj"
+        assert config.azure_repo == "outro-repo"
+
+    def test_scm_explicito_azure_devops_prevalece(self) -> None:
+        """scm explícito ainda funciona sem URL."""
+        entry = {
+            "name": "kdop/api-gateway2",
+            "scm": "azure_devops",
+            "azure_org": "https://dev.azure.com/kdop",
+            "azure_project": "PlataformaCogna-MKTP-MVP",
+            "azure_repo": "voomp-creators-api-gateway2",
+        }
+        config = scm_config_from_repo_entry(entry)
+        assert config.scm == "azure_devops"
+        assert config.azure_org == "https://dev.azure.com/kdop"
+
+    def test_github_sem_scm_permanece_github(self) -> None:
+        entry = {"name": "org/api-gateway2"}
+        config = scm_config_from_repo_entry(entry)
+        assert config.scm == "github"
+        assert config.owner_repo == "org/api-gateway2"
+
+    def test_factory_construida_com_url_auto_detectada(self) -> None:
+        entry = {
+            "name": "dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/voomp-creators-api-gateway2",
+        }
+        config = scm_config_from_repo_entry(entry)
+        factory = ScmTransportFactory(config)
+        assert factory._config.scm == "azure_devops"
