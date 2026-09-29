@@ -256,10 +256,125 @@ class TestPostAgentSessionLoopback:
 
         assert captured.get("secret") == "my-local-secret"
 
+    def test_run_gateway_secret_tem_precedencia_sobre_local_secret(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """run/gateway-{port}.secret vence .local_secret quando ambos existem."""
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        gateway_secret_file = run_dir / "gateway-5000.secret"
+        gateway_secret_file.write_text("run-gateway-secret")
 
-# ---------------------------------------------------------------------------
-# Scan zero-token — fila vazia não aciona dispatch/POST
-# ---------------------------------------------------------------------------
+        local_secret_file = tmp_path / ".local_secret"
+        local_secret_file.write_text("local-secret-fallback")
+
+        ctx = mock.MagicMock(spec=["notify", "job"])
+        ctx._port = 5000
+        ctx.job.id = "test-job"
+
+        def _fake_expanduser(p: str) -> str:
+            if f"run/gateway-{ctx._port}.secret" in p:
+                return str(gateway_secret_file)
+            if ".local_secret" in p:
+                return str(local_secret_file)
+            return p
+
+        monkeypatch.setattr("os.path.expanduser", _fake_expanduser)
+        monkeypatch.setattr("glob.glob", lambda _p: [])  # sem socket dinâmico
+
+        captured: dict = {}
+
+        class _FakeResp:
+            def __enter__(self) -> _FakeResp: return self
+            def __exit__(self, *a: object) -> None: return None
+            def read(self, _n: int = -1) -> bytes: return b""
+
+        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
+            url = req.full_url  # type: ignore[attr-defined]
+            if "api/chat/slots" in url:
+                captured["secret"] = req.get_header("X-internal-secret")  # type: ignore[attr-defined]
+            return _FakeResp()
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake):
+            _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
+
+        assert captured.get("secret") == "run-gateway-secret"
+
+    def test_local_secret_fallback_quando_run_gateway_ausente(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Sem run/gateway-{port}.secret → usa .local_secret como fallback."""
+        local_secret_file = tmp_path / ".local_secret"
+        local_secret_file.write_text("local-secret-fallback")
+
+        ctx = mock.MagicMock(spec=["notify", "job"])
+        ctx._port = 5000
+        ctx.job.id = "test-job"
+
+        def _fake_expanduser(p: str) -> str:
+            if f"run/gateway-{ctx._port}.secret" in p:
+                # Arquivo não existe: retorna caminho inexistente
+                return str(tmp_path / "run" / f"gateway-{ctx._port}.secret")
+            if ".local_secret" in p:
+                return str(local_secret_file)
+            return p
+
+        monkeypatch.setattr("os.path.expanduser", _fake_expanduser)
+        monkeypatch.setattr("glob.glob", lambda _p: [])
+
+        captured: dict = {}
+
+        class _FakeResp:
+            def __enter__(self) -> _FakeResp: return self
+            def __exit__(self, *a: object) -> None: return None
+            def read(self, _n: int = -1) -> bytes: return b""
+
+        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
+            url = req.full_url  # type: ignore[attr-defined]
+            if "api/chat/slots" in url:
+                captured["secret"] = req.get_header("X-internal-secret")  # type: ignore[attr-defined]
+            return _FakeResp()
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake):
+            _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
+
+        assert captured.get("secret") == "local-secret-fallback"
+
+    def test_ctx_secret_ultimo_recurso_quando_arquivos_ausentes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Sem run/gateway-{port}.secret e sem .local_secret → usa ctx._secret."""
+        ctx = mock.MagicMock(spec=["notify", "job", "_secret", "_port"])
+        ctx._port = 5000
+        ctx._secret = "ctx-secret-fallback"
+        ctx.job.id = "test-job"
+
+        def _fake_expanduser(p: str) -> str:
+            # Ambos os arquivos apontam para paths inexistentes
+            if "run/gateway" in p or ".local_secret" in p:
+                return str(tmp_path / "nonexistent")
+            return p
+
+        monkeypatch.setattr("os.path.expanduser", _fake_expanduser)
+        monkeypatch.setattr("glob.glob", lambda _p: [])
+
+        captured: dict = {}
+
+        class _FakeResp:
+            def __enter__(self) -> _FakeResp: return self
+            def __exit__(self, *a: object) -> None: return None
+            def read(self, _n: int = -1) -> bytes: return b""
+
+        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
+            url = req.full_url  # type: ignore[attr-defined]
+            if "api/chat/slots" in url:
+                captured["secret"] = req.get_header("X-internal-secret")  # type: ignore[attr-defined]
+            return _FakeResp()
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake):
+            _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
+
+        assert captured.get("secret") == "ctx-secret-fallback"
 
 class TestZeroTokenScan:
     def test_empty_queue_no_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
