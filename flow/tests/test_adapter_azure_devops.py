@@ -518,6 +518,14 @@ class TestInferScmFromName:
         from flow.adapters.scm.factory import _infer_scm_from_name
         assert _infer_scm_from_name("") == "github"
 
+    def test_input_manipulado_nao_e_confundido_com_azure(self) -> None:
+        # Regressão CodeQL: str.lstrip() removia caracteres do conjunto, não o
+        # prefixo inteiro, permitindo que inputs manipulados como
+        # "shtpdev.azure.com/..." passassem pela sanitização. removeprefix()
+        # remove apenas a substring exata como prefixo.
+        from flow.adapters.scm.factory import _infer_scm_from_name
+        assert _infer_scm_from_name("shtpdev.azure.com/kdop/Proj/repo") == "github"
+
 
 class TestParseAzureDevOpsUrl:
     def test_url_sem_schema(self) -> None:
