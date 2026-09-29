@@ -3588,3 +3588,192 @@ class TestEditIssueLabelsTransport:
             add=["flow:develop-running"],
             remove=["flow:develop-waiting"],
         )
+
+
+# ---------------------------------------------------------------------------
+# _auto_for_repo e _auto_merge_for_repo (issue #264)
+# ---------------------------------------------------------------------------
+
+class TestAutoForRepo:
+    """_auto_for_repo e _auto_merge_for_repo resolvem flag por repo com fallback global."""
+
+    def test_auto_for_repo_sem_squad_usa_global(self) -> None:
+        from deployment.deployment import _auto_for_repo
+
+        assert _auto_for_repo(None, "owner/api-gw", False) is False
+        assert _auto_for_repo(None, "owner/api-gw", True) is True
+
+    def test_auto_for_repo_com_squad_sem_config_repo_usa_global(self) -> None:
+        from deployment.deployment import _auto_for_repo
+        from flow.config.squad import SquadConfig, WorkflowParams
+
+        sc = SquadConfig(
+            id="t", name="T", issue_provider="github",
+            projects=["owner/api-gw"], repos=frozenset(["owner/api-gw", "api-gw"]),
+            workflow_template="versao-c", workflow_params=WorkflowParams(),
+        )
+        assert _auto_for_repo(sc, "owner/api-gw", False) is False
+        assert _auto_for_repo(sc, "owner/api-gw", True) is True
+
+    def test_auto_for_repo_com_config_repo_sobrepoe_global(self) -> None:
+        from deployment.deployment import _auto_for_repo
+        from flow.config.squad import RepoConfig, SquadConfig, WorkflowParams
+
+        sc = SquadConfig(
+            id="t", name="T", issue_provider="github",
+            projects=["owner/api-gw", "owner/api-sub"],
+            repos=frozenset(["owner/api-gw", "api-gw", "owner/api-sub", "api-sub"]),
+            workflow_template="versao-c", workflow_params=WorkflowParams(),
+            repo_configs=[
+                RepoConfig(name="owner/api-gw", auto_dispatch=True),
+                RepoConfig(name="owner/api-sub", auto_dispatch=False),
+            ],
+        )
+        # api-gw: True mesmo que global seja False
+        assert _auto_for_repo(sc, "owner/api-gw", False) is True
+        # api-sub: False mesmo que global seja True
+        assert _auto_for_repo(sc, "owner/api-sub", True) is False
+        # outro repo sem config: cai no global
+        assert _auto_for_repo(sc, "owner/outro", True) is True
+        assert _auto_for_repo(sc, "owner/outro", False) is False
+
+    def test_auto_merge_for_repo_sem_squad_usa_global(self) -> None:
+        from deployment.deployment import _auto_merge_for_repo
+
+        assert _auto_merge_for_repo(None, "owner/api-gw", False) is False
+        assert _auto_merge_for_repo(None, "owner/api-gw", True) is True
+
+    def test_auto_merge_for_repo_com_squad_sem_config_usa_global(self) -> None:
+        from deployment.deployment import _auto_merge_for_repo
+        from flow.config.squad import SquadConfig, WorkflowParams
+
+        sc = SquadConfig(
+            id="t", name="T", issue_provider="github",
+            projects=["owner/api-gw"], repos=frozenset(["owner/api-gw", "api-gw"]),
+            workflow_template="versao-c",
+            workflow_params=WorkflowParams(auto_merge_on_approve=True),
+        )
+        assert _auto_merge_for_repo(sc, "owner/api-gw", True) is True
+        assert _auto_merge_for_repo(sc, "owner/api-gw", False) is False
+
+    def test_auto_merge_for_repo_com_config_repo_sobrepoe_global(self) -> None:
+        from deployment.deployment import _auto_merge_for_repo
+        from flow.config.squad import RepoConfig, SquadConfig, WorkflowParams
+
+        sc = SquadConfig(
+            id="t", name="T", issue_provider="github",
+            projects=["owner/api-gw", "owner/api-sub"],
+            repos=frozenset(["owner/api-gw", "api-gw", "owner/api-sub", "api-sub"]),
+            workflow_template="versao-c",
+            workflow_params=WorkflowParams(auto_merge_on_approve=True),
+            repo_configs=[
+                RepoConfig(name="owner/api-gw", auto_merge=False),   # merge manual neste repo
+                RepoConfig(name="owner/api-sub", auto_merge=True),
+            ],
+        )
+        # api-gw: False mesmo que global seja True
+        assert _auto_merge_for_repo(sc, "owner/api-gw", True) is False
+        # api-sub: True mesmo que global seja False
+        assert _auto_merge_for_repo(sc, "owner/api-sub", False) is True
+        # outro repo sem config: cai no global
+        assert _auto_merge_for_repo(sc, "owner/outro", True) is True
+        assert _auto_merge_for_repo(sc, "owner/outro", False) is False
+
+
+class TestAutoMergePerRepoIntegration:
+    """decide() usa auto_merge_on_approve por repo, não o valor global da squad."""
+
+    def _make_review_approved_scan_result(self, repo: str = "owner/api-gw") -> tuple:
+        """ScanResult em flow:review-waiting com reviewer aprovado."""
+        from flow.audit.state_comment import StateComment, render
+        from flow.domain.gates import WorkItem
+        from flow.domain.state import Modifier, State
+        from flow.scan.scanner import ScanResult
+
+        sc = StateComment(
+            workflow="feature (v1)", current_node="review",
+            status="reviewed", repo=repo,
+        )
+        sc.set_reviewer_result(approved=True, comments=[], sha="abc123")
+        state_body = render(sc)
+
+        result = ScanResult(
+            item=WorkItem(
+                key=f"https://github.com/{repo}/issues/42",
+                title=f"[{repo}] Feature X",
+                labels=frozenset(["flow:review-waiting", "flow:review-running", "flow:feature"]),
+            ),
+            current_state=State.REVIEW_WAITING,
+            modifiers=frozenset([Modifier.REVIEWED]),
+            dispatch_candidate=False,
+            spec_valid=None,
+            changed=True,
+            reason="reviewer aprovado",
+        )
+        return result, state_body
+
+    def test_auto_merge_false_por_repo_gera_skip_mesmo_com_global_true(self) -> None:
+        """Repo com auto_merge=False deve gerar SKIP mesmo com auto_merge_on_approve global=True."""
+        from deployment.deployment import _auto_merge_for_repo
+        from flow.config.squad import RepoConfig, SquadConfig, WorkflowParams
+        from flow.executor.executor import ActionKind, decide
+
+        sc = SquadConfig(
+            id="t", name="T", issue_provider="github",
+            projects=["owner/api-gw"],
+            repos=frozenset(["owner/api-gw", "api-gw"]),
+            workflow_template="versao-c",
+            workflow_params=WorkflowParams(auto_merge_on_approve=True),  # global=True
+            repo_configs=[
+                RepoConfig(name="owner/api-gw", auto_merge=False),  # repo=False
+            ],
+        )
+        result, state_body = self._make_review_approved_scan_result("owner/api-gw")
+
+        # Resolve a flag por repo
+        global_auto_merge = sc.workflow_params.auto_merge_on_approve
+        repo_auto_merge = _auto_merge_for_repo(sc, "owner/api-gw", global_auto_merge)
+        assert repo_auto_merge is False  # deve ser False (config por repo)
+
+        # decide() com auto_merge_on_approve=False → não deve gerar MERGE_PR
+        decision = decide(
+            result,
+            state_comment=state_body,
+            squad=sc,
+            auto_merge_on_approve=False,
+        )
+        assert decision.action is not ActionKind.MERGE_PR, (
+            f"Com auto_merge=False por repo, não deveria gerar MERGE_PR, mas gerou: {decision}"
+        )
+
+    def test_auto_merge_true_por_repo_gera_merge_mesmo_com_global_false(self) -> None:
+        """Repo com auto_merge=True deve gerar MERGE_PR mesmo com auto_merge_on_approve global=False."""
+        from deployment.deployment import _auto_merge_for_repo
+        from flow.config.squad import RepoConfig, SquadConfig, WorkflowParams
+        from flow.executor.executor import ActionKind, decide
+
+        sc = SquadConfig(
+            id="t", name="T", issue_provider="github",
+            projects=["owner/api-sub"],
+            repos=frozenset(["owner/api-sub", "api-sub"]),
+            workflow_template="versao-c",
+            workflow_params=WorkflowParams(auto_merge_on_approve=False),  # global=False
+            repo_configs=[
+                RepoConfig(name="owner/api-sub", auto_merge=True),  # repo=True
+            ],
+        )
+        result, state_body = self._make_review_approved_scan_result("owner/api-sub")
+
+        global_auto_merge = sc.workflow_params.auto_merge_on_approve
+        repo_auto_merge = _auto_merge_for_repo(sc, "owner/api-sub", global_auto_merge)
+        assert repo_auto_merge is True  # deve ser True (config por repo)
+
+        decision = decide(
+            result,
+            state_comment=state_body,
+            squad=sc,
+            auto_merge_on_approve=True,
+        )
+        assert decision.action is ActionKind.MERGE_PR, (
+            f"Com auto_merge=True por repo, deveria gerar MERGE_PR, mas gerou: {decision}"
+        )
