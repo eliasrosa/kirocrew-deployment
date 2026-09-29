@@ -281,8 +281,9 @@ class ScmTransportFactory:
 def scm_config_from_repo_entry(entry: dict) -> ScmRepoConfig:
     """Constrói um ``ScmRepoConfig`` a partir de um entry do campo ``repos`` do YAML.
 
-    Formato suportado::
+    Formatos suportados::
 
+        # Azure DevOps — campos explícitos (recomendado)
         repos:
           - name: kdop/api-gateway2
             scm: azure_devops
@@ -290,18 +291,87 @@ def scm_config_from_repo_entry(entry: dict) -> ScmRepoConfig:
             azure_project: PlataformaCogna-MKTP-MVP
             azure_repo: voomp-creators-api-gateway2
 
+        # Azure DevOps — detecção automática pelo prefixo de URL
+        # ``scm`` é inferido quando ``name`` começa com ``dev.azure.com``
+          - name: dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/voomp-creators-api-gateway2
+          # equivale a scm=azure_devops com os campos derivados da URL
+
           - name: org/frontend      # scm omitido → github
+
+    A detecção automática ocorre quando ``scm`` está ausente E o campo
+    ``name`` segue o padrão ``dev.azure.com/<org>/<project>/<repo>`` (com ou
+    sem o prefixo ``https://``).  Se os campos ``azure_org``, ``azure_project``
+    ou ``azure_repo`` forem fornecidos explicitamente, sobrepõem os derivados.
     """
-    scm = str(entry.get("scm", "github")).strip()
+    scm = str(entry.get("scm", "")).strip()
     name = str(entry.get("name", "")).strip()
 
+    # Detecta Azure DevOps automaticamente pela URL
+    if not scm:
+        scm = _infer_scm_from_name(name)
+
     if scm == "azure_devops":
+        # Tenta derivar org/project/repo da URL quando não fornecidos explicitamente
+        derived = _parse_azure_devops_url(name)
         return ScmRepoConfig(
             scm="azure_devops",
-            azure_org=str(entry.get("azure_org", "")).strip(),
-            azure_project=str(entry.get("azure_project", "")).strip(),
-            azure_repo=str(entry.get("azure_repo", "")).strip(),
+            azure_org=str(entry.get("azure_org", "") or derived.get("org", "")).strip(),
+            azure_project=str(entry.get("azure_project", "") or derived.get("project", "")).strip(),
+            azure_repo=str(entry.get("azure_repo", "") or derived.get("repo", "")).strip(),
         )
 
     # GitHub (default)
     return ScmRepoConfig(scm="github", owner_repo=name)
+
+
+# ---------------------------------------------------------------------------
+# Helpers de detecção automática de SCM
+# ---------------------------------------------------------------------------
+
+def _infer_scm_from_name(name: str) -> str:
+    """Infere o SCM a partir do campo ``name`` de um entry de repo.
+
+    Retorna ``"azure_devops"`` se o nome seguir o padrão de URL do Azure DevOps
+    (``dev.azure.com/...``), caso contrário retorna ``"github"``.
+    """
+    normalized = name.lower().lstrip("https://").lstrip("http://")
+    if normalized.startswith("dev.azure.com"):
+        return "azure_devops"
+    return "github"
+
+
+def _parse_azure_devops_url(name: str) -> dict:
+    """Deriva ``org``, ``project`` e ``repo`` de uma URL do Azure DevOps.
+
+    Formatos aceitos::
+
+        dev.azure.com/<org>/<project>/<repo>
+        https://dev.azure.com/<org>/<project>/<repo>
+
+    Retorna dict com as chaves ``org``, ``project``, ``repo`` (strings vazias
+    se o padrão não casar — o chamador usa campos explícitos do YAML como
+    fallback).
+    """
+    # Remove schema
+    stripped = name
+    for prefix in ("https://", "http://"):
+        if stripped.lower().startswith(prefix):
+            stripped = stripped[len(prefix):]
+            break
+
+    # Remove prefixo dev.azure.com/
+    prefix = "dev.azure.com/"
+    if stripped.lower().startswith(prefix):
+        stripped = stripped[len(prefix):]
+    else:
+        return {}
+
+    parts = stripped.split("/")
+    if len(parts) < 3:
+        return {}
+
+    return {
+        "org": f"https://dev.azure.com/{parts[0]}",
+        "project": parts[1],
+        "repo": parts[2],
+    }

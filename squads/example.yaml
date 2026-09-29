@@ -17,9 +17,26 @@ project: VGAT
 #   1. Projetos a varrer no scan (GitHub-first; Jira usa "project" acima)
 #   2. Lista de validação do título: [repo] no título deve casar aqui
 #      Typo falha alto: [api-gatewy2] não casa → recusa em vez de despachar errado
+#
+# Repositórios GitHub (padrão — scm omitido):
 repos:
   - org/api-gateway2
   - org/api-subscription2
+#
+# Repositórios Azure DevOps — opção 1: campos explícitos (recomendado)
+# repos:
+#   - name: kdop/api-gateway2
+#     scm: azure_devops
+#     azure_org: https://dev.azure.com/kdop
+#     azure_project: PlataformaCogna-MKTP-MVP
+#     azure_repo: voomp-creators-api-gateway2
+#
+# Repositórios Azure DevOps — opção 2: detecção automática pela URL
+# O campo scm é inferido quando o nome começa com dev.azure.com
+# Formato: dev.azure.com/<org>/<project>/<repo> (com ou sem https://)
+# repos:
+#   - name: dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/voomp-creators-api-gateway2
+#   - name: https://dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/voomp-creators-api-subscription2
 
 # Template de workflow — Fase 1 = fixo, Fase 3 = editável no canvas
 # versao-c (padrão) = review ANTES do QA, sequencial
