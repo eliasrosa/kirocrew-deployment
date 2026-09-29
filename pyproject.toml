@@ -15,6 +15,9 @@ dependencies = [
 yaml = [
     "pyyaml>=6.0",  # parser YAML completo; recomendado para squads com routing complexo
 ]
+dotenv = [
+    "python-dotenv>=1.0",  # carrega .env automaticamente; opcional — sem ele os secrets vêm só do env
+]
 gateway = [
     "kirocrew-client>=0.1",  # SDK do Crew Gateway — instalado só no ambiente do gateway; ausente no PyPI público, por isso fora do dev/CI
 ]
@@ -25,6 +28,7 @@ dev = [
     "mypy>=2.0",
     "ruff>=0.5",
     "pyyaml>=6.0",  # parser YAML completo; sem ele, _mini_yaml é o fallback
+    "python-dotenv>=1.0",  # carregamento de .env nos testes de integração
 ]
 
 [tool.pytest.ini_options]

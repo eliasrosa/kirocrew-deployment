@@ -53,6 +53,18 @@ import subprocess
 import sys
 import threading as _threading
 
+# ── Carrega .env se existir (python-dotenv, opcional) ────────────────────
+# Secrets (KIROCREW_WEBHOOK_TOKEN, KIROCREW_WEBHOOK_SECRET, etc.) devem viver
+# em ~/.kiro/crew/crons/.env, nunca em deployment.config.yaml.
+# Se python-dotenv não estiver instalado, o bloco é silenciosamente ignorado.
+try:
+    from dotenv import load_dotenv as _load_dotenv
+
+    _dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    _load_dotenv(_dotenv_path, override=False)
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 
 # ── Adiciona o diretório raiz do repo ao path para importar flow/ ─────────

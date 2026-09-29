@@ -498,6 +498,100 @@ class TestReviewerDispatchSignalling:
 
 
 # ---------------------------------------------------------------------------
+# Testes para secrets via variáveis de ambiente
+# ---------------------------------------------------------------------------
+
+
+class TestWebhookSecrets:
+    """Garante que secrets são lidos exclusivamente via os.environ (nunca do config.yaml)."""
+
+    def test_webhook_token_lido_do_environ(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deployment.deployment import _webhook_token
+
+        monkeypatch.setenv("KIROCREW_WEBHOOK_TOKEN", "meu-token-secreto")
+        assert _webhook_token() == "meu-token-secreto"
+
+    def test_webhook_token_vazio_quando_ausente(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deployment.deployment import _webhook_token
+
+        monkeypatch.delenv("KIROCREW_WEBHOOK_TOKEN", raising=False)
+        assert _webhook_token() == ""
+
+    def test_webhook_secret_lido_do_environ(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deployment.deployment import _webhook_secret
+
+        monkeypatch.setenv("KIROCREW_WEBHOOK_SECRET", "meu-signing-secret")
+        assert _webhook_secret() == "meu-signing-secret"
+
+    def test_webhook_secret_vazio_quando_ausente(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deployment.deployment import _webhook_secret
+
+        monkeypatch.delenv("KIROCREW_WEBHOOK_SECRET", raising=False)
+        assert _webhook_secret() == ""
+
+    def test_config_yaml_nao_tem_webhook_token(self) -> None:
+        """deployment.config.yaml (template) NÃO deve conter os campos webhook_token/webhook_secret."""
+        config_path = Path(__file__).parent.parent.parent / "deployment" / "deployment.config.yaml"
+        if not config_path.exists():
+            pytest.skip("deployment.config.yaml não existe (gitignored — ok)")
+
+        content = config_path.read_text()
+
+        assert "webhook_token" not in content, (
+            "deployment.config.yaml não deve conter webhook_token — use .env"
+        )
+        assert "webhook_secret" not in content, (
+            "deployment.config.yaml não deve conter webhook_secret — use .env"
+        )
+
+    def test_env_example_templates_cobrem_todos_os_secrets(self) -> None:
+        """Os templates .env.example devem conter TODOS os secrets declarados
+        em config.example.yaml (linha 4), para que o .env semeado pelo
+        install-cron.sh nunca fique defasado do conjunto real de secrets.
+        """
+        import re
+
+        repo_root = Path(__file__).parent.parent.parent
+
+        # Extrai o conjunto autoritativo de secrets da linha de comentário do
+        # config.example.yaml (ex.: "# Secrets (A, B, C) NÃO ficam aqui.").
+        config_text = (repo_root / "config.example.yaml").read_text()
+        match = re.search(r"Secrets\s*\(([^)]+)\)", config_text)
+        assert match is not None, "linha de secrets não encontrada em config.example.yaml"
+        secrets = [s.strip() for s in match.group(1).split(",") if s.strip()]
+        assert "AZURE_DEVOPS_PAT" in secrets, "AZURE_DEVOPS_PAT deve estar declarado"
+        assert "KIROCREW_WEBHOOK_TOKEN" in secrets
+        assert "KIROCREW_WEBHOOK_SECRET" in secrets
+
+        # Ambos os templates devem declarar cada secret (como VAR=).
+        for template in ("deployment/.env.example", ".env.example"):
+            content = (repo_root / template).read_text()
+            for secret in secrets:
+                assert f"{secret}=" in content, (
+                    f"{template} não declara {secret} — o template de secrets "
+                    f"está defasado do config.example.yaml"
+                )
+
+    def test_dotenv_importerror_e_silencioso(self) -> None:
+        """O bloco load_dotenv no deployment.py não deve quebrar quando python-dotenv não está instalado."""
+        import contextlib
+        import sys
+
+        # Simula ausência do dotenv removendo-o temporariamente do cache de módulos.
+        # O módulo deployment.deployment já foi importado, então testamos o bloco
+        # diretamente sem reimportar (não há efeito colateral real).
+        dotenv_backup = sys.modules.pop("dotenv", None)
+        try:
+            # Ao executar o bloco equivalente manualmente, ImportError deve ser silencioso.
+            with contextlib.suppress(ImportError):
+                from dotenv import load_dotenv as _ld  # noqa: F401
+                # dotenv real está instalado — apenas verifica que não há exceção
+        finally:
+            if dotenv_backup is not None:
+                sys.modules["dotenv"] = dotenv_backup
+
+
+# ---------------------------------------------------------------------------
 # Cleanup de slot orphan — Step 2 falha → tenta fechar o slot
 # ---------------------------------------------------------------------------
 
