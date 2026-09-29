@@ -160,6 +160,77 @@ crewflow:p1 / crewflow:p2 / crewflow:p3
 crewflow:blocked   # alias de flow:blocked, mantido por compatibilidade
 ```
 
+## Protocolo cron ↔ agente
+
+O motor é composto por **duas camadas distintas** que nunca se chamam
+diretamente. Toda a coordenação acontece **exclusivamente via labels na issue**,
+complementadas pelo comentário `KIRO-FLOW-STATE`.
+
+### Camada 1: Cron Python (zero-token), orquestrador de estado
+
+- Lê as labels `flow:*` da issue.
+- Decide a transição de estado (`executor.decide()`, Python puro, sem I/O).
+- Aplica a label de lock **atomicamente antes de despachar** (ex.: `flow:develop-running`,
+  `flow:review-running`).
+- Dispara a sessão one-shot do agente.
+- No ciclo seguinte, detecta a label de resultado e faz a próxima transição.
+
+O `deployment.py` é o driving adapter dessa camada e roda como cron de script do
+Kiro Crew, sem gastar token no polling.
+
+### Camada 2: Agente one-shot (gasta token), executor de trabalho
+
+- Implementa, revisa ou resolve conflito de merge.
+- Aplica a label de resultado ao terminar (ex.: `flow:review-waiting` ao abrir o PR,
+  `flow:review-approved`/`flow:review-refused` após o review).
+- Posta o comentário `KIRO-FLOW-STATE`.
+
+A sessão recebe a issue já com a label de lock aplicada pelo cron (ver
+`flow/prompts/develop_waiting.md`): o agente não troca a label de lock, apenas
+aplica a label de resultado no fim.
+
+### Regra de comunicação
+
+Nenhuma das camadas chama a outra diretamente. O cron não fica esperando o agente,
+e o agente não invoca o cron: a comunicação é **exclusivamente via labels na issue**
+mais o comentário `KIRO-FLOW-STATE`. O cron detecta a label de resultado no próximo
+ciclo zero-token e avança o estado.
+
+```mermaid
+sequenceDiagram
+    participant Cron as Cron Python (zero-token)
+    participant Issue as Issue (labels)
+    participant Agente as Agente one-shot (gasta token)
+
+    Cron->>Issue: lê labels flow:*
+    Note over Cron: executor.decide() escolhe a transição
+    Cron->>Issue: aplica lock label atomicamente (ex.: flow:develop-running)
+    Cron->>Agente: dispara sessão one-shot
+    Note over Agente: implementa / revisa / resolve conflito
+    Agente->>Issue: aplica label de resultado (ex.: flow:review-waiting)
+    Agente->>Issue: posta comentário KIRO-FLOW-STATE
+    Note over Cron: próximo ciclo zero-token
+    Cron->>Issue: detecta label de resultado
+    Note over Cron: faz a próxima transição
+```
+
+### Responsável por cada label
+
+Quem aplica cada label no protocolo: o cron aplica locks e transições
+automatizadas; o agente aplica as labels de resultado do trabalho que executou.
+
+| Label | Responsável | Significado |
+|---|---|---|
+| `flow:develop-waiting` | cron (detecta) | Gatilho único: o cron detecta e dispara a sessão de dev. |
+| `flow:develop-running` | cron (aplica) | Lock de dev, aplicado atomicamente antes de despachar. |
+| `flow:review-waiting` | agente (aplica) | Resultado do dev: PR aberto, aguardando reviewer. |
+| `flow:review-running` | cron/reviewer (aplica) | Lock anti-loop de code review (uma análise por SHA). |
+| `flow:review-approved` | agente (aplica) | Resultado do review: reviewer aprovou. |
+| `flow:review-refused` | agente (aplica) | Resultado do review: reprovado (gate humano, sem redispatch). |
+| `flow:merge-conflict` | cron (aplica) | `MARK_CONFLITO`: PR com conflito de merge ou base desatualizada. |
+| `flow:blocked` | agente ou humano (aplica) | Parada: escopo vago, bypass sem justificativa ou decisão manual. |
+| `flow:done` | cron (aplica) | Transição final após merge. |
+
 ## O comentário de estado
 
 ```markdown

@@ -71,30 +71,48 @@ A sessão one-shot **nunca mergeia e nunca faz deploy**. Ela entrega o PR em `fl
 
 ### Protocolo cron ↔ agente
 
-**Cron Python e agente LLM não se chamam diretamente** — toda a comunicação acontece via labels `flow:*` na issue.
+O motor tem **duas camadas distintas** que nunca se chamam diretamente. Elas
+se comunicam **exclusivamente via labels na issue** (e o comentário `KIRO-FLOW-STATE`):
+
+- **Cron Python (zero-token): orquestrador de estado.** Lê as labels da issue,
+  decide a transição, aplica a label de lock atomicamente antes de despachar
+  (ex.: `flow:develop-running`, `flow:review-running`), dispara a sessão do agente
+  e, no ciclo seguinte, detecta a label de resultado e faz a próxima transição.
+- **Agente one-shot (gasta token): executor de trabalho.** Implementa, revisa ou
+  resolve conflito, aplica a label de resultado ao terminar (ex.: `flow:review-waiting`
+  ao abrir o PR, `flow:review-approved`/`flow:review-refused` após o review) e posta
+  o comentário `KIRO-FLOW-STATE`.
 
 ```
-Cron Python (zero token)
-  │  scan_candidates() detecta flow:develop-waiting
-  ▼
-  aplica flow:develop-running  ──────────────► [ issue atualizada ]
-  _dispatch() dispara sessão one-shot ───────► Agente (gasta token)
-                                                │  implementa + abre PR
-                                                ▼
-  scan_candidates() detecta mudança ◄───────── aplica flow:review-waiting
-  │
-  ▼
-  aplica flow:review-running ────────────────► Agente reviewer (gasta token)
-                                                │  lê PR + posta review
-                                                ▼
-  scan_candidates() detecta mudança ◄───────── aplica flow:review-approved
-  │                                               (ou flow:review-refused → gate humano)
-  ▼
-  merge squash → flow:qa-waiting → … → flow:done
+cron Python (zero token)
+  → lê labels → decide → aplica lock label → dispara sessão
+
+agente one-shot (gasta token)
+  → implementa/revisa → aplica label de resultado
+
+cron Python (zero token)
+  → detecta label de resultado → faz próxima transição
 ```
 
-Tabela completa de labels (quem aplica e quando): [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#protocolo-cron--agente).  
-Diagrama de sequência Mermaid: [`docs/fluxo.md`](docs/fluxo.md).
+Nenhum dos dois chama o outro diretamente: comunicam-se **exclusivamente via labels na issue**.
+
+```mermaid
+sequenceDiagram
+    participant Cron as Cron Python (zero-token)
+    participant Issue as Issue (labels)
+    participant Agente as Agente one-shot (gasta token)
+
+    Cron->>Issue: lê labels flow:*
+    Note over Cron: decide a transição
+    Cron->>Issue: aplica lock label (ex.: flow:develop-running)
+    Cron->>Agente: dispara sessão one-shot
+    Note over Agente: implementa / revisa / resolve conflito
+    Agente->>Issue: aplica label de resultado (ex.: flow:review-waiting)
+    Agente->>Issue: posta comentário KIRO-FLOW-STATE
+    Note over Cron: próximo ciclo (zero-token)
+    Cron->>Issue: detecta label de resultado
+    Note over Cron: faz a próxima transição
+```
 
 ### Dispatch de sessões (webhook)
 
