@@ -46,6 +46,7 @@ A factory expõe a mesma superfície para ambos os providers:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
@@ -334,8 +335,11 @@ def _infer_scm_from_name(name: str) -> str:
     Retorna ``"azure_devops"`` se o nome seguir o padrão de URL do Azure DevOps
     (``dev.azure.com/...``), caso contrário retorna ``"github"``.
     """
-    normalized = name.lower().removeprefix("https://").removeprefix("http://")
-    if normalized.startswith("dev.azure.com"):
+    # Match ancorado no início: exige que ``dev.azure.com/`` seja o host logo
+    # após um schema opcional. Isso elimina a ambiguidade de posição que o
+    # engine de dataflow do CodeQL rastreava com ``removeprefix()`` +
+    # ``startswith()`` (o host podia, em tese, aparecer em posição arbitrária).
+    if re.match(r"^(?:https?://)?dev\.azure\.com/", name.lower()):
         return "azure_devops"
     return "github"
 
