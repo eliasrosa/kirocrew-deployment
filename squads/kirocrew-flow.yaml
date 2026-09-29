@@ -4,9 +4,16 @@ id: kirocrew-flow
 name: KiroCrew Flow (auto-teste)
 issue_provider: github
 
-# O repo sob monitoramento
+# O repo sob monitoramento.
+# Forma inline (issue #264): cada entrada pode ser um mapa com url/auto_dispatch/
+# auto_merge, sobrepondo os defaults globais por repo. Omitir um flag = herda o
+# global (auto_dispatch do deployment.config.yaml e auto_merge_on_approve abaixo).
+# A `url` pode ser a URL completa (github.com/...) ou o formato owner/repo: o
+# parser a normaliza para o identificador owner/repo que o scanner/provider usa.
 repos:
-  - eliasrosa/kirocrew-flow
+  - url: https://github.com/eliasrosa/kirocrew-flow
+    auto_dispatch: true
+    auto_merge: true
 
 workflow_template: versao-c
 
@@ -28,10 +35,9 @@ routing:
     workflow: feature-flow
   - default: feature-flow
 
-# Configuração por repo — override de auto_dispatch / auto_merge por repo.
-# Omitir um campo = herda o global (auto_dispatch do deployment.config.yaml
-# e auto_merge_on_approve do workflow_params acima).
-repos_config:
-  - name: eliasrosa/kirocrew-flow
-    auto_dispatch: true
-    auto_merge: true
+# Forma legada equivalente (issue #245) — mantida apenas como referência.
+# Se o mesmo repo aparecer aqui e inline em `repos:`, a entrada inline vence.
+# repos_config:
+#   - name: eliasrosa/kirocrew-flow
+#     auto_dispatch: true
+#     auto_merge: true
