@@ -31,7 +31,11 @@ flow/
 │   ├── github_client.py        — orquestração; satisfaz IssueProvider
 │   ├── jira_transport.py       — REST HTTP via stdlib
 │   ├── jira_normalization.py   — payload Jira → contrato canônico
-│   └── jira_client.py          — orquestração; satisfaz IssueProvider
+│   ├── jira_client.py          — orquestração; satisfaz IssueProvider
+│   └── scm/                    — adaptadores de SCM (PR, CI, merge)
+│       ├── factory.py          — ScmFactory: instancia GitHub ou Azure DevOps por URL
+│       ├── github.py           — GitHubTransport (gh CLI)
+│       └── azure_devops.py     — AzureDevOpsTransport (REST API + AZURE_DEVOPS_PAT)
 ├── scan/
 │   ├── cache.py                — SQLite: hash de labels por issue (zero token) + running_since
 │   └── scanner.py              — scan_candidates(): filtra candidatos a dispatch
@@ -45,11 +49,22 @@ flow/
 │   ├── merge_conflict.md       — prompt de resolução de conflito de merge
 │   └── loader.py               — render_prompt(): carrega, interpola e valida
 └── config/
-    ├── squad.py                — SquadConfig, RoutingRule, load_squad()
+    ├── squad.py                — SquadConfig, RoutingRule, RepoConfig, load_squad()
     └── workflow.py             — WorkflowTemplate, get_template(), 4 templates fixos
 
 deployment/
-└── deployment.py               — driving adapter (cron do Kiro Crew)
+├── deployment.py               — driving adapter (cron do Kiro Crew)
+├── deployment.config.yaml      — config de paths, flags globais e concorrência
+└── flow/                       — módulos de estágio e utilitários do cron
+    ├── dev.py                  — run_dev (flow:develop-waiting → implementa + PR)
+    ├── reviewer.py             — run_reviewer (flow:review-waiting → code review)
+    ├── review_approved.py      — run_review_approved (flow:review-approved → merge)
+    ├── rework.py               — run_rework (flow:review-refused → notifica TL)
+    ├── merge_conflict.py       — run_conflito (flow:merge-conflict → rebase)
+    ├── qa_waiting.py           — run_qa_waiting (flow:qa-waiting → notifica QA)
+    ├── qa_approved.py          — run_qa_approved (flow:qa-approved → merge)
+    ├── qa_refused.py           — run_qa_refused (flow:qa-refused → notifica TL+dev)
+    └── watch_issue.py          — monitor zero-token por issue (check: PR aberta, merge, timeout)
 
 flow/tests/
 ├── test_domain_boundary.py     — garante domain/ isolado (NUNCA viola)
@@ -186,6 +201,54 @@ no `squads/*.yaml`. Sem PyYAML, o `_mini_yaml` só suporta routing inline
 **Nunca copiar `deployment.py` manualmente** — usar `./scripts/install-cron.sh` que
 aplica o patch de sys.path automaticamente. Se copiado manualmente, o cron vai
 falhar com `ModuleNotFoundError: No module named 'flow'`.
+
+## Suporte multi-SCM (GitHub + Azure DevOps)
+
+O motor suporta dois provedores de SCM para operações de PR (abrir, checar CI, merge):
+
+| Provedor | Transporte | Detecção automática |
+|---|---|---|
+| GitHub | `GitHubTransport` — `gh` CLI | URL contém `github.com/` ou formato `owner/repo` |
+| Azure DevOps | `AzureDevOpsTransport` — REST API | URL contém `dev.azure.com/` |
+
+A `ScmFactory` (`flow/adapters/scm/factory.py`) instancia o transporte correto
+baseado na URL do repo, sem necessidade de configurar `scm_provider` explicitamente.
+
+**Pré-requisito para Azure DevOps:** `AZURE_DEVOPS_PAT` no `.env` com escopo
+Code (Read & Write). GitHub não exige env var — usa o `gh` CLI já autenticado.
+
+## Separação config / secrets (`.env`)
+
+Os secrets saíram do `deployment.config.yaml` e agora vivem em `.env` (gitignored):
+
+| Variável | Fonte | Descrição |
+|---|---|---|
+| `AZURE_DEVOPS_PAT` | `.env` | PAT para REST API do Azure DevOps |
+| `KIROCREW_WEBHOOK_TOKEN` | `.env` | Token Bearer do webhook do dashboard |
+| `KIROCREW_WEBHOOK_SECRET` | `.env` | Signing secret HMAC-SHA256 |
+
+Copiar `.env.example` → `.env` e preencher antes de rodar o cron. O `deployment.config.yaml`
+retém apenas configurações não-sensíveis (paths, flags, concorrência).
+
+## Config por repo (`auto_dispatch` / `auto_merge` no `squads/*.yaml`)
+
+Cada repo pode sobrepor os flags globais de dispatch e merge:
+
+```yaml
+repos:
+  - url: https://github.com/org/api-gateway2
+    auto_dispatch: true
+    auto_merge: false      # merge manual neste repo
+  - url: https://dev.azure.com/kdop/Proj/_git/api-sub
+    auto_dispatch: true
+    auto_merge: true       # merge automático após approve
+```
+
+- `auto_dispatch: null` (omitido) → herda `global_auto_dispatch` do `deployment.config.yaml`
+- `auto_merge: null` (omitido) → herda `workflow_params.auto_merge_on_approve`
+
+**`auto_merge_on_approve` ainda existe** em `workflow_params` como flag global; o
+campo por repo `auto_merge` tem precedência quando definido.
 
 ## Instalação do cron
 
