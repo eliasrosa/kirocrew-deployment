@@ -1,7 +1,9 @@
-# Changelog
+# CHANGELOG
 
-Todas as mudanças notáveis do KiroCrew Flow são documentadas aqui.
-Formato baseado em [Conventional Commits](https://conventionalcommits.org).
+<!-- version list -->
 
-> Este arquivo é gerado automaticamente pelo [semantic-release](https://semantic-release.gitbook.io)
-> a cada push na branch `main`. Não edite manualmente.
+> Este arquivo é atualizado automaticamente pelo `python-semantic-release` a cada
+> release cortada no CI (push para `main`). Ver `docs/RELEASE.md` para a política de
+> versionamento (conventional commits: `feat` → minor, `fix` → patch, breaking →
+> major) e o modelo de canais `latest`/`stable`. Não edite manualmente as seções de
+> versão abaixo do marcador acima.

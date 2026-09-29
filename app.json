@@ -1,6 +1,7 @@
 {
     "name": "kirocrew-flow",
     "version": "1.0.0",
+    "channel": "stable",
     "displayName": "KiroCrew Flow",
     "description": "Autonomous dev pipeline: issue to PR to review to merge. Zero-token polling over GitHub/Jira labels.",
     "author": "eliasrosa",
@@ -112,6 +113,14 @@
         {
             "name": "flow-qa-refused",
             "script": "~/.kiro/crew/crons/deployment/flow/qa_refused.py:run",
+            "every": 3600,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
+        },
+        {
+            "name": "flow-update-check",
+            "script": "~/.kiro/crew/crons/flow_update_check.py:run",
             "every": 3600,
             "enabled": true,
             "persistent_session": false,
