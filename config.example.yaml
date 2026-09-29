@@ -42,11 +42,12 @@ workflow_params:
   auto_merge_on_approve: false
 
 # Limites de segurança
-# max_concurrent_tasks: 1 é recomendado para evitar slots orphans no sidebar.
-# Com 2+, dois dispatches simultâneos podem ocorrer; se o Step 2 do primeiro
-# falhar, o slot criado aparece como "New Session..." vazio até expirar.
-# Com 1, o dispatcher nunca aciona dois POSTs em paralelo, eliminando o risco.
-max_concurrent_tasks: 1  # máx de tasks em paralelo (global; alias: max_concurrent)
+# max_concurrent_tasks: 1 é o valor seguro. Com `one_per_repo: true` e
+# max_concurrent >= 2, duas issues do MESMO repo podem passar o guard antes de o
+# lock ser escrito, e um Step 2 (/api/chat) que falha deixa slots órfãos
+# 'New Session...' vazios no sidebar (issue #267). Mantenha 1 salvo se você tiver
+# certeza de que quer paralelismo entre repos distintos.
+max_concurrent_tasks: 1  # máx de tasks em paralelo ao mesmo tempo (global; alias: max_concurrent)
 max_turns_per_task: 60   # teto duro de turnos por sessão disparada
 one_per_repo: true       # no máx 1 sessão ativa por repo
 

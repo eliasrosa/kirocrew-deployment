@@ -222,6 +222,110 @@ class TestPostAgentSessionLoopback:
 
         assert result is False
 
+    def test_deleta_slot_orfao_quando_chat_falha(self) -> None:
+        """Falha no Step 2 → DELETE /api/chat/slots/<slot> limpa o slot órfão (#267).
+
+        Sem esse cleanup o slot criado no Step 1 fica sem mensagem e aparece
+        como 'New Session...' vazia no sidebar.
+        """
+        methods: list = []
+        urls: list = []
+        ctx = _make_script_ctx()
+
+        class _FakeResp:
+            def __enter__(self) -> _FakeResp: return self
+            def __exit__(self, *a: object) -> None: return None
+            def read(self, _n: int = -1) -> bytes: return b""
+
+        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
+            url = req.full_url  # type: ignore[attr-defined]
+            methods.append(req.get_method())  # type: ignore[attr-defined]
+            urls.append(url)
+            if url.endswith("/api/chat"):
+                raise OSError("connection refused")
+            return _FakeResp()
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake):
+            result = _post_agent_session(
+                ctx, "msg", slot="esteira-repo-42", cfg=_base_config()
+            )
+
+        assert result is False
+        delete_calls = [
+            u for u, m in zip(urls, methods)
+            if m == "DELETE" and "api/chat/slots/esteira-repo-42" in u
+        ]
+        assert delete_calls, f"DELETE do slot órfão não foi chamado: {list(zip(urls, methods))}"
+
+    def test_loga_corpo_do_erro_e_deleta_slot_quando_chat_http_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Step 2 com HTTPError → loga o corpo da resposta e limpa o slot (#267).
+
+        Antes o erro do Step 2 era silencioso; agora o corpo (ex.:
+        member_identity_unavailable) precisa aparecer no log.
+        """
+        import io
+        import urllib.error
+
+        ctx = _make_script_ctx()
+        methods: list = []
+        urls: list = []
+        error_body = b'{"error": "member_identity_unavailable"}'
+
+        class _FakeResp:
+            def __enter__(self) -> _FakeResp: return self
+            def __exit__(self, *a: object) -> None: return None
+            def read(self, _n: int = -1) -> bytes: return b""
+
+        def fake(req: object, timeout: float = 0):  # type: ignore[no-untyped-def]
+            url = req.full_url  # type: ignore[attr-defined]
+            methods.append(req.get_method())  # type: ignore[attr-defined]
+            urls.append(url)
+            if url.endswith("/api/chat"):
+                from email.message import Message
+                raise urllib.error.HTTPError(
+                    url, 500, "Internal Server Error", Message(), io.BytesIO(error_body)
+                )
+            return _FakeResp()
+
+        with caplog.at_level("ERROR"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake):
+            result = _post_agent_session(
+                ctx, "msg", slot="esteira-repo-42", cfg=_base_config()
+            )
+
+        assert result is False
+        assert "member_identity_unavailable" in caplog.text, \
+            f"corpo do erro não foi logado: {caplog.text}"
+        delete_calls = [
+            u for u, m in zip(urls, methods)
+            if m == "DELETE" and "api/chat/slots/esteira-repo-42" in u
+        ]
+        assert delete_calls, "DELETE do slot órfão não foi chamado no caso HTTPError"
+
+    def test_nao_deleta_slot_quando_sucesso(self) -> None:
+        """Dispatch bem-sucedido → nenhum DELETE de slot é emitido."""
+        methods: list = []
+        ctx = _make_script_ctx()
+
+        class _FakeResp:
+            def __enter__(self) -> _FakeResp: return self
+            def __exit__(self, *a: object) -> None: return None
+            def read(self, _n: int = -1) -> bytes: return b""
+
+        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
+            methods.append(req.get_method())  # type: ignore[attr-defined]
+            return _FakeResp()
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake):
+            result = _post_agent_session(
+                ctx, "msg", slot="esteira-repo-42", cfg=_base_config()
+            )
+
+        assert result is True
+        assert "DELETE" not in methods, "nenhum DELETE deve ocorrer em sucesso"
+
     def test_usa_local_secret_quando_ctx_nao_tem(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
