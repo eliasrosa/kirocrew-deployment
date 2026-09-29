@@ -53,18 +53,6 @@ import subprocess
 import sys
 import threading as _threading
 
-# ── Carrega .env se existir (python-dotenv, opcional) ────────────────────
-# Secrets (KIROCREW_WEBHOOK_TOKEN, KIROCREW_WEBHOOK_SECRET, etc.) devem viver
-# em ~/.kiro/crew/crons/.env, nunca em deployment.config.yaml.
-# Se python-dotenv não estiver instalado, o bloco é silenciosamente ignorado.
-try:
-    from dotenv import load_dotenv as _load_dotenv
-
-    _dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    _load_dotenv(_dotenv_path, override=False)
-except ImportError:
-    pass
-
 logger = logging.getLogger(__name__)
 
 # ── Adiciona o diretório raiz do repo ao path para importar flow/ ─────────
@@ -832,22 +820,12 @@ def _post_agent_session(
             port = int(_m.group(1))
     if not port:
         port = 5478  # fallback final
-    # Ordem de preferência do secret (do mais confiável ao fallback):
-    #   1. run/gateway-{port}.secret — gerado a cada restart, sempre atualizado
-    #   2. ~/.kiro/crew/.local_secret  — pode ficar stale após restart
-    #   3. ctx._secret                 — fixado no registro do cron, também pode ficar stale
-    secret = ""
-    _run_secret_path = os.path.expanduser(f"~/.kiro/crew/run/gateway-{port}.secret")
-    if os.path.exists(_run_secret_path):
-        with open(_run_secret_path) as _f:
-            secret = _f.read().strip()
+    secret = getattr(ctx, "_secret", "")
     if not secret:
         _local_secret_path = os.path.expanduser("~/.kiro/crew/.local_secret")
         if os.path.exists(_local_secret_path):
             with open(_local_secret_path) as _f:
                 secret = _f.read().strip()
-    if not secret:
-        secret = getattr(ctx, "_secret", "")
     if not port:
         logger.error(
             "deployment: dispatch abortado (slot %s) — porta do gateway não disponível.",
@@ -903,16 +881,13 @@ def _post_agent_session(
         with _u.urlopen(chat_req, timeout=12) as resp:
             resp.read(1)
     except _u.HTTPError as exc:
-        # Lê o corpo do erro para facilitar diagnóstico (hoje era silencioso).
-        try:
-            err_body = exc.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            err_body = "<corpo indisponível>"
+        # HTTP 4xx/5xx: logar o corpo da resposta (antes era silencioso — issue #267)
+        # e limpar o slot órfão criado no Step 1 para não aparecer como
+        # 'New Session...' vazia no sidebar.
+        body = _read_error_body(exc)
         logger.error(
             "deployment: falha ao despachar sessão (slot %s): HTTP %s — %s",
-            slot,
-            exc.code,
-            err_body,
+            slot, exc.code, body,
         )
         _delete_orphan_slot(port, secret, slot)
         return False
@@ -923,41 +898,54 @@ def _post_agent_session(
     return True
 
 
-def _delete_orphan_slot(port: int, secret: str, slot: str) -> None:
-    """Tenta fechar um slot orphan criado pelo Step 1 cujo Step 2 falhou.
+def _read_error_body(exc: object) -> str:
+    """Extrai o corpo da resposta de um ``HTTPError`` de forma defensiva.
 
-    Usa POST /api/session-control/close via loopback.  O endpoint exige um
-    ``caller_session_key`` identificável; como o cron não tem sessão de agente,
-    a chamada provavelmente retorna ``caller_unidentified`` (403) — nesse caso
-    o slot some quando expirar naturalmente (memory_mode=temporary).  Logar
-    o resultado para visibilidade, mas nunca lançar exceção.
+    O corpo é essencial para diagnosticar falhas do Step 2 (ex.:
+    ``member_identity_unavailable`` intermitente — issue #267). Nunca lança:
+    qualquer erro na leitura vira ``"<sem corpo>"``.
     """
-    import urllib.request as _u2
+    try:
+        raw = exc.read()  # type: ignore[attr-defined]
+    except Exception:
+        return "<sem corpo>"
+    if not raw:
+        return "<sem corpo>"
+    try:
+        return raw.decode("utf-8", "replace").strip()
+    except Exception:
+        return repr(raw)
 
-    close_body = json.dumps({"target": slot}).encode()
-    close_req = _u2.Request(
-        f"http://localhost:{port}/api/session-control/close",
-        data=close_body,
-        headers={
-            "Content-Type": "application/json",
-            "X-Internal-Secret": secret,
-        },
-        method="POST",
+
+def _delete_orphan_slot(port: int, secret: str, slot: str) -> None:
+    """Deleta o slot criado no Step 1 quando o Step 2 (/api/chat) falha.
+
+    Sem esse cleanup, o slot fica órfão (criado em ``/api/chat/slots`` mas sem
+    nenhuma mensagem) e aparece como 'New Session...' vazia no sidebar do
+    dashboard (issue #267). É best-effort/fail-safe: qualquer erro é logado e
+    engolido — a falha do dispatch já foi reportada pelo caller.
+    """
+    import urllib.request as _u
+    from urllib.parse import quote
+
+    del_req = _u.Request(
+        f"http://localhost:{port}/api/chat/slots/{quote(slot, safe='')}",
+        headers={"X-Internal-Secret": secret},
+        method="DELETE",
     )
     try:
-        with _u2.urlopen(close_req, timeout=5) as resp:
+        with _u.urlopen(del_req, timeout=10) as resp:
             resp.read(1)
-        logger.info("deployment: slot orphan %s fechado com sucesso", slot)
-    except _u2.HTTPError as exc:
-        # 403 caller_unidentified é esperado — o cron não tem sessão de agente.
-        # O slot some quando expirar (memory_mode=temporary).
-        logger.info(
-            "deployment: não foi possível fechar slot orphan %s (HTTP %s) — expirará naturalmente",
-            slot,
-            exc.code,
+        logger.info("deployment: slot órfão %s removido após falha do Step 2", slot)
+    except _u.HTTPError as exc:
+        if exc.code == 404:
+            # Slot já não existe — nada a limpar.
+            return
+        logger.warning(
+            "deployment: falha ao remover slot órfão %s: HTTP %s", slot, exc.code
         )
     except Exception as exc:
-        logger.warning("deployment: erro ao tentar fechar slot orphan %s: %s", slot, exc)
+        logger.warning("deployment: falha ao remover slot órfão %s: %s", slot, exc)
 
 
 def _dispatch_prompt(
@@ -1619,32 +1607,21 @@ def run(ctx: object) -> None:
         # Também lê mergeability para detecção de conflito (flow:merge-conflict).
         pr_head_sha: str | None = None
         pr_mergeable: str | None = None
-        _result_repo = (
-            result.item.key.split("/issues/")[0].replace("https://github.com/", "")
-            or (repos[0] if repos else "")
-        )
         if result.current_state is State.REVIEW_WAITING:
             import contextlib
             with contextlib.suppress(Exception):
+                _repo = (
+                    result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+                    or (repos[0] if repos else "")
+                )
                 _issue_number = int(result.item.key.split("/issues/")[-1]) if "/issues/" in result.item.key else 0
                 if _issue_number and hasattr(provider, "get_pr_for_issue"):
-                    _pr = provider.get_pr_for_issue(_result_repo, _issue_number)
+                    _pr = provider.get_pr_for_issue(_repo, _issue_number)
                     if _pr:
                         pr_head_sha = _pr.get("headRefOid") or _pr.get("headRefName")
                         pr_mergeable = _pr.get("mergeable")  # "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
 
-        # Calcula auto_merge efetivo para este repo (config por repo > global)
-        _global_auto_merge = squad.workflow_params.auto_merge_on_approve if squad else False
-        _repo_auto_merge = _auto_merge_for_repo(squad, _result_repo, _global_auto_merge)
-
-        decision = decide(
-            result,
-            state_comment=state_comment,
-            squad=squad,
-            pr_head_sha=pr_head_sha,
-            pr_mergeable=pr_mergeable,
-            auto_merge_on_approve=_repo_auto_merge,
-        )
+        decision = decide(result, state_comment=state_comment, squad=squad, pr_head_sha=pr_head_sha, pr_mergeable=pr_mergeable)
 
         # Loga o template resolvido pelo executor e a ação decidida, para
         # cada issue processada — facilita debugar por que uma issue foi para
@@ -3260,12 +3237,12 @@ def _run_stage(ctx: object, stage: str) -> None:
 
         pr_head_sha: str | None = None
         pr_mergeable: str | None = None
-        _rw_repo = (
-            result.item.key.split("/issues/")[0].replace("https://github.com/", "")
-            or (repos[0] if repos else "")
-        )
         if result.current_state is State.REVIEW_WAITING:
             import contextlib
+            _rw_repo = (
+                result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+                or (repos[0] if repos else "")
+            )
             _rw_issue_number = int(result.item.key.split("/issues/")[-1]) if "/issues/" in result.item.key else 0
             logger.info(
                 "deployment[%s]: review_waiting — issue=%s modifiers=%s",
@@ -3291,18 +3268,7 @@ def _run_stage(ctx: object, stage: str) -> None:
                             _rw_issue_number, _rw_issue_number,
                         )
 
-        # Calcula auto_merge efetivo para este repo (config por repo > global)
-        _global_auto_merge_s = squad.workflow_params.auto_merge_on_approve if squad else False
-        _repo_auto_merge_s = _auto_merge_for_repo(squad, _rw_repo, _global_auto_merge_s)
-
-        decision = decide(
-            result,
-            state_comment=state_comment,
-            squad=squad,
-            pr_head_sha=pr_head_sha,
-            pr_mergeable=pr_mergeable,
-            auto_merge_on_approve=_repo_auto_merge_s,
-        )
+        decision = decide(result, state_comment=state_comment, squad=squad, pr_head_sha=pr_head_sha, pr_mergeable=pr_mergeable)
 
         template = resolve_template(result, squad)
         logger.info(
