@@ -91,6 +91,18 @@ else
     echo "       dev_root: /caminho/para/seus/clones"
 fi
 
+# 3b. Copia .env.example como .env se não existir
+ENV_SRC="$REPO_ROOT/deployment/.env.example"
+ENV_DST="$CRONS_DIR/.env"
+if [ -f "$ENV_DST" ]; then
+    echo "  ℹ️  .env já existe (não sobrescrito)"
+else
+    cp "$ENV_SRC" "$ENV_DST"
+    echo "  ✅ .env criado a partir de deployment/.env.example"
+    echo "  ⚠️  Preencha $ENV_DST com os secrets reais:"
+    echo "       KIROCREW_WEBHOOK_TOKEN=<token do webhook>"
+    echo "       KIROCREW_WEBHOOK_SECRET=<signing secret>"
+fi
 # 4. Grava hash de versão para detecção de script desatualizado
 # deployment.py verifica este arquivo no startup e avisa quando diverge do repo.
 VERSION_FILE="$CRONS_DIR/deployment.version"
