@@ -1545,21 +1545,32 @@ def run(ctx: object) -> None:
         # Também lê mergeability para detecção de conflito (flow:merge-conflict).
         pr_head_sha: str | None = None
         pr_mergeable: str | None = None
+        _result_repo = (
+            result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            or (repos[0] if repos else "")
+        )
         if result.current_state is State.REVIEW_WAITING:
             import contextlib
             with contextlib.suppress(Exception):
-                _repo = (
-                    result.item.key.split("/issues/")[0].replace("https://github.com/", "")
-                    or (repos[0] if repos else "")
-                )
                 _issue_number = int(result.item.key.split("/issues/")[-1]) if "/issues/" in result.item.key else 0
                 if _issue_number and hasattr(provider, "get_pr_for_issue"):
-                    _pr = provider.get_pr_for_issue(_repo, _issue_number)
+                    _pr = provider.get_pr_for_issue(_result_repo, _issue_number)
                     if _pr:
                         pr_head_sha = _pr.get("headRefOid") or _pr.get("headRefName")
                         pr_mergeable = _pr.get("mergeable")  # "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
 
-        decision = decide(result, state_comment=state_comment, squad=squad, pr_head_sha=pr_head_sha, pr_mergeable=pr_mergeable)
+        # Calcula auto_merge efetivo para este repo (config por repo > global)
+        _global_auto_merge = squad.workflow_params.auto_merge_on_approve if squad else False
+        _repo_auto_merge = _auto_merge_for_repo(squad, _result_repo, _global_auto_merge)
+
+        decision = decide(
+            result,
+            state_comment=state_comment,
+            squad=squad,
+            pr_head_sha=pr_head_sha,
+            pr_mergeable=pr_mergeable,
+            auto_merge_on_approve=_repo_auto_merge,
+        )
 
         # Loga o template resolvido pelo executor e a ação decidida, para
         # cada issue processada — facilita debugar por que uma issue foi para
@@ -3175,12 +3186,12 @@ def _run_stage(ctx: object, stage: str) -> None:
 
         pr_head_sha: str | None = None
         pr_mergeable: str | None = None
+        _rw_repo = (
+            result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            or (repos[0] if repos else "")
+        )
         if result.current_state is State.REVIEW_WAITING:
             import contextlib
-            _rw_repo = (
-                result.item.key.split("/issues/")[0].replace("https://github.com/", "")
-                or (repos[0] if repos else "")
-            )
             _rw_issue_number = int(result.item.key.split("/issues/")[-1]) if "/issues/" in result.item.key else 0
             logger.info(
                 "deployment[%s]: review_waiting — issue=%s modifiers=%s",
@@ -3206,7 +3217,18 @@ def _run_stage(ctx: object, stage: str) -> None:
                             _rw_issue_number, _rw_issue_number,
                         )
 
-        decision = decide(result, state_comment=state_comment, squad=squad, pr_head_sha=pr_head_sha, pr_mergeable=pr_mergeable)
+        # Calcula auto_merge efetivo para este repo (config por repo > global)
+        _global_auto_merge_s = squad.workflow_params.auto_merge_on_approve if squad else False
+        _repo_auto_merge_s = _auto_merge_for_repo(squad, _rw_repo, _global_auto_merge_s)
+
+        decision = decide(
+            result,
+            state_comment=state_comment,
+            squad=squad,
+            pr_head_sha=pr_head_sha,
+            pr_mergeable=pr_mergeable,
+            auto_merge_on_approve=_repo_auto_merge_s,
+        )
 
         template = resolve_template(result, squad)
         logger.info(
