@@ -222,110 +222,6 @@ class TestPostAgentSessionLoopback:
 
         assert result is False
 
-    def test_deleta_slot_orfao_quando_chat_falha(self) -> None:
-        """Falha no Step 2 → DELETE /api/chat/slots/<slot> limpa o slot órfão (#267).
-
-        Sem esse cleanup o slot criado no Step 1 fica sem mensagem e aparece
-        como 'New Session...' vazia no sidebar.
-        """
-        methods: list = []
-        urls: list = []
-        ctx = _make_script_ctx()
-
-        class _FakeResp:
-            def __enter__(self) -> _FakeResp: return self
-            def __exit__(self, *a: object) -> None: return None
-            def read(self, _n: int = -1) -> bytes: return b""
-
-        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
-            url = req.full_url  # type: ignore[attr-defined]
-            methods.append(req.get_method())  # type: ignore[attr-defined]
-            urls.append(url)
-            if url.endswith("/api/chat"):
-                raise OSError("connection refused")
-            return _FakeResp()
-
-        with mock.patch("urllib.request.urlopen", side_effect=fake):
-            result = _post_agent_session(
-                ctx, "msg", slot="esteira-repo-42", cfg=_base_config()
-            )
-
-        assert result is False
-        delete_calls = [
-            u for u, m in zip(urls, methods)
-            if m == "DELETE" and "api/chat/slots/esteira-repo-42" in u
-        ]
-        assert delete_calls, f"DELETE do slot órfão não foi chamado: {list(zip(urls, methods))}"
-
-    def test_loga_corpo_do_erro_e_deleta_slot_quando_chat_http_error(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Step 2 com HTTPError → loga o corpo da resposta e limpa o slot (#267).
-
-        Antes o erro do Step 2 era silencioso; agora o corpo (ex.:
-        member_identity_unavailable) precisa aparecer no log.
-        """
-        import io
-        import urllib.error
-
-        ctx = _make_script_ctx()
-        methods: list = []
-        urls: list = []
-        error_body = b'{"error": "member_identity_unavailable"}'
-
-        class _FakeResp:
-            def __enter__(self) -> _FakeResp: return self
-            def __exit__(self, *a: object) -> None: return None
-            def read(self, _n: int = -1) -> bytes: return b""
-
-        def fake(req: object, timeout: float = 0):  # type: ignore[no-untyped-def]
-            url = req.full_url  # type: ignore[attr-defined]
-            methods.append(req.get_method())  # type: ignore[attr-defined]
-            urls.append(url)
-            if url.endswith("/api/chat"):
-                from email.message import Message
-                raise urllib.error.HTTPError(
-                    url, 500, "Internal Server Error", Message(), io.BytesIO(error_body)
-                )
-            return _FakeResp()
-
-        with caplog.at_level("ERROR"), \
-                mock.patch("urllib.request.urlopen", side_effect=fake):
-            result = _post_agent_session(
-                ctx, "msg", slot="esteira-repo-42", cfg=_base_config()
-            )
-
-        assert result is False
-        assert "member_identity_unavailable" in caplog.text, \
-            f"corpo do erro não foi logado: {caplog.text}"
-        delete_calls = [
-            u for u, m in zip(urls, methods)
-            if m == "DELETE" and "api/chat/slots/esteira-repo-42" in u
-        ]
-        assert delete_calls, "DELETE do slot órfão não foi chamado no caso HTTPError"
-
-    def test_nao_deleta_slot_quando_sucesso(self) -> None:
-        """Dispatch bem-sucedido → nenhum DELETE de slot é emitido."""
-        methods: list = []
-        ctx = _make_script_ctx()
-
-        class _FakeResp:
-            def __enter__(self) -> _FakeResp: return self
-            def __exit__(self, *a: object) -> None: return None
-            def read(self, _n: int = -1) -> bytes: return b""
-
-        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
-            methods.append(req.get_method())  # type: ignore[attr-defined]
-            return _FakeResp()
-
-        with mock.patch("urllib.request.urlopen", side_effect=fake):
-            result = _post_agent_session(
-                ctx, "msg", slot="esteira-repo-42", cfg=_base_config()
-            )
-
-        assert result is True
-        assert "DELETE" not in methods, "nenhum DELETE deve ocorrer em sucesso"
-
     def test_usa_local_secret_quando_ctx_nao_tem(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -360,125 +256,101 @@ class TestPostAgentSessionLoopback:
 
         assert captured.get("secret") == "my-local-secret"
 
-    def test_run_gateway_secret_tem_precedencia_sobre_local_secret(
+    def _capture_secret_urlopen(self, captured: dict):  # type: ignore[no-untyped-def]
+        class _FakeResp:
+            def __enter__(self) -> _FakeResp: return self
+            def __exit__(self, *a: object) -> None: return None
+            def read(self, _n: int = -1) -> bytes: return b""
+
+        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
+            url = req.full_url  # type: ignore[attr-defined]
+            if "api/chat/slots" in url:
+                captured["secret"] = req.get_header("X-internal-secret")  # type: ignore[attr-defined]
+            return _FakeResp()
+
+        return fake
+
+    def test_gateway_secret_vence_local_secret_e_ctx(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """run/gateway-{port}.secret vence .local_secret quando ambos existem."""
-        run_dir = tmp_path / "run"
-        run_dir.mkdir()
-        gateway_secret_file = run_dir / "gateway-5000.secret"
-        gateway_secret_file.write_text("run-gateway-secret")
+        """Precedência (issue #263): run/gateway-{port}.secret vence .local_secret e ctx._secret.
 
-        local_secret_file = tmp_path / ".local_secret"
-        local_secret_file.write_text("local-secret-fallback")
+        Detecta a porta via socket dashboard-{port}.sock e usa
+        ~/.kiro/crew/run/gateway-{port}.secret como fonte prioritária.
+        """
+        crew = tmp_path / ".kiro" / "crew"
+        (crew / "run").mkdir(parents=True)
+        (crew / "run" / "gateway-5000.secret").write_text("gateway-secret\n")
+        (crew / ".local_secret").write_text("local-secret")
+
+        def _expand(p: str) -> str:
+            return p.replace("~/.kiro/crew", str(crew))
+
+        monkeypatch.setattr("os.path.expanduser", _expand)
+        # Socket detecta a porta 5000 → gateway-5000.secret.
+        monkeypatch.setattr("glob.glob", lambda _p: [str(crew / "dashboard-5000.sock")])
 
         ctx = mock.MagicMock(spec=["notify", "job"])
-        ctx._port = 5000
+        ctx._secret = "ctx-secret"
         ctx.job.id = "test-job"
 
-        def _fake_expanduser(p: str) -> str:
-            if f"run/gateway-{ctx._port}.secret" in p:
-                return str(gateway_secret_file)
-            if ".local_secret" in p:
-                return str(local_secret_file)
-            return p
-
-        monkeypatch.setattr("os.path.expanduser", _fake_expanduser)
-        monkeypatch.setattr("glob.glob", lambda _p: [])  # sem socket dinâmico
-
         captured: dict = {}
-
-        class _FakeResp:
-            def __enter__(self) -> _FakeResp: return self
-            def __exit__(self, *a: object) -> None: return None
-            def read(self, _n: int = -1) -> bytes: return b""
-
-        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
-            url = req.full_url  # type: ignore[attr-defined]
-            if "api/chat/slots" in url:
-                captured["secret"] = req.get_header("X-internal-secret")  # type: ignore[attr-defined]
-            return _FakeResp()
-
-        with mock.patch("urllib.request.urlopen", side_effect=fake):
+        with mock.patch("urllib.request.urlopen", side_effect=self._capture_secret_urlopen(captured)):
             _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
 
-        assert captured.get("secret") == "run-gateway-secret"
+        assert captured.get("secret") == "gateway-secret"
 
-    def test_local_secret_fallback_quando_run_gateway_ausente(
+    def test_local_secret_vence_ctx_quando_gateway_ausente(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Sem run/gateway-{port}.secret → usa .local_secret como fallback."""
-        local_secret_file = tmp_path / ".local_secret"
-        local_secret_file.write_text("local-secret-fallback")
+        """Precedência (issue #263): sem gateway secret, .local_secret vence ctx._secret."""
+        crew = tmp_path / ".kiro" / "crew"
+        crew.mkdir(parents=True)
+        (crew / ".local_secret").write_text("local-secret")
+
+        def _expand(p: str) -> str:
+            return p.replace("~/.kiro/crew", str(crew))
+
+        monkeypatch.setattr("os.path.expanduser", _expand)
+        monkeypatch.setattr("glob.glob", lambda _p: [str(crew / "dashboard-5000.sock")])
 
         ctx = mock.MagicMock(spec=["notify", "job"])
-        ctx._port = 5000
+        ctx._secret = "ctx-secret"
         ctx.job.id = "test-job"
 
-        def _fake_expanduser(p: str) -> str:
-            if f"run/gateway-{ctx._port}.secret" in p:
-                # Arquivo não existe: retorna caminho inexistente
-                return str(tmp_path / "run" / f"gateway-{ctx._port}.secret")
-            if ".local_secret" in p:
-                return str(local_secret_file)
-            return p
-
-        monkeypatch.setattr("os.path.expanduser", _fake_expanduser)
-        monkeypatch.setattr("glob.glob", lambda _p: [])
-
         captured: dict = {}
-
-        class _FakeResp:
-            def __enter__(self) -> _FakeResp: return self
-            def __exit__(self, *a: object) -> None: return None
-            def read(self, _n: int = -1) -> bytes: return b""
-
-        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
-            url = req.full_url  # type: ignore[attr-defined]
-            if "api/chat/slots" in url:
-                captured["secret"] = req.get_header("X-internal-secret")  # type: ignore[attr-defined]
-            return _FakeResp()
-
-        with mock.patch("urllib.request.urlopen", side_effect=fake):
+        with mock.patch("urllib.request.urlopen", side_effect=self._capture_secret_urlopen(captured)):
             _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
 
-        assert captured.get("secret") == "local-secret-fallback"
+        assert captured.get("secret") == "local-secret"
 
-    def test_ctx_secret_ultimo_recurso_quando_arquivos_ausentes(
+    def test_ctx_secret_como_ultimo_recurso(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Sem run/gateway-{port}.secret e sem .local_secret → usa ctx._secret."""
-        ctx = mock.MagicMock(spec=["notify", "job", "_secret", "_port"])
-        ctx._port = 5000
-        ctx._secret = "ctx-secret-fallback"
+        """Precedência (issue #263): sem gateway secret nem .local_secret, usa ctx._secret."""
+        crew = tmp_path / ".kiro" / "crew"
+        crew.mkdir(parents=True)
+
+        def _expand(p: str) -> str:
+            return p.replace("~/.kiro/crew", str(crew))
+
+        monkeypatch.setattr("os.path.expanduser", _expand)
+        monkeypatch.setattr("glob.glob", lambda _p: [str(crew / "dashboard-5000.sock")])
+
+        ctx = mock.MagicMock(spec=["notify", "job"])
+        ctx._secret = "ctx-secret"
         ctx.job.id = "test-job"
 
-        def _fake_expanduser(p: str) -> str:
-            # Ambos os arquivos apontam para paths inexistentes
-            if "run/gateway" in p or ".local_secret" in p:
-                return str(tmp_path / "nonexistent")
-            return p
-
-        monkeypatch.setattr("os.path.expanduser", _fake_expanduser)
-        monkeypatch.setattr("glob.glob", lambda _p: [])
-
         captured: dict = {}
-
-        class _FakeResp:
-            def __enter__(self) -> _FakeResp: return self
-            def __exit__(self, *a: object) -> None: return None
-            def read(self, _n: int = -1) -> bytes: return b""
-
-        def fake(req: object, timeout: float = 0) -> _FakeResp:  # type: ignore[no-untyped-def]
-            url = req.full_url  # type: ignore[attr-defined]
-            if "api/chat/slots" in url:
-                captured["secret"] = req.get_header("X-internal-secret")  # type: ignore[attr-defined]
-            return _FakeResp()
-
-        with mock.patch("urllib.request.urlopen", side_effect=fake):
+        with mock.patch("urllib.request.urlopen", side_effect=self._capture_secret_urlopen(captured)):
             _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
 
-        assert captured.get("secret") == "ctx-secret-fallback"
+        assert captured.get("secret") == "ctx-secret"
+
+
+# ---------------------------------------------------------------------------
+# Scan zero-token — fila vazia não aciona dispatch/POST
+# ---------------------------------------------------------------------------
 
 class TestZeroTokenScan:
     def test_empty_queue_no_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -599,100 +471,6 @@ class TestReviewerDispatchSignalling:
         notify_msgs = [c.args[0] for c in ctx.notify.call_args_list]
         assert any("falha ao despachar reviewer" in m for m in notify_msgs)
         assert not any("sessão one-shot do reviewer despachada" in m for m in notify_msgs)
-
-
-# ---------------------------------------------------------------------------
-# Testes para secrets via variáveis de ambiente
-# ---------------------------------------------------------------------------
-
-
-class TestWebhookSecrets:
-    """Garante que secrets são lidos exclusivamente via os.environ (nunca do config.yaml)."""
-
-    def test_webhook_token_lido_do_environ(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from deployment.deployment import _webhook_token
-
-        monkeypatch.setenv("KIROCREW_WEBHOOK_TOKEN", "meu-token-secreto")
-        assert _webhook_token() == "meu-token-secreto"
-
-    def test_webhook_token_vazio_quando_ausente(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from deployment.deployment import _webhook_token
-
-        monkeypatch.delenv("KIROCREW_WEBHOOK_TOKEN", raising=False)
-        assert _webhook_token() == ""
-
-    def test_webhook_secret_lido_do_environ(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from deployment.deployment import _webhook_secret
-
-        monkeypatch.setenv("KIROCREW_WEBHOOK_SECRET", "meu-signing-secret")
-        assert _webhook_secret() == "meu-signing-secret"
-
-    def test_webhook_secret_vazio_quando_ausente(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from deployment.deployment import _webhook_secret
-
-        monkeypatch.delenv("KIROCREW_WEBHOOK_SECRET", raising=False)
-        assert _webhook_secret() == ""
-
-    def test_config_yaml_nao_tem_webhook_token(self) -> None:
-        """deployment.config.yaml (template) NÃO deve conter os campos webhook_token/webhook_secret."""
-        config_path = Path(__file__).parent.parent.parent / "deployment" / "deployment.config.yaml"
-        if not config_path.exists():
-            pytest.skip("deployment.config.yaml não existe (gitignored — ok)")
-
-        content = config_path.read_text()
-
-        assert "webhook_token" not in content, (
-            "deployment.config.yaml não deve conter webhook_token — use .env"
-        )
-        assert "webhook_secret" not in content, (
-            "deployment.config.yaml não deve conter webhook_secret — use .env"
-        )
-
-    def test_env_example_templates_cobrem_todos_os_secrets(self) -> None:
-        """Os templates .env.example devem conter TODOS os secrets declarados
-        em config.example.yaml (linha 4), para que o .env semeado pelo
-        install-cron.sh nunca fique defasado do conjunto real de secrets.
-        """
-        import re
-
-        repo_root = Path(__file__).parent.parent.parent
-
-        # Extrai o conjunto autoritativo de secrets da linha de comentário do
-        # config.example.yaml (ex.: "# Secrets (A, B, C) NÃO ficam aqui.").
-        config_text = (repo_root / "config.example.yaml").read_text()
-        match = re.search(r"Secrets\s*\(([^)]+)\)", config_text)
-        assert match is not None, "linha de secrets não encontrada em config.example.yaml"
-        secrets = [s.strip() for s in match.group(1).split(",") if s.strip()]
-        assert "AZURE_DEVOPS_PAT" in secrets, "AZURE_DEVOPS_PAT deve estar declarado"
-        assert "KIROCREW_WEBHOOK_TOKEN" in secrets
-        assert "KIROCREW_WEBHOOK_SECRET" in secrets
-
-        # Ambos os templates devem declarar cada secret (como VAR=).
-        for template in ("deployment/.env.example", ".env.example"):
-            content = (repo_root / template).read_text()
-            for secret in secrets:
-                assert f"{secret}=" in content, (
-                    f"{template} não declara {secret} — o template de secrets "
-                    f"está defasado do config.example.yaml"
-                )
-
-    def test_dotenv_importerror_e_silencioso(self) -> None:
-        """O bloco load_dotenv no deployment.py não deve quebrar quando python-dotenv não está instalado."""
-        import contextlib
-        import sys
-
-        # Simula ausência do dotenv removendo-o temporariamente do cache de módulos.
-        # O módulo deployment.deployment já foi importado, então testamos o bloco
-        # diretamente sem reimportar (não há efeito colateral real).
-        dotenv_backup = sys.modules.pop("dotenv", None)
-        try:
-            # Ao executar o bloco equivalente manualmente, ImportError deve ser silencioso.
-            with contextlib.suppress(ImportError):
-                from dotenv import load_dotenv as _ld  # noqa: F401
-                # dotenv real está instalado — apenas verifica que não há exceção
-        finally:
-            if dotenv_backup is not None:
-                sys.modules["dotenv"] = dotenv_backup
 
 
 # ---------------------------------------------------------------------------

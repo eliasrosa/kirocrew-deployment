@@ -820,12 +820,26 @@ def _post_agent_session(
             port = int(_m.group(1))
     if not port:
         port = 5478  # fallback final
-    secret = getattr(ctx, "_secret", "")
+    # Precedência do secret interno do gateway (issue #263):
+    #   1. ~/.kiro/crew/run/gateway-{port}.secret — sempre regenerado no restart
+    #   2. ~/.kiro/crew/.local_secret            — fallback (pode ficar stale)
+    #   3. ctx._secret                            — último recurso (fixado no registro)
+    # O .local_secret e o ctx._secret ficam desatualizados após restart do
+    # gateway, causando 403 no dispatch; o run/gateway-{port}.secret vence.
+    secret = ""
+    _gateway_secret_path = os.path.expanduser(
+        f"~/.kiro/crew/run/gateway-{port}.secret"
+    )
+    if os.path.exists(_gateway_secret_path):
+        with open(_gateway_secret_path) as _f:
+            secret = _f.read().strip()
     if not secret:
         _local_secret_path = os.path.expanduser("~/.kiro/crew/.local_secret")
         if os.path.exists(_local_secret_path):
             with open(_local_secret_path) as _f:
                 secret = _f.read().strip()
+    if not secret:
+        secret = getattr(ctx, "_secret", "")
     if not port:
         logger.error(
             "deployment: dispatch abortado (slot %s) — porta do gateway não disponível.",
