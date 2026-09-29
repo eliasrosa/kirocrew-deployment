@@ -116,14 +116,6 @@
             "enabled": true,
             "persistent_session": false,
             "silent": true
-        },
-        {
-            "name": "flow-auto-update",
-            "script": "~/.kiro/crew/crons/flow_auto_update.py:run",
-            "every": 300,
-            "enabled": true,
-            "persistent_session": false,
-            "silent": true
         }
     ],
     "permissions": {
