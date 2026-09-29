@@ -37,7 +37,10 @@ hoje (basta olhar o `git log`: `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`,
 | `feat!:` / `BREAKING CHANGE:` no rodapé | `feat!: remover config old-style` | **major** | `(X+1).0.0` |
 | `docs:`, `chore:`, `refactor:`, `test:`, `style:`, `ci:` | `docs: atualizar README` | **nenhum** | sem release |
 
-A cada release, a pipeline (rodando em GitHub Actions no push para `main`):
+A cada release, a pipeline (`.github/workflows/release.yml`, rodando em GitHub
+Actions **após o CI passar** no `main` — ela é disparada por `workflow_run` do
+workflow `CI` e só prossegue se a conclusão dele foi `success`, de modo que um
+`main` vermelho nunca corta uma release):
 
 - Calcula a próxima versão a partir dos commits acumulados.
 - Atualiza o **CHANGELOG** automaticamente (agrupado por tipo de commit).
@@ -135,7 +138,8 @@ Representação concreta (FEAT-003):
 - Cada release cria a tag imutável `vX.Y.Z` (formato `tag_format = "v{version}"`).
 - O canal `latest` é uma tag **movível** que o workflow `.github/workflows/release.yml`
   reposiciona (`git tag -f latest <vX.Y.Z> && git push --force origin refs/tags/latest`)
-  a cada release cortada no push para `main`.
+  a cada release cortada. Como a release só roda **após o CI passar** (gating por
+  `workflow_run`), o `latest` nunca aponta para um build que falhou lint/type/test.
 - O canal `stable` **não** é tocado pelo workflow: avançá-lo é uma ação manual
   deliberada, coerente com "deploy é sempre manual".
 - O `app.json` fixa o default via o campo **`"channel": "stable"`**. Uma instalação
@@ -201,16 +205,33 @@ o *Issue Radar*) se atualizam — pelo hook oficial de update do app, e não por
 cron custom. O hook oficial é disparado pelo gateway no fluxo de update do app, em
 vez de um polling de `git pull` a cada 5 minutos.
 
-Esse caminho fica **gated pela política auto vs manual** acima:
+Esse caminho fica **gated pela política auto vs manual** acima. Um cron leve de
+verificação (`flow-update-check`, `every: 3600`, em `scripts/flow_update_check.py`)
+descobre a versão do canal `stable` e delega a decisão à lógica pura de domínio
+(`flow/domain/update_policy.py`):
 
-- **Patch (`fix`)**: o update pode se aplicar automaticamente pelo hook oficial.
+- **Patch (`fix`)**: o update **se aplica automaticamente**. Como o
+  `install-cron.sh` apenas *copia* o checkout atual (ele nunca faz fetch/checkout),
+  o cron primeiro **avança o working tree para a tag imutável `vX.Y.Z`** do canal
+  `stable` (`git fetch --tags` + `git checkout vX.Y.Z`) e **só então** reinstala
+  pelo caminho oficial (`./scripts/install-cron.sh`, o mesmo do `setup.onUpdate`).
+  Ao final, reconfirma que a versão instalada de fato avançou antes de reportar
+  sucesso — nunca anuncia um update que não moveu o código.
 - **Minor/Major (`feat`/breaking)**: o mecanismo **apenas notifica** o usuário
   (pelo canal de notificação do Crew) e **aguarda ação manual** — nunca aplica
-  sozinho.
+  sozinho. A notificação instrui a atualização manual a **fazer o checkout da tag
+  alvo antes** de reinstalar (`git checkout vX.Y.Z && ./scripts/install-cron.sh`,
+  ou o hook oficial `setup.onUpdate`), porque só rodar o `install-cron.sh`
+  reinstalaria o checkout atual sem avançar a versão.
 
-O cron `flow-auto-update` (e o `scripts/flow_auto_update.py`) é **removido/aposentado
-depois** de o novo mecanismo ser validado, conforme o critério de aceite da issue
-(“cron `flow-auto-update` removido ou substituído”).
+> **Descoberta do canal robusta.** O `flow-update-check` faz `git fetch --tags`
+> antes de comparar; se o fetch **falhar**, ele trata isso como `NOOP` (não decide
+> sobre tags locais possivelmente obsoletas). A tag de versão é resolvida casando
+> estritamente `vX.Y.Z` e, havendo mais de uma no mesmo commit, escolhendo a maior.
+
+O cron `flow-auto-update` (e o `scripts/flow_auto_update.py`) foi
+**removido/substituído** pelo `flow-update-check`, conforme o critério de aceite da
+issue (“cron `flow-auto-update` removido ou substituído”).
 
 > **Forward-reference:** a implementação concreta do hook `setup.onUpdate`, o gating
 > por nível de versão e a remoção do cron `flow-auto-update` são entregues na

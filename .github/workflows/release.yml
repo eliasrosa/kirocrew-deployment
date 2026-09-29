@@ -16,8 +16,16 @@ name: Release
 #     inviolável "deploy é sempre manual". O app.json aponta para `stable`
 #     por padrão (campo "channel").
 
+# GATING NO CI (review v1, item 2): a release NÃO dispara direto no push para
+# `main`. Ela roda via `workflow_run` **após** o workflow "CI" concluir, e só
+# prossegue se a conclusão do CI foi `success` (ver a guarda `if:` no job). Assim
+# um `main` vermelho (ruff/mypy/pytest falhando) nunca corta uma release, e o
+# canal `latest` nunca é movido para um build quebrado. O `stable` continua
+# manual (nunca é tocado por este workflow).
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: ["completed"]
     branches: ["main"]
 
 # A release precisa de contents: write para commitar o bump de versão, mover a
@@ -27,21 +35,26 @@ permissions:
 
 # Evita releases concorrentes pisando umas nas outras.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: false
 
 jobs:
   release:
     name: Semantic release
     runs-on: ubuntu-latest
-    # Não roda no commit de release do próprio bot (commit_message tem [skip ci],
-    # mas mantemos a guarda explícita por robustez).
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    # Só roda se o CI concluiu com SUCESSO e não é o commit de release do bot
+    # (o commit de release carrega [skip ci]). Um CI falho => sem release.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      !contains(github.event.workflow_run.head_commit.message, '[skip ci]')
     steps:
       - name: Checkout (histórico completo para o semantic-release)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Faz checkout exatamente do commit que o CI validou (não do topo do
+          # branch, que poderia ter avançado enquanto o CI rodava).
+          ref: ${{ github.event.workflow_run.head_sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python 3.12
