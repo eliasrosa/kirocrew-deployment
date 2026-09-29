@@ -106,6 +106,20 @@ e `_infer_scm_from_name`):
 A autenticação do Azure DevOps usa a variável de ambiente `AZURE_DEVOPS_PAT`
 (ver [`.env.example`](.env.example) e a seção [Segurança / privacidade](#segurança--privacidade)).
 
+> ⚠️ **Estado de integração.** A factory de SCM é hoje um **adaptador standalone**:
+> `scm_config_from_repo_entry` lê os campos `name`/`scm`/`azure_*` mostrados acima e
+> `ScmTransportFactory` sabe delegar ao Azure DevOps, mas **o pipeline de cron ainda
+> não constrói a factory** — os únicos consumidores desses campos vivem em
+> `flow/tests/`. O loader de squad (`_normalize_repos` em `flow/config/squad.py`)
+> processa as entradas de `repos:` pela chave `url` (obrigatória) e só extrai
+> `auto_dispatch`/`auto_merge`; ele **descarta silenciosamente** `scm`/`azure_org`/
+> `azure_project`/`azure_repo`. Ou seja, os exemplos com `name:`/`scm:` desta seção
+> descrevem o schema que a factory consome diretamente (via `ScmRepoConfig`), **não**
+> uma entrada de `repos:` que ative Azure DevOps ponta a ponta — na esteira em
+> execução o transport continua sendo o do GitHub. Não confunda com o schema de
+> `repos:` da seção [Configure a squad](#1-configure-a-squad), que usa `url:` e é o
+> único lido pelo loader hoje.
+
 ### Protocolo cron ↔ agente
 
 **Cron Python e agente LLM não se chamam diretamente** — toda a comunicação acontece via labels `flow:*` na issue.
@@ -225,6 +239,12 @@ routing:
 > A forma legada `repos_config:` (issue #245) é equivalente e usa `name` no lugar
 > de `url`. Quando o mesmo repo aparece nas duas fontes, a entrada inline em
 > `repos:` vence. Omitir um flag = herda o global. Ver `squads/example.yaml`.
+>
+> **Atenção ao schema:** a chave é `url:` aqui (o loader `_normalize_repos` exige
+> `url` em cada entrada de `repos:` e rejeita entradas sem ela). O `name:` com
+> `scm:`/`azure_*` que aparece na seção [Multi-SCM](#multi-scm--github-e-azure-devops)
+> pertence ao schema da factory de SCM (`ScmRepoConfig`), que ainda não é consumida
+> pelo loader de squad — não misture os dois.
 
 > **PyYAML (recomendado para routing complexo):** o parser embutido (`_mini_yaml`) suporta
 > escalares, listas simples, mapeamentos de 1 nível, e listas de dicts — tanto no formato
@@ -426,8 +446,10 @@ Ver [`docs/ROADMAP.md`](docs/ROADMAP.md) para detalhes.
 
 As releases são dirigidas pelos **conventional commits** via
 [`python-semantic-release`](https://python-semantic-release.readthedocs.io/): `feat`
-gera bump **minor**, `fix` gera **patch** e `feat!:`/`BREAKING CHANGE:` geram **major**
-(commits `docs`/`chore`/`refactor`/`test`/`style`/`ci` não cortam release). A pipeline
+gera bump **minor**, `fix` e `perf` geram **patch** e `feat!:`/`BREAKING CHANGE:` geram
+**major** (commits `docs`/`chore`/`refactor`/`test`/`style`/`ci` não cortam release).
+A fonte de verdade dessas regras é o `[tool.semantic_release.commit_parser_options]` do
+`pyproject.toml` (`minor_tags = ["feat"]`, `patch_tags = ["fix", "perf"]`). A pipeline
 `.github/workflows/release.yml` roda no GitHub Actions **após o CI passar** no `main` —
 ela é disparada por `workflow_run` do workflow `CI` e só prossegue se a conclusão foi
 `success`, de modo que um `main` vermelho nunca corta uma release. A cada release ela

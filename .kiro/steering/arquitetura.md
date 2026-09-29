@@ -273,8 +273,10 @@ Duas fontes de declaração no squad YAML:
 
 **Precedência:** quando o mesmo repo aparece nas duas fontes, a entrada **inline**
 em `repos:` vence. Em qualquer caso, a config **por repo** vence o **fallback
-global** (`workflow_params.auto_merge_on_approve` para auto-merge; `auto_dispatch`
-global para dispatch). Ver `squads/example.yaml`.
+global**. O fallback global de auto-merge continua sendo o campo
+`workflow_params.auto_merge_on_approve` (este nome sobrevive **apenas** como
+parâmetro global do workflow — a chave homônima **por repo** foi aposentada em favor
+de `auto_merge`); o de dispatch é o `auto_dispatch` global. Ver `squads/example.yaml`.
 
 ## Instalação do cron
 
