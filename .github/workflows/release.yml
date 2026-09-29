@@ -1,28 +1,60 @@
 name: Release
 
-on:
-  push:
-    branches:
-      - main
+# Release engineering da issue #247 — ver docs/RELEASE.md.
+#
+# Roda no push para `main` (depois que o CI de qualidade passa) e usa o
+# python-semantic-release para: calcular a próxima versão a partir dos
+# conventional commits (feat -> minor, fix -> patch, breaking -> major),
+# estampar pyproject.toml + app.json, atualizar o CHANGELOG.md, commitar,
+# criar a tag vX.Y.Z e a GitHub Release.
+#
+# Canais (docs/RELEASE.md → "Tags de canal"):
+#   - `latest`: acompanha SEMPRE a release mais recente — atualizado
+#     automaticamente por este workflow a cada release cortada.
+#   - `stable`: versão validada para produção — só avança por ação MANUAL
+#     (nunca automaticamente junto com `latest`), coerente com o princípio
+#     inviolável "deploy é sempre manual". O app.json aponta para `stable`
+#     por padrão (campo "channel").
 
+# GATING NO CI (review v1, item 2): a release NÃO dispara direto no push para
+# `main`. Ela roda via `workflow_run` **após** o workflow "CI" concluir, e só
+# prossegue se a conclusão do CI foi `success` (ver a guarda `if:` no job). Assim
+# um `main` vermelho (ruff/mypy/pytest falhando) nunca corta uma release, e o
+# canal `latest` nunca é movido para um build quebrado. O `stable` continua
+# manual (nunca é tocado por este workflow).
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: ["completed"]
+    branches: ["main"]
+
+# A release precisa de contents: write para commitar o bump de versão, mover a
+# tag de canal `latest` e criar a tag/Release. O ci.yml mantém contents: read.
 permissions:
-  contents: write  # criar tags e releases
-  issues: write    # fechar issues via release notes
+  contents: write
+
+# Evita releases concorrentes pisando umas nas outras.
+concurrency:
+  group: release-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
 
 jobs:
   release:
-    name: Semantic Release
+    name: Semantic release
     runs-on: ubuntu-latest
-    # Só executa quando não é commit do próprio semantic-release
-    # (evita loop infinito em releases automáticos)
-    if: "!contains(github.event.head_commit.message, 'chore(release):')"
-
+    # Só roda se o CI concluiu com SUCESSO e não é o commit de release do bot
+    # (o commit de release carrega [skip ci]). Um CI falho => sem release.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      !contains(github.event.workflow_run.head_commit.message, '[skip ci]')
     steps:
-      - name: Checkout
+      - name: Checkout (histórico completo para o semantic-release)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # histórico completo para calcular o bump correto
-          persist-credentials: true
+          fetch-depth: 0
+          # Faz checkout exatamente do commit que o CI validou (não do topo do
+          # branch, que poderia ter avançado enquanto o CI rodava).
+          ref: ${{ github.event.workflow_run.head_sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python 3.12
@@ -30,34 +62,36 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+      - name: Install project
+        run: pip install -e ".[dev]" python-semantic-release
 
-      - name: Lint (ruff)
-        run: python -m ruff check flow/
-
-      - name: Type check (mypy)
-        run: python -m mypy flow/ --ignore-missing-imports
-
-      - name: Tests
-        run: python -m pytest flow/tests/ --cov=flow --cov-fail-under=75
-
-      - name: Set up Node.js (semantic-release)
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install semantic-release
+      - name: Python Semantic Release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          npm install --no-save \
-            semantic-release@24 \
-            @semantic-release/changelog@6 \
-            @semantic-release/exec@6 \
-            @semantic-release/git@10 \
-            @semantic-release/github@10 \
-            conventional-changelog-conventionalcommits@8
+          # Calcula a próxima versão, estampa pyproject.toml + app.json (via
+          # build_command scripts/sync_app_version.py), atualiza CHANGELOG.md,
+          # commita, cria a tag vX.Y.Z, faz push e cria a GitHub Release.
+          python -m semantic_release version
+          python -m semantic_release publish
 
-      - name: Run semantic-release
+      - name: Update `latest` channel tag
+        # `latest` sempre segue a release mais recente. Só roda se uma nova
+        # versão foi de fato cortada (existe uma tag vX.Y.Z no HEAD).
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx semantic-release
+        run: |
+          set -euo pipefail
+          NEW_TAG="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+          if [ -z "${NEW_TAG}" ]; then
+            echo "Nenhuma nova tag de versão neste push — canal 'latest' inalterado."
+            exit 0
+          fi
+          echo "Nova release ${NEW_TAG}: movendo o canal 'latest' para o HEAD."
+          git tag -f latest "${NEW_TAG}"
+          git push --force origin refs/tags/latest
+          # NOTA: o canal 'stable' NUNCA é avançado aqui. Promover para 'stable'
+          # é uma ação manual/deliberada (ver docs/RELEASE.md), preservando o
+          # princípio inviolável de que a produção nunca é auto-quebrada.

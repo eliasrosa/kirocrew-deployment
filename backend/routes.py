@@ -130,7 +130,9 @@ def register_routes(ctx: object) -> list:
 
 
 async def handle_health(request: web.Request, ctx: object = None) -> web.Response:
-    return web.json_response({"ok": True, "app": "kirocrew-flow", "version": "1.0.0"})
+    from backend.version import get_version
+
+    return web.json_response({"ok": True, "app": "kirocrew-flow", "version": get_version()})
 
 
 def _extract_issue_number(raw: dict) -> int | str:

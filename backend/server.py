@@ -19,6 +19,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
 from backend.ctx import BackendCronCtx  # noqa: E402
+from backend.version import get_version  # noqa: E402
 from deployment.deployment import (  # noqa: E402
     _STAGE_CONFLITO,
     _STAGE_DEV,
@@ -29,7 +30,7 @@ from deployment.deployment import (  # noqa: E402
 
 
 async def handle_health(request: web.Request) -> web.Response:
-    return web.json_response({"ok": True, "app": "kirocrew-flow", "version": "1.0.0"})
+    return web.json_response({"ok": True, "app": "kirocrew-flow", "version": get_version()})
 
 
 async def _run_stage_loop(stage: str, interval: int) -> None:
