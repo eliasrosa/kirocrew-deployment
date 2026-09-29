@@ -1509,6 +1509,14 @@ def run(ctx: object) -> None:
         except SquadConfigError as exc:
             logger.error("deployment: squad config inválida: %s", exc)
 
+    # ── Popula os defaults globais na SquadConfig (issue #264) ─────────────
+    # Assim squad.auto_dispatch(repo_url)/squad.auto_merge(repo_url) resolvem o
+    # fallback global internamente. auto_dispatch vem de cfg['auto_dispatch'];
+    # auto_merge vem de workflow_params.auto_merge_on_approve da squad.
+    if squad is not None:
+        squad.global_auto_dispatch = auto
+        squad.global_auto_merge = bool(squad.workflow_params.auto_merge_on_approve)
+
     # ── Inicializa o provider e o cache ────────────────────────────────────
     provider = provider_for(issue_provider_name)
 
@@ -2001,7 +2009,7 @@ def run(ctx: object) -> None:
                 )
 
     if merge_prs:
-        _execute_auto_merges(ctx, merge_prs, chat_id, provider)
+        _execute_auto_merges(ctx, merge_prs, chat_id, provider, squad=squad)
 
     # ── Aplica flow:merge-conflict nas PRs com conflito detectado ──────────
     if mark_conflitos:
@@ -2889,14 +2897,23 @@ def _auto_for_repo(
 ) -> bool:
     """Retorna a flag auto_dispatch efectiva para um repo específico.
 
-    Prioridade: ``repos_config[repo].auto_dispatch`` > ``global_auto_dispatch``.
-    Quando não há SquadConfig ou o repo não tem config específica, usa o global.
+    Prioridade: config por repo (inline ``repos:`` ou legada ``repos_config:``)
+    > ``global_auto_dispatch``. Quando não há SquadConfig ou o repo não tem
+    config específica, usa o global.
+
+    Roteia pela API pública ``SquadConfig.auto_dispatch(repo)`` (issue #264),
+    que resolve o global internamente a partir de ``global_auto_dispatch``. Para
+    garantir que o global usado é exatamente o passado pelo call site (mesmo que
+    ``run``/``_run_stage`` já o tenham populado com o mesmo valor), sincronizamos
+    ``squad.global_auto_dispatch`` antes de delegar — sem alterar o efeito para
+    repos SEM config específica.
     """
     if squad is None:
         return global_auto_dispatch
     from flow.config.squad import SquadConfig
     sq: SquadConfig = squad  # type: ignore[assignment]
-    return sq.auto_dispatch_for(repo, global_auto_dispatch)
+    sq.global_auto_dispatch = global_auto_dispatch
+    return sq.auto_dispatch(repo)
 
 
 def _auto_merge_for_repo(
@@ -2906,14 +2923,20 @@ def _auto_merge_for_repo(
 ) -> bool:
     """Retorna a flag auto_merge efectiva para um repo específico.
 
-    Prioridade: ``repos_config[repo].auto_merge`` > ``workflow_params.auto_merge_on_approve``.
-    Quando não há SquadConfig ou o repo não tem config específica, usa o global.
+    Prioridade: config por repo (inline ``repos:`` ou legada ``repos_config:``)
+    > ``global_auto_merge`` (``workflow_params.auto_merge_on_approve``). Quando
+    não há SquadConfig ou o repo não tem config específica, usa o global.
+
+    Roteia pela API pública ``SquadConfig.auto_merge(repo)`` (issue #264),
+    sincronizando ``squad.global_auto_merge`` com o global passado para que os
+    dois caminhos (wrapper e método novo) NUNCA divirjam para o mesmo repo.
     """
     if squad is None:
         return global_auto_merge
     from flow.config.squad import SquadConfig
     sq: SquadConfig = squad  # type: ignore[assignment]
-    return sq.auto_merge_for(repo, global_auto_merge)
+    sq.global_auto_merge = global_auto_merge
+    return sq.auto_merge(repo)
 
 
 def _execute_auto_merges(
@@ -2921,15 +2944,21 @@ def _execute_auto_merges(
     items: list,
     chat_id: str,
     provider: object,
+    squad: object | None = None,
 ) -> None:
     """Executa merge squash automático para PRs aprovados sem comentários.
 
     Para cada (repo, issue, state_comment) em ``items``:
-    1. Posta resultado do reviewer no PR (e referência curta na issue)
-    2. Localiza o PR aberto associado à issue
-    3. Faz o merge squash via GitHub API
-    4. Atualiza labels: adiciona crewflow:done, remove crewflow:review-ok (e review/reviewed se presentes)
-    5. Notifica TL com resultado (sucesso ou falha)
+    1. Aplica a política de auto_merge POR REPO (issue #264): se
+       ``squad.auto_merge(repo)`` for False para aquele repo, o merge é adiado
+       (mantido para merge manual) e o TL é notificado — mesmo que o global
+       ``auto_merge_on_approve`` esteja ligado. Sem ``squad``, mantém o
+       comportamento anterior (o global já gateou a decisão MERGE_PR).
+    2. Posta resultado do reviewer no PR (e referência curta na issue)
+    3. Localiza o PR aberto associado à issue
+    4. Faz o merge squash via GitHub API
+    5. Atualiza labels: adiciona crewflow:done, remove crewflow:review-ok (e review/reviewed se presentes)
+    6. Notifica TL com resultado (sucesso ou falha)
     """
     from flow.adapters import github_client as gh_client
     from flow.ports.issue_provider import ProviderError
@@ -2938,9 +2967,23 @@ def _execute_auto_merges(
 
     merged: list[tuple[str, dict]] = []
     failed: list[tuple[str, dict, str]] = []
+    manual: list[tuple[str, dict]] = []  # repos com auto_merge False por repo
 
     for repo, issue, state_comment in items:
         issue_number = issue["number"]
+        # Política por repo (issue #264): o global já habilitou o MERGE_PR no
+        # executor, mas um repo pode ter auto_merge=false para exigir merge
+        # manual em PRD. Nesse caso, não mergeia — apenas registra/adia.
+        if squad is not None and not _auto_merge_for_repo(
+            squad, repo, bool(getattr(squad, "global_auto_merge", False))
+        ):
+            manual.append((repo, issue))
+            logger.info(
+                "deployment: auto_merge desabilitado por repo para %s#%s — "
+                "merge manual (issue #264)",
+                repo, issue_number,
+            )
+            continue
         issue_url = issue.get("url") or f"https://github.com/{repo}/issues/{issue_number}"
         try:
             # Posta resultado do reviewer no PR antes do merge
@@ -3033,6 +3076,16 @@ def _execute_auto_merges(
         )
         ctx.notify(  # type: ignore[attr-defined]
             f"KiroCrew Flow: falha no merge automático.{vm}\n{linhas}"
+        )
+
+    if manual:
+        linhas = "\n".join(
+            f"  ⏸️ {r}#{i['number']}: {i['title']}"
+            for r, i in manual
+        )
+        ctx.notify(  # type: ignore[attr-defined]
+            f"KiroCrew Flow: PR(s) aprovado(s) aguardando merge manual "
+            f"(auto_merge desabilitado por repo).{vm}\n{linhas}"
         )
 
 
@@ -3155,6 +3208,11 @@ def _run_stage(ctx: object, stage: str) -> None:
             squad = _parse_squad(raw)
         except SquadConfigError as exc:
             logger.error("deployment[%s]: squad config inválida: %s", stage, exc)
+
+    # ── Popula os defaults globais na SquadConfig (issue #264) ─────────────
+    if squad is not None:
+        squad.global_auto_dispatch = auto
+        squad.global_auto_merge = bool(squad.workflow_params.auto_merge_on_approve)
 
     provider = provider_for(issue_provider_name)
 
@@ -3616,7 +3674,7 @@ def _run_stage(ctx: object, stage: str) -> None:
     elif stage == _STAGE_MERGE:
         if merge_prs:
             # Normaliza tupla: (repo, issue, state_comment, current_state) → (repo, issue, sc)
-            _execute_auto_merges(ctx, [(r, i, sc) for r, i, sc, _st in merge_prs], chat_id, provider)
+            _execute_auto_merges(ctx, [(r, i, sc) for r, i, sc, _st in merge_prs], chat_id, provider, squad=squad)
 
     elif stage in (_STAGE_MERGE_REVIEW, _STAGE_MERGE_QA):
         # Filtra merge_prs pelo estado de origem da issue
@@ -3624,7 +3682,7 @@ def _run_stage(ctx: object, stage: str) -> None:
         _origin_state = State.REVIEW_APPROVED if stage == _STAGE_MERGE_REVIEW else State.QA_APPROVED
         _filtered = [(r, i, sc) for r, i, sc, _st in merge_prs if _st is _origin_state]
         if _filtered:
-            _execute_auto_merges(ctx, _filtered, chat_id, provider)
+            _execute_auto_merges(ctx, _filtered, chat_id, provider, squad=squad)
 
     elif stage == _STAGE_CONFLITO:
         # ── Despacha sessões de resolução de conflito de merge ───────────

@@ -840,3 +840,330 @@ repos_config:
         )
         # global=False mas repo tem auto_dispatch=True
         assert sc.auto_dispatch_for("org/repo", global_auto_dispatch=False) is True
+
+
+# ---------------------------------------------------------------------------
+# Config inline por repo em `repos:` + auto_dispatch/auto_merge (issue #264)
+# ---------------------------------------------------------------------------
+
+class TestRepoInlineConfig:
+    """Testes para a forma inline `repos:` e os métodos auto_dispatch/auto_merge."""
+
+    _GH = "https://github.com/eliasrosa/kirocrew-flow"
+    _AZ = (
+        "https://dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/_git/"
+        "voomp-creators-api-gateway2"
+    )
+
+    def test_parse_repos_inline_dict(self) -> None:
+        """`repos:` com mapas url/auto_dispatch/auto_merge vira RepoConfig."""
+        raw = {
+            "id": "cogna",
+            "issue_provider": "github",
+            "repos": [
+                {"url": self._GH, "auto_dispatch": True, "auto_merge": True},
+                {"url": self._AZ, "auto_dispatch": True, "auto_merge": False},
+            ],
+        }
+        sc = _parse_squad(raw)
+        assert len(sc.repo_configs) == 2
+
+        rc_gh = sc.get_repo_config(self._GH)
+        assert rc_gh is not None
+        assert rc_gh.auto_dispatch is True
+        assert rc_gh.auto_merge is True
+
+        rc_az = sc.get_repo_config(self._AZ)
+        assert rc_az is not None
+        assert rc_az.auto_dispatch is True
+        assert rc_az.auto_merge is False
+
+    # Identificadores normalizados esperados (NÃO a url crua) — o scanner e o
+    # provider do GitHub consomem `owner/repo`, não uma https URL (issue #264).
+    _GH_ID = "eliasrosa/kirocrew-flow"
+    _AZ_ID = "kdop/PlataformaCogna-MKTP-MVP/voomp-creators-api-gateway2"
+
+    def test_projects_e_repos_derivados_do_url(self) -> None:
+        """projects/repos derivam do 'url' NORMALIZADO das entradas dict.
+
+        Regressão da issue #264: uma https URL crua em ``projects`` quebraria as
+        chamadas ``gh api repos/{owner_repo}/...`` do scanner/provider. O parser
+        deve normalizar github.com → owner/repo e dev.azure.com → org/proj/repo.
+        """
+        raw = {
+            "id": "cogna",
+            "issue_provider": "github",
+            "repos": [
+                {"url": self._GH, "auto_dispatch": True},
+                {"url": self._AZ},
+            ],
+        }
+        sc = _parse_squad(raw)
+        # projects contém o identificador owner/repo, NUNCA a url crua.
+        assert self._GH_ID in sc.projects
+        assert self._AZ_ID in sc.projects
+        assert self._GH not in sc.projects
+        assert self._AZ not in sc.projects
+        # nenhuma entrada de projects começa com http (garantia anti-regressão)
+        assert all(not p.lower().startswith("http") for p in sc.projects)
+        # repos contém o identificador e o nome curto (validação de título)
+        assert self._GH_ID in sc.repos
+        assert "kirocrew-flow" in sc.repos
+        assert "voomp-creators-api-gateway2" in sc.repos
+
+    def test_url_github_normalizada_para_owner_repo(self) -> None:
+        """Uma url github completa vira owner/repo em projects e repo_configs."""
+        raw = {
+            "id": "gh",
+            "issue_provider": "github",
+            "repos": [{"url": self._GH, "auto_dispatch": True, "auto_merge": True}],
+        }
+        sc = _parse_squad(raw)
+        assert sc.projects == [self._GH_ID]
+        assert len(sc.repo_configs) == 1
+        assert sc.repo_configs[0].name == self._GH_ID
+        # get_repo_config resolve tanto pela url quanto pelo owner/repo.
+        assert sc.get_repo_config(self._GH) is not None
+        assert sc.get_repo_config(self._GH_ID) is not None
+
+    def test_string_e_dict_misturados(self) -> None:
+        """Entradas string (legado) e dict (inline) podem coexistir em `repos:`."""
+        raw = {
+            "id": "mix",
+            "issue_provider": "github",
+            "repos": [
+                "org/repo-simples",
+                {"url": self._GH, "auto_dispatch": True},
+            ],
+        }
+        sc = _parse_squad(raw)
+        assert "org/repo-simples" in sc.projects
+        # url normalizada para owner/repo (não a url crua)
+        assert self._GH_ID in sc.projects
+        assert self._GH not in sc.projects
+        # só o dict com flag gera RepoConfig
+        assert len(sc.repo_configs) == 1
+        assert sc.get_repo_config("org/repo-simples") is None
+        assert sc.get_repo_config(self._GH) is not None
+
+    def test_auto_dispatch_metodo_usa_config_repo(self) -> None:
+        """auto_dispatch(repo_url) retorna o valor por repo quando definido."""
+        raw = {
+            "id": "cogna",
+            "issue_provider": "github",
+            "repos": [
+                {"url": self._GH, "auto_dispatch": True},
+                {"url": self._AZ, "auto_dispatch": False},
+            ],
+        }
+        sc = _parse_squad(raw)
+        # global armazenado é False, mas o repo GH sobrepõe para True
+        sc.global_auto_dispatch = False
+        assert sc.auto_dispatch(self._GH) is True
+        assert sc.auto_dispatch(self._AZ) is False
+
+    def test_auto_merge_metodo_usa_config_repo(self) -> None:
+        """auto_merge(repo_url) retorna o valor por repo quando definido."""
+        raw = {
+            "id": "cogna",
+            "issue_provider": "github",
+            "repos": [
+                {"url": self._GH, "auto_merge": True},
+                {"url": self._AZ, "auto_merge": False},
+            ],
+        }
+        sc = _parse_squad(raw)
+        sc.global_auto_merge = True  # global True, mas AZ sobrepõe para False
+        assert sc.auto_merge(self._GH) is True
+        assert sc.auto_merge(self._AZ) is False
+
+    def test_auto_dispatch_metodo_fallback_global(self) -> None:
+        """auto_dispatch(repo_url) cai no global quando o repo não define o flag."""
+        raw = {
+            "id": "cogna",
+            "issue_provider": "github",
+            # url sem auto_dispatch → herda o global
+            "repos": [{"url": self._GH, "auto_merge": True}],
+        }
+        sc = _parse_squad(raw)
+        sc.global_auto_dispatch = True
+        assert sc.auto_dispatch(self._GH) is True
+        sc.global_auto_dispatch = False
+        assert sc.auto_dispatch(self._GH) is False
+
+    def test_auto_merge_metodo_fallback_global(self) -> None:
+        """auto_merge(repo_url) cai no global quando o repo não define o flag."""
+        raw = {
+            "id": "cogna",
+            "issue_provider": "github",
+            "repos": [{"url": self._GH, "auto_dispatch": True}],
+        }
+        sc = _parse_squad(raw)
+        sc.global_auto_merge = True
+        assert sc.auto_merge(self._GH) is True
+        sc.global_auto_merge = False
+        assert sc.auto_merge(self._GH) is False
+
+    def test_metodos_fallback_global_repo_desconhecido(self) -> None:
+        """Repo sem config alguma resolve totalmente pelo global armazenado."""
+        raw = {
+            "id": "cogna",
+            "issue_provider": "github",
+            "repos": [{"url": self._GH, "auto_dispatch": True, "auto_merge": True}],
+        }
+        sc = _parse_squad(raw)
+        sc.global_auto_dispatch = True
+        sc.global_auto_merge = False
+        assert sc.auto_dispatch("org/outro-repo") is True
+        assert sc.auto_merge("org/outro-repo") is False
+
+    def test_precedencia_inline_sobre_repos_config(self) -> None:
+        """Se o repo aparece em `repos:` e `repos_config:`, o inline vence."""
+        raw = {
+            "id": "cogna",
+            "issue_provider": "github",
+            "repos": [
+                {"url": self._GH, "auto_dispatch": True, "auto_merge": True},
+            ],
+            "repos_config": [
+                # mesmo repo (nome curto casa) com valores opostos
+                {"name": "eliasrosa/kirocrew-flow", "auto_dispatch": False, "auto_merge": False},
+            ],
+        }
+        sc = _parse_squad(raw)
+        # só uma RepoConfig (a inline), sem duplicata
+        assert len(sc.repo_configs) == 1
+        rc = sc.get_repo_config(self._GH)
+        assert rc is not None
+        assert rc.auto_dispatch is True
+        assert rc.auto_merge is True
+
+    def test_repos_mesmo_nome_curto_orgs_diferentes_nao_colidem(self) -> None:
+        """Repos com mesmo nome curto em orgs diferentes NÃO colapsam (issue #264).
+
+        ``orgA/service`` e ``orgB/service`` compartilham o último segmento, mas
+        são repos distintos. Cada um deve manter sua própria política.
+        """
+        raw = {
+            "id": "multi-org",
+            "issue_provider": "github",
+            "repos": [
+                {"url": "https://github.com/orgA/service", "auto_merge": True},
+                {"url": "https://github.com/orgB/service", "auto_merge": False},
+            ],
+        }
+        sc = _parse_squad(raw)
+        # Duas configs distintas — não deduplicadas pelo nome curto "service".
+        assert len(sc.repo_configs) == 2
+        rc_a = sc.get_repo_config("orgA/service")
+        rc_b = sc.get_repo_config("orgB/service")
+        assert rc_a is not None and rc_a.auto_merge is True
+        assert rc_b is not None and rc_b.auto_merge is False
+
+    def test_merge_nao_colapsa_inline_e_legacy_de_orgs_diferentes(self) -> None:
+        """Inline e legacy com mesmo nome curto em orgs diferentes coexistem."""
+        raw = {
+            "id": "multi-org-merge",
+            "issue_provider": "github",
+            "repos": [
+                {"url": "https://github.com/orgA/service", "auto_dispatch": True},
+            ],
+            "repos_config": [
+                {"name": "orgB/service", "auto_dispatch": False},
+            ],
+        }
+        sc = _parse_squad(raw)
+        assert len(sc.repo_configs) == 2
+        assert sc.get_repo_config("orgA/service").auto_dispatch is True  # type: ignore[union-attr]
+        assert sc.get_repo_config("orgB/service").auto_dispatch is False  # type: ignore[union-attr]
+
+    def test_get_repo_config_short_name_compat_245(self) -> None:
+        """Compat #245: consultar pelo nome curto casa com a entrada org/repo."""
+        raw = {
+            "id": "compat",
+            "issue_provider": "github",
+            "repos": ["eliasrosa/kirocrew-flow"],
+            "repos_config": [
+                {"name": "eliasrosa/kirocrew-flow", "auto_dispatch": True},
+            ],
+        }
+        sc = _parse_squad(raw)
+        # nome curto casa (um lado sem org/host)
+        rc = sc.get_repo_config("kirocrew-flow")
+        assert rc is not None and rc.auto_dispatch is True
+        # url completa também resolve para a mesma entrada
+        assert sc.get_repo_config(self._GH) is not None
+
+    def test_get_repo_config_nao_casa_org_diferente(self) -> None:
+        """Consultar org diferente com mesmo nome curto NÃO casa (issue #264)."""
+        raw = {
+            "id": "iso",
+            "issue_provider": "github",
+            "repos": ["orgB/service"],
+            "repos_config": [
+                {"name": "orgB/service", "auto_merge": True},
+            ],
+        }
+        sc = _parse_squad(raw)
+        # ambos carregam org → não casa por nome curto
+        assert sc.get_repo_config("orgA/service") is None
+        # o próprio org resolve
+        assert sc.get_repo_config("orgB/service") is not None
+
+    def test_url_ausente_em_dict_falha(self) -> None:
+        """Entrada dict em `repos:` sem 'url' falha alto."""
+        raw = {
+            "id": "cogna",
+            "issue_provider": "github",
+            "repos": [{"auto_dispatch": True}],
+        }
+        with pytest.raises(SquadConfigError):
+            _parse_squad(raw)
+
+    def test_load_squad_yaml_repos_inline(self) -> None:
+        """load_squad lê a forma inline `repos:` de um arquivo YAML real (PyYAML)."""
+        yaml_content = """\
+id: cogna-squad
+issue_provider: github
+repos:
+  - url: https://github.com/eliasrosa/kirocrew-flow
+    auto_dispatch: true
+    auto_merge: true
+  - url: https://dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/_git/voomp-creators-api-gateway2
+    auto_dispatch: true
+    auto_merge: false
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False
+        ) as f:
+            f.write(yaml_content)
+            tmp_path = f.name
+
+        try:
+            sc = load_squad(tmp_path)
+            sc.global_auto_dispatch = False
+            sc.global_auto_merge = False
+            gh = "https://github.com/eliasrosa/kirocrew-flow"
+            az = (
+                "https://dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/_git/"
+                "voomp-creators-api-gateway2"
+            )
+            # projects derivam do url NORMALIZADO (owner/repo, não a url crua)
+            assert "eliasrosa/kirocrew-flow" in sc.projects
+            assert "kdop/PlataformaCogna-MKTP-MVP/voomp-creators-api-gateway2" in sc.projects
+            assert gh not in sc.projects
+            assert az not in sc.projects
+            # resolução por repo com fallback global (aceita url OU owner/repo)
+            assert sc.auto_dispatch(gh) is True
+            assert sc.auto_merge(gh) is True
+            assert sc.auto_dispatch(az) is True
+            assert sc.auto_merge(az) is False
+            # resolve igual quando passamos o identificador normalizado
+            assert sc.auto_merge("eliasrosa/kirocrew-flow") is True
+            assert sc.auto_merge("kdop/PlataformaCogna-MKTP-MVP/voomp-creators-api-gateway2") is False
+            # repo desconhecido cai no global armazenado
+            assert sc.auto_dispatch("org/desconhecido") is False
+            assert sc.auto_merge("org/desconhecido") is False
+        finally:
+            import os
+            os.unlink(tmp_path)

@@ -17,26 +17,26 @@ project: VGAT
 #   1. Projetos a varrer no scan (GitHub-first; Jira usa "project" acima)
 #   2. Lista de validação do título: [repo] no título deve casar aqui
 #      Typo falha alto: [api-gatewy2] não casa → recusa em vez de despachar errado
+# Forma simples (string) — herda todos os flags globais:
+#   repos:
+#     - org/api-gateway2
+#     - org/api-subscription2
 #
-# Repositórios GitHub (padrão — scm omitido):
+# Forma inline com flags por repo (issue #264) — cada entrada é um mapa com
+# url (obrigatório) e, opcionalmente, auto_dispatch / auto_merge. Omitir um
+# flag = herda o global (auto_dispatch do deployment.config.yaml e
+# auto_merge_on_approve do workflow_params abaixo). Aceita URLs completas
+# (github.com, dev.azure.com, ...) ou o formato owner/repo — o parser
+# normaliza a url para o identificador que o scanner/provider consome
+# (github.com/owner/repo → owner/repo; dev.azure.com/org/proj/_git/repo →
+# org/proj/repo), de modo que a URL crua nunca chega ao scanner.
 repos:
-  - org/api-gateway2
-  - org/api-subscription2
-#
-# Repositórios Azure DevOps — opção 1: campos explícitos (recomendado)
-# repos:
-#   - name: kdop/api-gateway2
-#     scm: azure_devops
-#     azure_org: https://dev.azure.com/kdop
-#     azure_project: PlataformaCogna-MKTP-MVP
-#     azure_repo: voomp-creators-api-gateway2
-#
-# Repositórios Azure DevOps — opção 2: detecção automática pela URL
-# O campo scm é inferido quando o nome começa com dev.azure.com
-# Formato: dev.azure.com/<org>/<project>/<repo> (com ou sem https://)
-# repos:
-#   - name: dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/voomp-creators-api-gateway2
-#   - name: https://dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/voomp-creators-api-subscription2
+  - url: https://github.com/org/api-gateway2
+    auto_dispatch: true
+    auto_merge: false   # merge manual em PRD, mesmo com auto_merge_on_approve global
+  - url: https://dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/_git/api-subscription2
+    auto_dispatch: true
+    auto_merge: true
 
 # Template de workflow — Fase 1 = fixo, Fase 3 = editável no canvas
 # versao-c (padrão) = review ANTES do QA, sequencial
@@ -60,10 +60,11 @@ workflow_params:
   #   true            — merge squash automático + delete branch + crewflow:done
   auto_merge_on_approve: false
 
-# Configuração por repositório — substitui as flags globais auto_dispatch e
-# auto_merge_on_approve para repos específicos. Útil quando a squad tem repos
-# com políticas diferentes (ex: merge manual num repo crítico, automático no outro).
-# Campos opcionais: omita para herdar o valor global.
+# Configuração por repositório (forma LEGADA, issue #245) — equivalente à forma
+# inline em `repos:` acima. Substitui as flags globais auto_dispatch e
+# auto_merge_on_approve para repos específicos. Campos opcionais: omita para
+# herdar o valor global. Precedência: se o mesmo repo aparecer aqui E inline
+# em `repos:`, a entrada inline de `repos:` vence.
 # repos_config:
 #   - name: org/api-gateway2
 #     auto_dispatch: true

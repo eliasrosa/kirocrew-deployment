@@ -65,6 +65,23 @@ class RepoConfig:
     auto_merge: bool | None = None     # None = fallback ao global
 
 
+# Além do bloco ``repos_config:`` (issue #245), os flags por repo também podem
+# ser declarados INLINE sob a chave ``repos:`` (issue #264), onde cada item
+# pode ser um mapa com ``url`` / ``auto_dispatch`` / ``auto_merge``. Exemplo::
+#
+#     repos:
+#       - url: https://github.com/eliasrosa/kirocrew-flow
+#         auto_dispatch: true
+#         auto_merge: true
+#       - url: https://dev.azure.com/kdop/.../voomp-creators-api-gateway2
+#         auto_dispatch: true
+#         auto_merge: false   # merge manual em PRD
+#
+# Precedência quando o mesmo repo aparece nas DUAS fontes: a entrada inline em
+# ``repos:`` vence a de ``repos_config:`` — ela fica mais próxima da definição
+# do repo e é a forma recomendada pela issue #264.
+
+
 @dataclass(slots=True)
 class SquadConfig:
     """Configuração de uma squad.
@@ -83,6 +100,12 @@ class SquadConfig:
     default_workflow: str = "feature-flow"
     dispatch_prompt_extra: str = ""  # texto adicional appendado ao prompt de dispatch
     repo_configs: list[RepoConfig] = field(default_factory=list)  # config por repo
+    # Defaults globais (issue #264): usados como fallback pelos métodos
+    # auto_dispatch(repo_url)/auto_merge(repo_url), que resolvem o global
+    # internamente. A camada de deployment popula estes campos a partir do
+    # deployment.config.yaml (auto_dispatch global e auto_merge_on_approve).
+    global_auto_dispatch: bool = False
+    global_auto_merge: bool = False
 
     def resolve_workflow(self, labels: frozenset[str]) -> str:
         """Retorna o nome do workflow para um conjunto de labels.
@@ -97,13 +120,38 @@ class SquadConfig:
     def get_repo_config(self, repo: str) -> RepoConfig | None:
         """Retorna a RepoConfig para o repo, ou None se não houver config específica.
 
-        Faz matching pelo nome exato e também sem o prefixo ``org/`` — ou seja,
-        ``owner/api-gateway2`` casa com ``api-gateway2`` e vice-versa.
+        A busca é feita em duas passadas para evitar colisões entre repos que
+        compartilham o nome curto em orgs/hosts diferentes (ex.: ``orgA/service``
+        vs ``orgB/service``, ou um repo GitHub ``.../service`` vs um Azure
+        ``.../_git/service``) — cenário real quando a squad mistura GitHub e
+        Azure DevOps (issue #264):
+
+        1. Casamento pelo identificador normalizado completo (host/org/repo):
+           preciso quando ambos os lados carregam contexto de org/host.
+        2. Só então, como compatibilidade retroativa (issue #245), casamento
+           pelo nome curto (último segmento do path).
+
+        Assim, quando o chamador passa um identificador com org/host, uma
+        entrada de outro org com o mesmo nome curto NÃO é retornada por engano.
         """
-        repo_short = repo.split("/")[-1]
+        repo_norm = _normalize_repo_identifier(repo)
+        # Passada 1: identificador normalizado completo.
         for rc in self.repo_configs:
-            rc_short = rc.name.split("/")[-1]
-            if rc.name == repo or rc_short == repo_short:
+            if _normalize_repo_identifier(rc.name) == repo_norm or rc.name == repo:
+                return rc
+        # Passada 2: fallback por nome curto (compat #245). Só aplica quando pelo
+        # menos um dos lados NÃO carrega contexto de org/host — caso contrário
+        # dois orgs distintos com o mesmo nome curto colidiriam (issue #264).
+        repo_short = repo.split("/")[-1]
+        repo_has_org = "/" in repo_norm
+        for rc in self.repo_configs:
+            rc_norm = _normalize_repo_identifier(rc.name)
+            rc_has_org = "/" in rc_norm
+            if repo_has_org and rc_has_org:
+                # Ambos têm org/host e já falharam no casamento completo (passada
+                # 1) → são repos diferentes. Não casa pelo nome curto.
+                continue
+            if rc.name.split("/")[-1] == repo_short:
                 return rc
         return None
 
@@ -126,6 +174,24 @@ class SquadConfig:
         if rc is not None and rc.auto_merge is not None:
             return rc.auto_merge
         return global_auto_merge
+
+    def auto_dispatch(self, repo_url: str) -> bool:
+        """Retorna a flag auto_dispatch efectiva para um repo (issue #264).
+
+        Recebe apenas a url/identificador do repo; o default global é
+        resolvido internamente a partir de ``global_auto_dispatch``.
+        Prioridade: config por repo > global armazenado.
+        """
+        return self.auto_dispatch_for(repo_url, self.global_auto_dispatch)
+
+    def auto_merge(self, repo_url: str) -> bool:
+        """Retorna a flag auto_merge efectiva para um repo (issue #264).
+
+        Recebe apenas a url/identificador do repo; o default global é
+        resolvido internamente a partir de ``global_auto_merge``.
+        Prioridade: config por repo > global armazenado.
+        """
+        return self.auto_merge_for(repo_url, self.global_auto_merge)
 
 
 # ---------------------------------------------------------------------------
@@ -166,21 +232,26 @@ def _parse_squad(raw: dict[str, Any], source: str = "<dict>") -> SquadConfig:
             f"{source}: issue_provider deve ser 'github' ou 'jira', não {provider!r}"
         )
 
+    # Normaliza as entradas de 'repos:': cada item pode ser uma string simples
+    # (comportamento legado) OU um mapa com 'url'/'auto_dispatch'/'auto_merge'
+    # (issue #264). Extrai a lista de urls/strings e a lista de RepoConfig inline.
+    raw_repos = raw.get("repos") or []
+    repo_urls, inline_repo_configs = _normalize_repos(raw_repos, source)
+
     # projetos: campo "project" (Jira) ou "repos" (GitHub) — ou ambos
     projects: list[str] = []
     if raw.get("project"):
         projects.append(str(raw["project"]))
-    projects.extend(raw.get("repos") or [])
+    projects.extend(repo_urls)
     if not projects:
         raise SquadConfigError(
             f"{source}: squad deve ter 'project' (Jira) ou 'repos' (GitHub)"
         )
 
     # repos para validação de título (pode ser subconjunto dos projetos)
-    raw_repos = raw.get("repos") or []
-    repos = frozenset(str(r).split("/")[-1] for r in raw_repos)
+    repos = frozenset(str(r).split("/")[-1] for r in repo_urls)
     # Adiciona os repos sem "org/" prefix também
-    repos = repos | frozenset(str(r) for r in raw_repos)
+    repos = repos | frozenset(str(r) for r in repo_urls)
 
     template = raw.get("workflow_template") or "versao-c"
 
@@ -223,13 +294,154 @@ def _parse_squad(raw: dict[str, Any], source: str = "<dict>") -> SquadConfig:
         routing=routing,
         default_workflow=default_workflow,
         dispatch_prompt_extra=str(raw.get("dispatch_prompt_extra") or "").strip(),
-        repo_configs=_parse_repo_configs(raw.get("repos_config") or []),
+        repo_configs=_merge_repo_configs(
+            inline_repo_configs,
+            _parse_repo_configs(raw.get("repos_config") or []),
+        ),
     )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _normalize_repo_identifier(repo: str) -> str:
+    """Converte a ``url``/string de um repo no identificador que o scanner e os
+    providers SCM consomem.
+
+    O scanner (``flow/scan/scanner.py``) itera ``config.projects`` e passa cada
+    valor ao provider; o transport do GitHub interpola ``project`` direto em
+    ``gh api repos/{owner_repo}/...`` — logo ``project`` PRECISA estar na forma
+    ``owner/repo`` (uma url completa produziria ``repos/https://.../...``,
+    quebrando a chamada, issue #264). Este helper normaliza:
+
+      - ``https://github.com/eliasrosa/kirocrew-flow`` → ``eliasrosa/kirocrew-flow``
+        (também aceita sufixo ``.git`` e barra final);
+      - ``https://dev.azure.com/{org}/{project}/_git/{repo}`` →
+        ``{org}/{project}/{repo}`` — a forma sem a url que a factory de SCM
+        (``scm_config_from_repo_entry`` / ``ScmRepoConfig``) usa como coordenadas
+        (azure_org/azure_project/azure_repo);
+      - qualquer outra string (ex.: ``owner/repo`` puro, ou uma entrada legada
+        sem esquema) passa inalterada — compatibilidade retroativa.
+
+    É idempotente: aplicar de novo a um identificador já normalizado não muda
+    nada, o que mantém o casamento de ``get_repo_config`` consistente.
+    """
+    value = repo.strip()
+    low = value.lower()
+
+    if low.startswith("https://github.com/") or low.startswith("http://github.com/"):
+        rest = value.split("github.com/", 1)[1]
+        rest = rest.strip("/")
+        if rest.endswith(".git"):
+            rest = rest[: -len(".git")]
+        # owner/repo — descarta segmentos extras (ex.: /pull/1) por segurança.
+        parts = [p for p in rest.split("/") if p]
+        if len(parts) >= 2:
+            return f"{parts[0]}/{parts[1]}"
+        return rest
+
+    if "dev.azure.com/" in low and "/_git/" in low:
+        # https://dev.azure.com/{org}/{project}/_git/{repo}
+        after_host = value.split("dev.azure.com/", 1)[1]
+        org_project, _, repo_part = after_host.partition("/_git/")
+        org_project = org_project.strip("/")
+        repo_part = repo_part.strip("/").split("/")[0]  # ignora sufixos
+        if org_project and repo_part:
+            return f"{org_project}/{repo_part}"
+        return value
+
+    return value
+
+
+def _normalize_repos(
+    raw_repos: list, source: str
+) -> tuple[list[str], list[RepoConfig]]:
+    """Normaliza a lista ``repos:`` em (identificadores, configs inline).
+
+    Cada item pode ser:
+      - uma string simples (legado) → vira um identificador de repo, sem
+        config inline;
+      - um mapa com ``url`` (obrigatório) e, opcionalmente, ``auto_dispatch``
+        e ``auto_merge`` (issue #264) → a ``url`` é NORMALIZADA para o
+        identificador que o scanner/provider espera (ver
+        ``_normalize_repo_identifier``) e alimenta ``projects``/``repos``
+        (como uma string faria); os flags viram um RepoConfig inline.
+
+    Aceita url completa (github.com, dev.azure.com) ou o formato ``owner/repo``
+    puro — ambos resultam no mesmo identificador canônico, de modo que a url
+    NUNCA vaza para ``projects`` (o que quebraria as chamadas ``gh api``).
+    """
+    identifiers: list[str] = []
+    inline: list[RepoConfig] = []
+    for entry in raw_repos:
+        if isinstance(entry, dict):
+            url = entry.get("url")
+            if not url or not isinstance(url, str):
+                raise SquadConfigError(
+                    f"{source}: entrada de 'repos' em forma de mapa exige 'url' string: {entry!r}"
+                )
+            identifier = _normalize_repo_identifier(url)
+            identifiers.append(identifier)
+            auto_dispatch: bool | None = None
+            if "auto_dispatch" in entry:
+                auto_dispatch = bool(entry["auto_dispatch"])
+            auto_merge: bool | None = None
+            if "auto_merge" in entry:
+                auto_merge = bool(entry["auto_merge"])
+            if auto_dispatch is not None or auto_merge is not None:
+                inline.append(
+                    RepoConfig(
+                        name=identifier,
+                        auto_dispatch=auto_dispatch,
+                        auto_merge=auto_merge,
+                    )
+                )
+        else:
+            identifiers.append(_normalize_repo_identifier(str(entry)))
+    return identifiers, inline
+
+
+def _merge_repo_configs(
+    inline: list[RepoConfig], legacy: list[RepoConfig]
+) -> list[RepoConfig]:
+    """Mescla configs inline (``repos:``) e legadas (``repos_config:``).
+
+    Precedência: quando o mesmo repo aparece nas duas fontes, a entrada inline
+    de ``repos:`` vence (ver docstring de RepoConfig).
+
+    Deduplicação: casamos primeiro pelo identificador NORMALIZADO completo
+    (host/org/repo — ver ``_normalize_repo_identifier``) e só usamos o nome
+    curto como fallback quando o identificador não carrega org/host. Isso evita
+    que ``orgA/service`` e ``orgB/service`` (ou um GitHub ``.../service`` e um
+    Azure ``.../_git/service``) sejam colapsados por engano — colisão real numa
+    squad que mistura GitHub e Azure DevOps (issue #264).
+    """
+    def _short(name: str) -> str:
+        return name.split("/")[-1]
+
+    def _has_org_context(name: str) -> bool:
+        # Um identificador com org/host tem ao menos um "/" (owner/repo,
+        # org/project/repo, ...). Nomes curtos "soltos" não têm.
+        return "/" in _normalize_repo_identifier(name)
+
+    merged: list[RepoConfig] = list(inline)
+    seen_full = {_normalize_repo_identifier(rc.name) for rc in inline}
+    # Nomes curtos só bloqueiam quando a entrada inline NÃO tem org/host — caso
+    # contrário confiamos no identificador completo para não colapsar orgs.
+    seen_short = {_short(rc.name) for rc in inline if not _has_org_context(rc.name)}
+    for rc in legacy:
+        full = _normalize_repo_identifier(rc.name)
+        if full in seen_full:
+            continue
+        if not _has_org_context(rc.name) and _short(rc.name) in seen_short:
+            continue
+        merged.append(rc)
+        seen_full.add(full)
+        if not _has_org_context(rc.name):
+            seen_short.add(_short(rc.name))
+    return merged
+
 
 def _parse_repo_configs(raw_list: list) -> list[RepoConfig]:
     """Parseia a lista repos_config do YAML em objetos RepoConfig."""
