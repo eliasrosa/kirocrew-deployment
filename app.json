@@ -1,6 +1,7 @@
 {
     "name": "kirocrew-flow",
     "version": "1.0.0",
+    "channel": "stable",
     "displayName": "KiroCrew Flow",
     "description": "Autonomous dev pipeline: issue to PR to review to merge. Zero-token polling over GitHub/Jira labels.",
     "author": "eliasrosa",

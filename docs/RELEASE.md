@@ -87,13 +87,28 @@ quando a pipeline for ligada:
 
 Decisão: as fontes de verdade são `pyproject.toml` e `app.json`; os endpoints de
 health **não** devem carregar uma string de versão hardcoded — devem derivar a
-versão de uma fonte única (ex.: ler do `app.json`/metadados do pacote) para que o
-`python-semantic-release` só precise atualizar um lugar canônico e os endpoints
-acompanhem automaticamente. A escolha de qual valor prevalece na primeira release
-reconciliada e a fiação exata ficam para as features de implementação; os testes
-já protegem o contrato (`test_app_manifest.py` valida a estrutura do `app.json` e
-`test_backend_hooks_routes.py` exige a **presença** da chave `version`, não um
-valor específico), então a reconciliação não pode quebrar esse contrato.
+versão de uma fonte única (metadados do pacote, com fallback para o `app.json`)
+para que o `python-semantic-release` só precise atualizar um lugar canônico e os
+endpoints acompanhem automaticamente.
+
+Reconciliação aplicada (FEAT-003):
+
+- **Baseline único: `1.0.0`.** `pyproject.toml` (`[project].version`) foi elevado
+  de `0.1.0` para `1.0.0`, alinhando com o valor já publicado no `app.json` e nos
+  endpoints de health. Assim o `python-semantic-release` parte de uma baseline
+  consistente (a última release efetiva é `v1.0.0`).
+- **Health derivado dinamicamente.** `backend/routes.py` e `backend/server.py` não
+  carregam mais `"1.0.0"` hardcoded; ambos usam `backend/version.py:get_version()`,
+  que lê os metadados do pacote instalado (a versão do `pyproject.toml`) e cai para
+  o campo `version` do `app.json` quando o pacote não está instalado.
+- **Sincronização do `app.json`.** Como o `python-semantic-release` não carimba uma
+  chave JSON diretamente, o `build_command` invoca `scripts/sync_app_version.py`,
+  que propaga a nova versão para o `app.json` a cada release.
+
+Os testes já protegem o contrato (`test_app_manifest.py` valida a estrutura do
+`app.json` e `test_backend_hooks_routes.py` exige a **presença** da chave
+`version`, não um valor específico), então a reconciliação não quebra esse
+contrato.
 
 ---
 
@@ -115,10 +130,16 @@ Dois canais de release, representados por refs/tags no repositório:
   App consome o canal validado, e nunca a ponta potencialmente instável do
   `main`. Optar por `latest` é uma escolha explícita de quem quer a ponta.
 
-> A representação concreta dos canais (tag movível `stable` vs `latest` seguindo a
-> última tag `vX.Y.Z`) é implementada na feature de configuração da pipeline; esta
-> seção fixa o **modelo e o default** (`app.json` → `stable`), sem contradizer a
-> fiação.
+Representação concreta (FEAT-003):
+
+- Cada release cria a tag imutável `vX.Y.Z` (formato `tag_format = "v{version}"`).
+- O canal `latest` é uma tag **movível** que o workflow `.github/workflows/release.yml`
+  reposiciona (`git tag -f latest <vX.Y.Z> && git push --force origin refs/tags/latest`)
+  a cada release cortada no push para `main`.
+- O canal `stable` **não** é tocado pelo workflow: avançá-lo é uma ação manual
+  deliberada, coerente com "deploy é sempre manual".
+- O `app.json` fixa o default via o campo **`"channel": "stable"`**. Uma instalação
+  padrão consome o canal validado; optar por `latest` é uma escolha explícita.
 
 ---
 

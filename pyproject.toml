@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kirocrew-flow"
-version = "0.1.0"
+version = "1.0.0"
 description = "KiroCrew Flow — orquestração de esteira de desenvolvimento multi-squad"
 requires-python = ">=3.12"
 dependencies = [
@@ -84,3 +84,70 @@ ignore = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["flow*"]
+
+# ---------------------------------------------------------------------------
+# python-semantic-release — release engineering da issue #247.
+#
+# A release é dirigida pelos conventional commits já usados no repo
+# (feat -> minor, fix -> patch, breaking -> major) e roda no CI (GitHub
+# Actions) no push para `main` — nunca localmente no sandbox. Ver a política
+# completa em docs/RELEASE.md.
+#
+# Fontes de verdade da versão (docs/RELEASE.md → "Fontes de verdade"):
+#   - pyproject.toml [project].version  → estampado por `version_toml`.
+#   - app.json "version"                → sincronizado pelo `build_command`
+#     (scripts/sync_app_version.py), porque o semantic-release não carimba uma
+#     chave JSON arbitrária diretamente.
+# ---------------------------------------------------------------------------
+[tool.semantic_release]
+# Fonte de verdade da versão: [project].version no próprio pyproject.toml.
+version_toml = ["pyproject.toml:project.version"]
+# Branch de release.
+branch = "main"
+# Parser de conventional commits (feat/fix/BREAKING CHANGE) — padrão do tool.
+commit_parser = "conventional"
+# Mensagem do commit de release (com [skip ci] para não re-disparar o CI).
+commit_message = "chore(release): {version}\n\nAutomated release [skip ci]"
+# Propaga a nova versão para o app.json depois de o pyproject.toml ser estampado.
+# $NEW_VERSION é exportado pelo semantic-release durante o build_command.
+build_command = "python scripts/sync_app_version.py \"$NEW_VERSION\""
+# Ativos extras incluídos no commit de release (além do pyproject.toml e do
+# CHANGELOG): o app.json sincronizado pelo build_command acima.
+assets = ["app.json"]
+# Tags no formato vX.Y.Z.
+tag_format = "v{version}"
+
+[tool.semantic_release.commit_parser_options]
+# Tipos que disparam um bump minor (novas funcionalidades).
+minor_tags = ["feat"]
+# Tipos que disparam um bump patch (correções compatíveis para trás).
+patch_tags = ["fix", "perf"]
+# Tokens de rodapé que forçam um bump major (breaking change).
+allowed_tags = [
+    "feat",
+    "fix",
+    "perf",
+    "docs",
+    "style",
+    "refactor",
+    "test",
+    "ci",
+    "chore",
+    "build",
+]
+
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[tool.semantic_release.changelog.default_templates]
+# Gera/atualiza o CHANGELOG.md na raiz a cada release.
+changelog_file = "CHANGELOG.md"
+
+[tool.semantic_release.remote]
+# VCS remoto: GitHub. Cria a tag e a GitHub Release usando o GITHUB_TOKEN.
+type = "github"
+
+[tool.semantic_release.publish]
+# Faz upload dos artefatos/dist para a GitHub Release quando existirem.
+upload_to_vcs_release = true
