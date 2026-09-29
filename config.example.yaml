@@ -1,5 +1,8 @@
 # KiroCrew Flow — configuração de exemplo
 # Copie para deployment.config.yaml e ajuste. NÃO commite o config real (está no .gitignore).
+#
+# Secrets (KIROCREW_WEBHOOK_TOKEN, KIROCREW_WEBHOOK_SECRET, AZURE_DEVOPS_PAT) NÃO ficam aqui.
+# Configure-os via variáveis de ambiente ou Secrets do cron. Veja .env.example.
 
 # Repositórios vigiados (owner/repo). A esteira varre todos procurando issues
 # com o estado `crewflow:todo`.

@@ -1,6 +1,9 @@
 # Config real (contém chat_id, paths — dado do usuário)
 config.yaml
 
+# Arquivo de secrets/variáveis de ambiente (nunca versionar)
+.env
+
 # UI — dependências Node (não versionar)
 ui/node_modules/
 
