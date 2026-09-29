@@ -820,12 +820,22 @@ def _post_agent_session(
             port = int(_m.group(1))
     if not port:
         port = 5478  # fallback final
-    secret = getattr(ctx, "_secret", "")
+    # Ordem de preferência do secret (do mais confiável ao fallback):
+    #   1. run/gateway-{port}.secret — gerado a cada restart, sempre atualizado
+    #   2. ~/.kiro/crew/.local_secret  — pode ficar stale após restart
+    #   3. ctx._secret                 — fixado no registro do cron, também pode ficar stale
+    secret = ""
+    _run_secret_path = os.path.expanduser(f"~/.kiro/crew/run/gateway-{port}.secret")
+    if os.path.exists(_run_secret_path):
+        with open(_run_secret_path) as _f:
+            secret = _f.read().strip()
     if not secret:
         _local_secret_path = os.path.expanduser("~/.kiro/crew/.local_secret")
         if os.path.exists(_local_secret_path):
             with open(_local_secret_path) as _f:
                 secret = _f.read().strip()
+    if not secret:
+        secret = getattr(ctx, "_secret", "")
     if not port:
         logger.error(
             "deployment: dispatch abortado (slot %s) — porta do gateway não disponível.",
