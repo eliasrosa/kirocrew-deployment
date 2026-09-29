@@ -71,48 +71,30 @@ A sessão one-shot **nunca mergeia e nunca faz deploy**. Ela entrega o PR em `fl
 
 ### Protocolo cron ↔ agente
 
-O motor tem **duas camadas distintas** que nunca se chamam diretamente. Elas
-se comunicam **exclusivamente via labels na issue** (e o comentário `KIRO-FLOW-STATE`):
-
-- **Cron Python (zero-token): orquestrador de estado.** Lê as labels da issue,
-  decide a transição, aplica a label de lock atomicamente antes de despachar
-  (ex.: `flow:develop-running`, `flow:review-running`), dispara a sessão do agente
-  e, no ciclo seguinte, detecta a label de resultado e faz a próxima transição.
-- **Agente one-shot (gasta token): executor de trabalho.** Implementa, revisa ou
-  resolve conflito, aplica a label de resultado ao terminar (ex.: `flow:review-waiting`
-  ao abrir o PR, `flow:review-approved`/`flow:review-refused` após o review) e posta
-  o comentário `KIRO-FLOW-STATE`.
+**Cron Python e agente LLM não se chamam diretamente** — toda a comunicação acontece via labels `flow:*` na issue.
 
 ```
-cron Python (zero token)
-  → lê labels → decide → aplica lock label → dispara sessão
-
-agente one-shot (gasta token)
-  → implementa/revisa → aplica label de resultado
-
-cron Python (zero token)
-  → detecta label de resultado → faz próxima transição
+Cron Python (zero token)
+  │  scan_candidates() detecta flow:develop-waiting
+  ▼
+  aplica flow:develop-running  ──────────────► [ issue atualizada ]
+  _dispatch() dispara sessão one-shot ───────► Agente (gasta token)
+                                                │  implementa + abre PR
+                                                ▼
+  scan_candidates() detecta mudança ◄───────── aplica flow:review-waiting
+  │
+  ▼
+  aplica flow:review-running ────────────────► Agente reviewer (gasta token)
+                                                │  lê PR + posta review
+                                                ▼
+  scan_candidates() detecta mudança ◄───────── aplica flow:review-approved
+  │                                               (ou flow:review-refused → gate humano)
+  ▼
+  merge squash → flow:qa-waiting → … → flow:done
 ```
 
-Nenhum dos dois chama o outro diretamente: comunicam-se **exclusivamente via labels na issue**.
-
-```mermaid
-sequenceDiagram
-    participant Cron as Cron Python (zero-token)
-    participant Issue as Issue (labels)
-    participant Agente as Agente one-shot (gasta token)
-
-    Cron->>Issue: lê labels flow:*
-    Note over Cron: decide a transição
-    Cron->>Issue: aplica lock label (ex.: flow:develop-running)
-    Cron->>Agente: dispara sessão one-shot
-    Note over Agente: implementa / revisa / resolve conflito
-    Agente->>Issue: aplica label de resultado (ex.: flow:review-waiting)
-    Agente->>Issue: posta comentário KIRO-FLOW-STATE
-    Note over Cron: próximo ciclo (zero-token)
-    Cron->>Issue: detecta label de resultado
-    Note over Cron: faz a próxima transição
-```
+Tabela completa de labels (quem aplica e quando): [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#protocolo-cron--agente).  
+Diagrama de sequência Mermaid: [`docs/fluxo.md`](docs/fluxo.md).
 
 ### Dispatch de sessões (webhook)
 
@@ -128,17 +110,13 @@ no dashboard → Schedule → cron → Secrets):
 | Variável | Default | Descrição |
 |---|---|---|
 | `KIROCREW_WEBHOOK_URL` | `http://localhost:5478/api/hooks/agent` | Endpoint do webhook do dashboard. |
-| `KIROCREW_WEBHOOK_TOKEN` | *(vazio)* | Token Bearer do webhook configurado (Settings → Webhooks). Nunca versionado. |
-| `KIROCREW_WEBHOOK_SECRET` | *(vazio)* | Signing secret do webhook (HMAC-SHA256). Nunca versionado. |
+| `KIROCREW_WEBHOOK_TOKEN` | *(vazio)* | Token Bearer do webhook configurado (Settings → Webhooks). Nunca é hard-coded. |
 
 Quando `KIROCREW_WEBHOOK_TOKEN` está setado, o dispatch faz
 `POST {KIROCREW_WEBHOOK_URL}` com header `Authorization: Bearer <token>`. Quando o token
 está **vazio**, cai no comportamento legado de loopback interno (`POST /api/chat` com
 `X-Internal-Secret`/`X-Session-Key`), preservando os crons `message`-based. O scan em si
 continua **zero-token** — o webhook só é chamado quando há um candidato real na fila.
-
-> **Secrets nunca vão no `deployment.config.yaml`**. Configure-os via variáveis de
-> ambiente (ou Secrets do cron no dashboard). Veja [`deployment/.env.example`](deployment/.env.example) para a lista completa.
 
 ## Fluxos disponíveis (Fase 1)
 
@@ -194,7 +172,7 @@ routing:
 # SEMPRE usar o script de instalação — não copie manualmente
 ./scripts/install-cron.sh
 
-# O script copia deployment.py, deployment/flow/, flow_auto_update.py,
+# O script copia deployment.py, deployment/flow/, flow_update_check.py,
 # aplica o patch de sys.path e copia deployment.config.yaml (se não existir).
 # Edite ~/.kiro/crew/crons/deployment.config.yaml com seus paths.
 ```
@@ -219,12 +197,23 @@ Para instalar manualmente ou atualizar os scripts instalados:
 | `flow-qa-waiting` | `deployment/flow/qa_notify.py:run` | 600s | `flow:qa-waiting` → notifica QA |
 | `flow-qa-approved` | `deployment/flow/qa_approved.py:run` | 120s | `flow:qa-approved` → merge → done |
 | `flow-qa-refused` | `deployment/flow/qa_refused.py:run` | 3600s | `flow:qa-refused` → notifica TL+dev |
+| `flow-update-check` | `flow_update_check.py:run` | 3600s | verifica canal `stable` e aplica a política de update ([`docs/RELEASE.md`](docs/RELEASE.md)) |
 
 Para registrar manualmente (cron monolítico legado, todos os estágios em sequência):
 
 ```
 cron_add(name="crewflow-scan", script="~/.kiro/crew/crons/deployment.py:run", every=600)
 ```
+
+> **Update do App.** O antigo cron `flow-auto-update` (que fazia `git pull --rebase`
+> incondicional a cada 5 minutos e podia auto-quebrar produção) foi **removido**. O
+> update passa pelo caminho oficial do Crew App — o hook `setup.onUpdate` do
+> `app.json` — e é **gated** pela política _auto vs manual_ de
+> [`docs/RELEASE.md`](docs/RELEASE.md): apenas releases de **patch** (`fix`)
+> auto-aplicam; releases **minor/major** (`feat`/breaking) apenas **notificam** e
+> aguardam ação manual. O cron `flow-update-check` compara a versão instalada com o
+> canal `stable` e delega a decisão à lógica pura `flow.domain.update_policy` — nunca
+> puxa o `main` cegamente.
 
 ### 3. Aplique as labels
 
@@ -316,56 +305,6 @@ python3 -m ruff check flow/ && python3 -m pytest flow/tests/ --cov=flow --cov-fa
 
 630 testes, cobertura ≥75% (piso do CI), ruff limpo.
 
-## Release Engineering
-
-O KiroCrew Flow usa [semantic-release](https://semantic-release.gitbook.io) para
-versionamento semântico automático.
-
-### Como funciona
-
-A cada push na branch `main`, o workflow `.github/workflows/release.yml`:
-
-1. Roda o CI (lint + mypy + testes)
-2. Analisa os commits desde a última tag para calcular o bump de versão:
-   - `feat:` → **minor** (nova funcionalidade)
-   - `fix:`, `perf:`, `refactor:` → **patch** (correção/melhoria)
-   - `BREAKING CHANGE` no footer do commit → **major**
-   - `docs:`, `test:`, `chore:`, `ci:` → sem release
-3. Atualiza `app.json` e `pyproject.toml` com a nova versão via `scripts/prepare-release.py`
-4. Gera/atualiza `CHANGELOG.md`
-5. Cria a tag `vX.Y.Z` e a release no GitHub
-
-Se nenhum commit elegível for encontrado (só `docs:`, `chore:`, etc.), o workflow
-encerra silenciosamente sem criar release.
-
-### Política de update (patch vs minor/major)
-
-| Tipo de bump | Política | Ação no usuário |
-|---|---|---|
-| **patch** (`fix:`, `perf:`) | Update automático seguro | `kirocrew app update kirocrew-flow` aplica sem riscos |
-| **minor** (`feat:`) | Notificação recomendada | Update manual — pode haver novas configurações opcionais |
-| **major** (breaking change) | **Update manual obrigatório** | Pode exigir migração de `deployment.config.yaml` ou squads |
-
-> O Kiro Crew invoca o hook `onUpdate` do `app.json` ao atualizar o app:
-> ```bash
-> pip install -e '.[dev,gateway]' && cd ui && npm run build && ./scripts/install-cron.sh
-> ```
-> O antigo cron `flow-auto-update` (git pull a cada 5 min) foi **removido** nesta versão.
-
-### Tags de canal
-
-| Tag | Branch | Uso |
-|---|---|---|
-| versão semântica (`v1.2.3`) | `main` | Release canônica |
-| `stable` | branch `stable` (promoção manual) | Versão validada para produção |
-
-Para promover uma versão para `stable`:
-```bash
-git checkout stable
-git merge v1.2.3  # ou git reset --hard v1.2.3
-git push origin stable
-```
-
 ## Dry-run — inspecionar sem despachar
 
 Antes de ativar o `auto_dispatch`, use o modo dry-run para validar o que o motor faria:
@@ -422,7 +361,5 @@ O fluxo `develop → review → merge` foi validado end-to-end via [issue #230](
 ## Segurança / privacidade
 
 - Repos, chat_id e paths vivem no `config.yaml` (gitignored). O `config.example.yaml` só tem placeholders.
-- **Secrets nunca vão em arquivos versionados.** `KIROCREW_WEBHOOK_TOKEN`, `KIROCREW_WEBHOOK_SECRET`, `AZURE_DEVOPS_PAT` e similares são configurados via variáveis de ambiente (ou Secrets do cron no dashboard). Veja [`deployment/.env.example`](deployment/.env.example).
-- O `.env` está no `.gitignore`. Nunca commite esse arquivo.
 - O disparo usa o segredo interno do gateway apenas em loopback (localhost).
 

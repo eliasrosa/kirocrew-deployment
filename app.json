@@ -117,6 +117,14 @@
             "enabled": true,
             "persistent_session": false,
             "silent": true
+        },
+        {
+            "name": "flow-update-check",
+            "script": "~/.kiro/crew/crons/flow_update_check.py:run",
+            "every": 3600,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true
         }
     ],
     "permissions": {

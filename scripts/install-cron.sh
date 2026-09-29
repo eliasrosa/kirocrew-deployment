@@ -8,9 +8,7 @@
 #   2. Aplica o patch de sys.path para que flow/ seja importável
 #      (o script é executado de ~/.kiro/crew/crons/, não do repo)
 #   3. Copia deployment/deployment.config.yaml se não existir ainda
-#
-# Nota: flow_auto_update.py foi REMOVIDO neste script (issue #247).
-# O mecanismo de update agora é o hook onUpdate do app.json (kirocrew app update).
+#   4. Copia scripts/flow_update_check.py para ~/.kiro/crew/crons/
 #
 # Os crons são registrados automaticamente via app.json ao instalar/habilitar
 # o App no Kiro Crew (kirocrew app enable kirocrew-flow).
@@ -91,20 +89,48 @@ else
     echo "       dev_root: /caminho/para/seus/clones"
 fi
 
-# 3b. Copia .env.example como .env se não existir
-ENV_SRC="$REPO_ROOT/deployment/.env.example"
-ENV_DST="$CRONS_DIR/.env"
-if [ -f "$ENV_DST" ]; then
-    echo "  ℹ️  .env já existe (não sobrescrito)"
-else
-    cp "$ENV_SRC" "$ENV_DST"
-    echo "  ✅ .env criado a partir de deployment/.env.example"
-    echo "  ⚠️  Preencha $ENV_DST com os secrets reais:"
-    echo "       KIROCREW_WEBHOOK_TOKEN=<token do webhook>"
-    echo "       KIROCREW_WEBHOOK_SECRET=<signing secret>"
-    echo "       AZURE_DEVOPS_PAT=<PAT do Azure DevOps (se usar azure_devops)>"
-fi
-# 4. Grava hash de versão para detecção de script desatualizado
+# 4. Copia o script de verificação de update (gated pela política auto vs manual)
+cp "$REPO_ROOT/scripts/flow_update_check.py" "$CRONS_DIR/flow_update_check.py"
+echo "  ✅ flow_update_check.py copiado"
+
+# 4b. Aplica o patch de sys.path no flow_update_check.py instalado
+# O script roda de ~/.kiro/crew/crons/ onde flow/ não existe; precisa importar
+# flow.domain.update_policy a partir do repo real.
+python3 - <<PYEOF
+import os, sys
+
+path = os.path.join(os.path.expanduser("~"), ".kiro/crew/crons/flow_update_check.py")
+repo_root = "$REPO_ROOT"
+
+with open(path) as f:
+    content = f.read()
+
+OLD = '''_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT_GUESS = os.path.dirname(_HERE)
+if _REPO_ROOT_GUESS not in sys.path:
+    sys.path.insert(0, _REPO_ROOT_GUESS)'''
+NEW = f'''_HERE = os.path.dirname(os.path.abspath(__file__))
+# Quando instalado em ~/.kiro/crew/crons/, o pacote flow/ não existe ao lado;
+# injetamos o caminho real do repo para importar flow.domain.update_policy.
+_FLOW_ROOT = "{repo_root}"
+if _FLOW_ROOT not in sys.path:
+    sys.path.insert(0, _FLOW_ROOT)
+_REPO_ROOT_GUESS = os.path.dirname(_HERE)
+if _REPO_ROOT_GUESS not in sys.path:
+    sys.path.insert(0, _REPO_ROOT_GUESS)'''
+
+if "_FLOW_ROOT" in content:
+    print("  ✅ patch sys.path (flow_update_check) já aplicado")
+elif OLD in content:
+    with open(path, "w") as f:
+        f.write(content.replace(OLD, NEW))
+    print("  ✅ patch sys.path (flow_update_check) aplicado")
+else:
+    print("  ⚠️  padrão sys.path (flow_update_check) não encontrado — verifique manualmente")
+    sys.exit(1)
+PYEOF
+
+# 5. Grava hash de versão para detecção de script desatualizado
 # deployment.py verifica este arquivo no startup e avisa quando diverge do repo.
 VERSION_FILE="$CRONS_DIR/deployment.version"
 python3 - <<PYEOF
