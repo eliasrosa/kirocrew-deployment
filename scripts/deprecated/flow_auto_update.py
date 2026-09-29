@@ -1,7 +1,20 @@
-"""KiroCrew Flow — cron de auto-update.
+"""KiroCrew Flow — cron de auto-update (DEPRECIADO).
 
-Detecta o diretório de instalação do app via installed.json, executa
-``git pull --rebase origin main`` e reinstala o cron com ``install-cron.sh``.
+.. deprecated:: issue #247
+    Este script foi substituído pelo hook ``onUpdate`` do ``app.json``.
+    O mecanismo de atualização agora é o hook oficial do Kiro Crew App:
+
+        kirocrew app update kirocrew-flow
+
+    O hook ``onUpdate`` em ``app.json`` executa automaticamente::
+
+        pip install -e '.[dev,gateway]' && cd ui && npm run build && ./scripts/install-cron.sh
+
+    Este arquivo é mantido apenas para referência histórica e não é copiado
+    pelo ``scripts/install-cron.sh`` nem registrado via ``app.json``.
+
+Detectava o diretório de instalação do app via installed.json, executava
+``git pull --rebase origin main`` e reinstalava o cron com ``install-cron.sh``.
 
 Comportamento:
 - Lê ``~/.kiro/crew/apps/kirocrew-flow/installed.json`` para obter o ``source``
