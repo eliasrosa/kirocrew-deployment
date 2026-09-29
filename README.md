@@ -83,13 +83,17 @@ no dashboard → Schedule → cron → Secrets):
 | Variável | Default | Descrição |
 |---|---|---|
 | `KIROCREW_WEBHOOK_URL` | `http://localhost:5478/api/hooks/agent` | Endpoint do webhook do dashboard. |
-| `KIROCREW_WEBHOOK_TOKEN` | *(vazio)* | Token Bearer do webhook configurado (Settings → Webhooks). Nunca é hard-coded. |
+| `KIROCREW_WEBHOOK_TOKEN` | *(vazio)* | Token Bearer do webhook configurado (Settings → Webhooks). Nunca versionado. |
+| `KIROCREW_WEBHOOK_SECRET` | *(vazio)* | Signing secret do webhook (HMAC-SHA256). Nunca versionado. |
 
 Quando `KIROCREW_WEBHOOK_TOKEN` está setado, o dispatch faz
 `POST {KIROCREW_WEBHOOK_URL}` com header `Authorization: Bearer <token>`. Quando o token
 está **vazio**, cai no comportamento legado de loopback interno (`POST /api/chat` com
 `X-Internal-Secret`/`X-Session-Key`), preservando os crons `message`-based. O scan em si
 continua **zero-token** — o webhook só é chamado quando há um candidato real na fila.
+
+> **Secrets nunca vão no `deployment.config.yaml`**. Configure-os via variáveis de
+> ambiente (ou Secrets do cron no dashboard). Veja `.env.example` para a lista completa.
 
 ## Fluxos disponíveis (Fase 1)
 
@@ -324,5 +328,7 @@ O fluxo `develop → review → merge` foi validado end-to-end via [issue #230](
 ## Segurança / privacidade
 
 - Repos, chat_id e paths vivem no `config.yaml` (gitignored). O `config.example.yaml` só tem placeholders.
+- **Secrets nunca vão em arquivos versionados.** `KIROCREW_WEBHOOK_TOKEN`, `KIROCREW_WEBHOOK_SECRET`, `AZURE_DEVOPS_PAT` e similares são configurados via variáveis de ambiente (ou Secrets do cron no dashboard). Veja `.env.example`.
+- O `.env` está no `.gitignore`. Nunca commite esse arquivo.
 - O disparo usa o segredo interno do gateway apenas em loopback (localhost).
 

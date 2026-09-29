@@ -765,27 +765,24 @@ def _webhook_url(cfg: dict | None = None) -> str:
     return os.environ.get("KIROCREW_WEBHOOK_URL", _WEBHOOK_URL_DEFAULT)
 
 
-def _webhook_token(cfg: dict | None = None) -> str:
+def _webhook_token() -> str:
     """Token Bearer do webhook.
 
-    Ordem de precedência: deployment.config.yaml (webhook_token) → env
-    KIROCREW_WEBHOOK_TOKEN. Vazio quando nenhum — aí o dispatch usa o
-    fallback loopback interno.
+    Lê de KIROCREW_WEBHOOK_TOKEN (variável de ambiente ou Secret do cron).
+    Nunca lido do deployment.config.yaml — secrets não devem ser versionados.
+    Vazio quando ausente — o dispatch cai no fallback loopback interno.
     """
-    if cfg and cfg.get("webhook_token"):
-        return str(cfg["webhook_token"])
     return os.environ.get("KIROCREW_WEBHOOK_TOKEN", "")
 
 
-def _webhook_secret(cfg: dict | None = None) -> str:
+def _webhook_secret() -> str:
     """Signing secret do webhook (HMAC-SHA256 do corpo).
 
-    Ordem de precedência: deployment.config.yaml (webhook_secret) → env
-    KIROCREW_WEBHOOK_SECRET. Necessário quando o webhook exige assinatura;
-    sem ele o POST é rejeitado com 401 signature_rejected.
+    Lê de KIROCREW_WEBHOOK_SECRET (variável de ambiente ou Secret do cron).
+    Nunca lido do deployment.config.yaml — secrets não devem ser versionados.
+    Necessário quando o webhook exige assinatura; sem ele o POST é rejeitado
+    com 401 signature_rejected.
     """
-    if cfg and cfg.get("webhook_secret"):
-        return str(cfg["webhook_secret"])
     return os.environ.get("KIROCREW_WEBHOOK_SECRET", "")
 
 
