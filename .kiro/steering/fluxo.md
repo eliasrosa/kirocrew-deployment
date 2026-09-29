@@ -198,8 +198,9 @@ squads/*.yaml
 
 ## Lock anti-loop: `flow:review-running`
 
-Uma análise por SHA. O robô de review adiciona `flow:review-running` ao iniciar a análise
-(lock interno). Quando o review termina:
+Uma análise por SHA. O cron/executor aplica `flow:review-running` atomicamente **antes**
+de despachar o reviewer (lock aplicado pela camada zero-token, não pelo agente). Quando o
+review termina:
 - Aprovado → move para `flow:review-approved` (remove `flow:review-waiting,flow:review-running`)
 - Reprovado → move para `flow:review-refused` (gate humano — não redespacha automaticamente)
 
