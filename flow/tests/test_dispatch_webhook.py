@@ -530,6 +530,7 @@ class TestOrphanSlotCleanup:
         with (
             mock.patch("urllib.request.urlopen", side_effect=fake_urlopen),
             mock.patch("glob.glob", return_value=[]),  # sem socket file → usa ctx._port
+            mock.patch("os.path.exists", return_value=False),  # sem arquivos de secret no disco
             mock.patch(
                 "deployment.deployment._delete_orphan_slot",
                 side_effect=lambda *a: cleanup_calls.append(a[2]),
