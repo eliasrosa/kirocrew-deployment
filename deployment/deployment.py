@@ -880,10 +880,62 @@ def _post_agent_session(
     try:
         with _u.urlopen(chat_req, timeout=12) as resp:
             resp.read(1)
+    except _u.HTTPError as exc:
+        # Lê o corpo do erro para facilitar diagnóstico (hoje era silencioso).
+        try:
+            err_body = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            err_body = "<corpo indisponível>"
+        logger.error(
+            "deployment: falha ao despachar sessão (slot %s): HTTP %s — %s",
+            slot,
+            exc.code,
+            err_body,
+        )
+        _delete_orphan_slot(port, secret, slot)
+        return False
     except Exception as exc:
         logger.error("deployment: falha ao despachar sessão (slot %s): %s", slot, exc)
+        _delete_orphan_slot(port, secret, slot)
         return False
     return True
+
+
+def _delete_orphan_slot(port: int, secret: str, slot: str) -> None:
+    """Tenta fechar um slot orphan criado pelo Step 1 cujo Step 2 falhou.
+
+    Usa POST /api/session-control/close via loopback.  O endpoint exige um
+    ``caller_session_key`` identificável; como o cron não tem sessão de agente,
+    a chamada provavelmente retorna ``caller_unidentified`` (403) — nesse caso
+    o slot some quando expirar naturalmente (memory_mode=temporary).  Logar
+    o resultado para visibilidade, mas nunca lançar exceção.
+    """
+    import urllib.request as _u2
+
+    close_body = json.dumps({"target": slot}).encode()
+    close_req = _u2.Request(
+        f"http://localhost:{port}/api/session-control/close",
+        data=close_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Internal-Secret": secret,
+        },
+        method="POST",
+    )
+    try:
+        with _u2.urlopen(close_req, timeout=5) as resp:
+            resp.read(1)
+        logger.info("deployment: slot orphan %s fechado com sucesso", slot)
+    except _u2.HTTPError as exc:
+        # 403 caller_unidentified é esperado — o cron não tem sessão de agente.
+        # O slot some quando expirar (memory_mode=temporary).
+        logger.info(
+            "deployment: não foi possível fechar slot orphan %s (HTTP %s) — expirará naturalmente",
+            slot,
+            exc.code,
+        )
+    except Exception as exc:
+        logger.warning("deployment: erro ao tentar fechar slot orphan %s: %s", slot, exc)
 
 
 def _dispatch_prompt(
