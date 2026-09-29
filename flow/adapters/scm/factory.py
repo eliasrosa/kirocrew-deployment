@@ -334,7 +334,7 @@ def _infer_scm_from_name(name: str) -> str:
     Retorna ``"azure_devops"`` se o nome seguir o padrão de URL do Azure DevOps
     (``dev.azure.com/...``), caso contrário retorna ``"github"``.
     """
-    normalized = name.lower().lstrip("https://").lstrip("http://")
+    normalized = name.lower().removeprefix("https://").removeprefix("http://")
     if normalized.startswith("dev.azure.com"):
         return "azure_devops"
     return "github"
