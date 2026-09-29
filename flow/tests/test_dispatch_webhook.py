@@ -380,3 +380,167 @@ class TestReviewerDispatchSignalling:
         notify_msgs = [c.args[0] for c in ctx.notify.call_args_list]
         assert any("falha ao despachar reviewer" in m for m in notify_msgs)
         assert not any("sessão one-shot do reviewer despachada" in m for m in notify_msgs)
+
+
+# ---------------------------------------------------------------------------
+# Cleanup de slot orphan — Step 2 falha → tenta fechar o slot
+# ---------------------------------------------------------------------------
+
+class TestOrphanSlotCleanup:
+    """Quando o Step 2 (/api/chat) falha, o slot criado no Step 1 deve ser limpo."""
+
+    def _make_resp(self, body: bytes = b"", status: int = 200) -> object:
+        class _FakeResp:
+            def __enter__(self) -> _FakeResp:
+                return self
+            def __exit__(self, *a: object) -> None:
+                return None
+            def read(self, _n: int = -1) -> bytes:
+                return body
+        return _FakeResp()
+
+    def test_step2_http_error_chama_delete_orphan(self) -> None:
+        """HTTPError no Step 2 → _delete_orphan_slot é invocado com port/secret/slot corretos."""
+        import urllib.error as _ue
+
+        ctx = _make_script_ctx()
+        cleanup_calls: list[str] = []
+
+        def fake_urlopen(req: object, timeout: float = 0) -> object:
+            url = req.full_url  # type: ignore[attr-defined]
+            if url.endswith("/api/chat"):
+                raise _ue.HTTPError(url, 500, "Internal Error", {}, None)  # type: ignore[arg-type]
+            return self._make_resp()
+
+        with (
+            mock.patch("urllib.request.urlopen", side_effect=fake_urlopen),
+            mock.patch("glob.glob", return_value=[]),  # sem socket file → usa ctx._port
+            mock.patch(
+                "deployment.deployment._delete_orphan_slot",
+                side_effect=lambda *a: cleanup_calls.append(a[2]),
+            ) as mock_cleanup,
+        ):
+            result = _post_agent_session(ctx, "msg", slot="esteira-repo-42", cfg=_base_config())
+
+        assert result is False
+        mock_cleanup.assert_called_once_with(5000, "s3cr3t", "esteira-repo-42")
+
+    def test_step2_network_error_chama_delete_orphan(self) -> None:
+        """OSError no Step 2 → _delete_orphan_slot é invocado."""
+        ctx = _make_script_ctx()
+
+        def fake_urlopen(req: object, timeout: float = 0) -> object:
+            url = req.full_url  # type: ignore[attr-defined]
+            if url.endswith("/api/chat"):
+                raise OSError("connection refused")
+            return self._make_resp()
+
+        with (
+            mock.patch("urllib.request.urlopen", side_effect=fake_urlopen),
+            mock.patch("deployment.deployment._delete_orphan_slot") as mock_cleanup,
+        ):
+            result = _post_agent_session(ctx, "msg", slot="slot-orphan", cfg=_base_config())
+
+        assert result is False
+        mock_cleanup.assert_called_once()
+
+    def test_step2_http_error_loga_corpo(self) -> None:
+        """HTTPError no Step 2 → o corpo da resposta é logado."""
+        import io
+        import urllib.error as _ue
+
+        ctx = _make_script_ctx()
+
+        err_body = b'{"error": "member_identity_unavailable"}'
+
+        def fake_urlopen(req: object, timeout: float = 0) -> object:
+            url = req.full_url  # type: ignore[attr-defined]
+            if url.endswith("/api/chat"):
+                fp = io.BytesIO(err_body)
+                raise _ue.HTTPError(url, 409, "Conflict", {}, fp)  # type: ignore[arg-type]
+            return self._make_resp()
+
+        log_messages: list[str] = []
+
+        import logging as _logging
+
+        class _CapHandler(_logging.Handler):
+            def emit(self, record: _logging.LogRecord) -> None:
+                log_messages.append(record.getMessage())
+
+        handler = _CapHandler()
+        deploy_logger = _logging.getLogger("deployment.deployment")
+        deploy_logger.addHandler(handler)
+        try:
+            with (
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen),
+                mock.patch("deployment.deployment._delete_orphan_slot"),
+            ):
+                _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
+        finally:
+            deploy_logger.removeHandler(handler)
+
+        assert any("member_identity_unavailable" in m for m in log_messages), (
+            f"Corpo do erro HTTP deveria aparecer no log. Mensagens: {log_messages}"
+        )
+
+    def test_step1_falha_nao_chama_delete_orphan(self) -> None:
+        """Falha no Step 1 (slot não criado) → _delete_orphan_slot NÃO é chamado."""
+        ctx = _make_script_ctx()
+
+        def fake_urlopen(req: object, timeout: float = 0) -> object:
+            url = req.full_url  # type: ignore[attr-defined]
+            if "api/chat/slots" in url:
+                raise OSError("connection refused")
+            return self._make_resp()
+
+        with (
+            mock.patch("urllib.request.urlopen", side_effect=fake_urlopen),
+            mock.patch("deployment.deployment._delete_orphan_slot") as mock_cleanup,
+        ):
+            result = _post_agent_session(ctx, "msg", slot="slot-1", cfg=_base_config())
+
+        assert result is False
+        mock_cleanup.assert_not_called()
+
+    def test_delete_orphan_slot_trata_403_graciosamente(self) -> None:
+        """_delete_orphan_slot com 403 caller_unidentified → não levanta exceção."""
+        import urllib.error as _ue
+
+        from deployment.deployment import _delete_orphan_slot
+
+        def fake_urlopen(req: object, timeout: float = 0) -> object:
+            url = req.full_url  # type: ignore[attr-defined]
+            if "session-control/close" in url:
+                raise _ue.HTTPError(url, 403, "Forbidden", {}, None)  # type: ignore[arg-type]
+            raise AssertionError(f"URL inesperada: {url}")
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            # Não deve lançar exceção
+            _delete_orphan_slot(5478, "secret", "esteira-repo-42")
+
+    def test_delete_orphan_slot_chama_session_control_close(self) -> None:
+        """_delete_orphan_slot faz POST /api/session-control/close com o slot como target."""
+        from deployment.deployment import _delete_orphan_slot
+
+        captured: dict = {}
+
+        class _FakeResp:
+            def __enter__(self) -> _FakeResp:
+                return self
+            def __exit__(self, *a: object) -> None:
+                return None
+            def read(self, _n: int = -1) -> bytes:
+                return b""
+
+        def fake_urlopen(req: object, timeout: float = 0) -> _FakeResp:
+            url = req.full_url  # type: ignore[attr-defined]
+            captured["url"] = url
+            captured["body"] = json.loads(req.data)  # type: ignore[attr-defined]
+            return _FakeResp()
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            _delete_orphan_slot(5478, "my-secret", "esteira-myrepo-99")
+
+        assert "session-control/close" in captured.get("url", "")
+        assert captured.get("body", {}).get("target") == "esteira-myrepo-99"
