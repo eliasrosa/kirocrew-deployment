@@ -892,10 +892,62 @@ def _post_agent_session(
     try:
         with _u.urlopen(chat_req, timeout=12) as resp:
             resp.read(1)
+    except _u.HTTPError as exc:
+        # Lê o corpo do erro para facilitar diagnóstico (hoje era silencioso).
+        try:
+            err_body = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            err_body = "<corpo indisponível>"
+        logger.error(
+            "deployment: falha ao despachar sessão (slot %s): HTTP %s — %s",
+            slot,
+            exc.code,
+            err_body,
+        )
+        _delete_orphan_slot(port, secret, slot)
+        return False
     except Exception as exc:
         logger.error("deployment: falha ao despachar sessão (slot %s): %s", slot, exc)
+        _delete_orphan_slot(port, secret, slot)
         return False
     return True
+
+
+def _delete_orphan_slot(port: int, secret: str, slot: str) -> None:
+    """Tenta fechar um slot orphan criado pelo Step 1 cujo Step 2 falhou.
+
+    Usa POST /api/session-control/close via loopback.  O endpoint exige um
+    ``caller_session_key`` identificável; como o cron não tem sessão de agente,
+    a chamada provavelmente retorna ``caller_unidentified`` (403) — nesse caso
+    o slot some quando expirar naturalmente (memory_mode=temporary).  Logar
+    o resultado para visibilidade, mas nunca lançar exceção.
+    """
+    import urllib.request as _u2
+
+    close_body = json.dumps({"target": slot}).encode()
+    close_req = _u2.Request(
+        f"http://localhost:{port}/api/session-control/close",
+        data=close_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Internal-Secret": secret,
+        },
+        method="POST",
+    )
+    try:
+        with _u2.urlopen(close_req, timeout=5) as resp:
+            resp.read(1)
+        logger.info("deployment: slot orphan %s fechado com sucesso", slot)
+    except _u2.HTTPError as exc:
+        # 403 caller_unidentified é esperado — o cron não tem sessão de agente.
+        # O slot some quando expirar (memory_mode=temporary).
+        logger.info(
+            "deployment: não foi possível fechar slot orphan %s (HTTP %s) — expirará naturalmente",
+            slot,
+            exc.code,
+        )
+    except Exception as exc:
+        logger.warning("deployment: erro ao tentar fechar slot orphan %s: %s", slot, exc)
 
 
 def _dispatch_prompt(
@@ -1557,21 +1609,32 @@ def run(ctx: object) -> None:
         # Também lê mergeability para detecção de conflito (flow:merge-conflict).
         pr_head_sha: str | None = None
         pr_mergeable: str | None = None
+        _result_repo = (
+            result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            or (repos[0] if repos else "")
+        )
         if result.current_state is State.REVIEW_WAITING:
             import contextlib
             with contextlib.suppress(Exception):
-                _repo = (
-                    result.item.key.split("/issues/")[0].replace("https://github.com/", "")
-                    or (repos[0] if repos else "")
-                )
                 _issue_number = int(result.item.key.split("/issues/")[-1]) if "/issues/" in result.item.key else 0
                 if _issue_number and hasattr(provider, "get_pr_for_issue"):
-                    _pr = provider.get_pr_for_issue(_repo, _issue_number)
+                    _pr = provider.get_pr_for_issue(_result_repo, _issue_number)
                     if _pr:
                         pr_head_sha = _pr.get("headRefOid") or _pr.get("headRefName")
                         pr_mergeable = _pr.get("mergeable")  # "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
 
-        decision = decide(result, state_comment=state_comment, squad=squad, pr_head_sha=pr_head_sha, pr_mergeable=pr_mergeable)
+        # Calcula auto_merge efetivo para este repo (config por repo > global)
+        _global_auto_merge = squad.workflow_params.auto_merge_on_approve if squad else False
+        _repo_auto_merge = _auto_merge_for_repo(squad, _result_repo, _global_auto_merge)
+
+        decision = decide(
+            result,
+            state_comment=state_comment,
+            squad=squad,
+            pr_head_sha=pr_head_sha,
+            pr_mergeable=pr_mergeable,
+            auto_merge_on_approve=_repo_auto_merge,
+        )
 
         # Loga o template resolvido pelo executor e a ação decidida, para
         # cada issue processada — facilita debugar por que uma issue foi para
@@ -3187,12 +3250,12 @@ def _run_stage(ctx: object, stage: str) -> None:
 
         pr_head_sha: str | None = None
         pr_mergeable: str | None = None
+        _rw_repo = (
+            result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            or (repos[0] if repos else "")
+        )
         if result.current_state is State.REVIEW_WAITING:
             import contextlib
-            _rw_repo = (
-                result.item.key.split("/issues/")[0].replace("https://github.com/", "")
-                or (repos[0] if repos else "")
-            )
             _rw_issue_number = int(result.item.key.split("/issues/")[-1]) if "/issues/" in result.item.key else 0
             logger.info(
                 "deployment[%s]: review_waiting — issue=%s modifiers=%s",
@@ -3218,7 +3281,18 @@ def _run_stage(ctx: object, stage: str) -> None:
                             _rw_issue_number, _rw_issue_number,
                         )
 
-        decision = decide(result, state_comment=state_comment, squad=squad, pr_head_sha=pr_head_sha, pr_mergeable=pr_mergeable)
+        # Calcula auto_merge efetivo para este repo (config por repo > global)
+        _global_auto_merge_s = squad.workflow_params.auto_merge_on_approve if squad else False
+        _repo_auto_merge_s = _auto_merge_for_repo(squad, _rw_repo, _global_auto_merge_s)
+
+        decision = decide(
+            result,
+            state_comment=state_comment,
+            squad=squad,
+            pr_head_sha=pr_head_sha,
+            pr_mergeable=pr_mergeable,
+            auto_merge_on_approve=_repo_auto_merge_s,
+        )
 
         template = resolve_template(result, squad)
         logger.info(
