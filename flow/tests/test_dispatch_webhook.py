@@ -503,9 +503,11 @@ class TestOrphanSlotCleanup:
                 raise _ue.HTTPError(url, 500, "Internal Error", {}, None)  # type: ignore[arg-type]
             return self._make_resp()
 
+        # sem arquivos de secret → _post_agent_session cai no ctx._secret ("s3cr3t")
         with (
             mock.patch("urllib.request.urlopen", side_effect=fake_urlopen),
             mock.patch("glob.glob", return_value=[]),  # sem socket file → usa ctx._port
+            mock.patch("os.path.exists", return_value=False),  # sem secret files
             mock.patch(
                 "deployment.deployment._delete_orphan_slot",
                 side_effect=lambda *a: cleanup_calls.append(a[2]),
@@ -610,8 +612,8 @@ class TestOrphanSlotCleanup:
             # Não deve lançar exceção
             _delete_orphan_slot(5478, "secret", "esteira-repo-42")
 
-    def test_delete_orphan_slot_chama_session_control_close(self) -> None:
-        """_delete_orphan_slot faz POST /api/session-control/close com o slot como target."""
+    def test_delete_orphan_slot_chama_delete_chat_slots(self) -> None:
+        """_delete_orphan_slot faz DELETE /api/chat/slots/{slot} com X-Internal-Secret."""
         from deployment.deployment import _delete_orphan_slot
 
         captured: dict = {}
@@ -627,11 +629,13 @@ class TestOrphanSlotCleanup:
         def fake_urlopen(req: object, timeout: float = 0) -> _FakeResp:
             url = req.full_url  # type: ignore[attr-defined]
             captured["url"] = url
-            captured["body"] = json.loads(req.data)  # type: ignore[attr-defined]
+            captured["method"] = req.method  # type: ignore[attr-defined]
+            captured["secret"] = req.headers.get("X-internal-secret")  # type: ignore[attr-defined]
             return _FakeResp()
 
         with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
             _delete_orphan_slot(5478, "my-secret", "esteira-myrepo-99")
 
-        assert "session-control/close" in captured.get("url", "")
-        assert captured.get("body", {}).get("target") == "esteira-myrepo-99"
+        assert "chat/slots/esteira-myrepo-99" in captured.get("url", "")
+        assert captured.get("method") == "DELETE"
+        assert captured.get("secret") == "my-secret"
