@@ -788,3 +788,115 @@ class TestSingleFlowSpecStages:
         )
         assert decide(r, single_flow=True).action is ActionKind.DISPATCH_DEV
         assert decide(r, single_flow=False).action is ActionKind.DISPATCH_DEV
+
+
+# ---------------------------------------------------------------------------
+# decide() — C2: estado de review vindo do LEDGER tem precedência sobre o comentário
+# ---------------------------------------------------------------------------
+
+class TestC2LedgerPrecedence:
+    """O driving adapter lê o estado do ledger (SQLite) e o injeta no decide().
+
+    Quando o parâmetro do ledger é fornecido, ele é a fonte de verdade — o
+    comentário KIRO-FLOW-STATE só é lido como fallback durante a coexistência.
+    Estes testes provam que o ledger GANHA quando os dois divergem.
+    """
+
+    def _review_result(self, approved: bool, comments: list[str] | None = None, sha: str = "abc123"):
+        from flow.audit.state_comment import ReviewerResult
+        return ReviewerResult(approved=approved, comments=tuple(comments or []), sha=sha)
+
+    def _comment_reviewer(self, approved: bool, comments: list[str] | None = None) -> str:
+        from flow.audit.state_comment import StateComment, render
+        sc = StateComment(
+            workflow="feature (v1)", current_node="review",
+            status="reviewed", repo="kirocrew-flow",
+        )
+        sc.set_reviewer_result(approved=approved, comments=comments or [], sha="ffffff")
+        return render(sc)
+
+    def _r_review(self) -> ScanResult:
+        return _result(
+            state=State.REVIEW_WAITING,
+            labels=["flow:review-waiting", "flow:review-running", "flow:feature"],
+            modifiers={Modifier.REVIEWED},
+        )
+
+    def test_reviewer_result_do_ledger_ganha_do_comentario(self) -> None:
+        # Comentário diz REPROVADO; ledger diz APROVADO sem comentários.
+        # O ledger deve mandar → MERGE_PR.
+        r = self._r_review()
+        d = decide(
+            r,
+            state_comment=self._comment_reviewer(approved=False, comments=["muda X"]),
+            reviewer_result=self._review_result(approved=True, comments=[]),
+            auto_merge_on_approve=True,
+        )
+        assert d.action is ActionKind.MERGE_PR
+
+    def test_reviewer_result_ledger_reprovado_ganha(self) -> None:
+        # Comentário diz APROVADO; ledger diz REPROVADO com comentários.
+        # O ledger deve mandar → NOTIFY_HUMAN + review-refused.
+        r = self._r_review()
+        d = decide(
+            r,
+            state_comment=self._comment_reviewer(approved=True, comments=[]),
+            reviewer_result=self._review_result(approved=False, comments=["falta teste"]),
+            auto_merge_on_approve=True,
+        )
+        assert d.action is ActionKind.NOTIFY_HUMAN
+        assert "flow:review-refused" in d.add_labels
+
+    def test_anti_loop_sha_do_ledger_redispara_reviewer(self) -> None:
+        # ledger tem SHA antigo; PR HEAD avançou → re-review.
+        r = self._r_review()
+        d = decide(
+            r,
+            reviewer_result=self._review_result(approved=True, sha="oldsha00"),
+            pr_head_sha="newsha99",
+            auto_merge_on_approve=True,
+        )
+        assert d.action is ActionKind.DISPATCH_REVIEWER
+        assert "SHA divergiu" in d.reason
+
+    def test_anti_loop_sha_igual_nao_redispara(self) -> None:
+        # ledger e PR HEAD no mesmo SHA → NÃO re-analisa (aprovado → merge).
+        r = self._r_review()
+        d = decide(
+            r,
+            reviewer_result=self._review_result(approved=True, sha="samesha1"),
+            pr_head_sha="samesha1",
+            auto_merge_on_approve=True,
+        )
+        assert d.action is ActionKind.MERGE_PR
+
+    def test_review_iterations_do_ledger_ganha(self) -> None:
+        # Comentário sem iterações; ledger acima do teto → NOTIFY_HUMAN (teto).
+        r = _result(
+            state=State.REVIEW_REFUSED,
+            labels=["flow:review-refused", "flow:feature"],
+            modifiers=set(),
+            dispatch_candidate=False,
+        )
+        d = decide(r, state_comment=None, review_iterations=99, max_review_iterations=3)
+        assert d.action is ActionKind.NOTIFY_HUMAN
+        assert "TETO DE ITERAÇÕES" in d.reason
+
+    def test_tl_approved_do_ledger_libera_dispatch_debt(self) -> None:
+        # Débito técnico em develop-waiting: sem comentário, mas ledger diz gate-tl aprovado.
+        r = _result(
+            state=State.DEVELOP_WAITING,
+            labels=["flow:develop-waiting", "flow:debt"],
+        )
+        d = decide(r, state_comment=None, tl_approved=True)
+        # Com o gate liberado, não trava em NOTIFY_HUMAN por falta de gate-tl.
+        assert not (d.action is ActionKind.NOTIFY_HUMAN and "GATE DT" in d.reason)
+
+    def test_tl_nao_aprovado_no_ledger_trava_debt(self) -> None:
+        r = _result(
+            state=State.DEVELOP_WAITING,
+            labels=["flow:develop-waiting", "flow:debt"],
+        )
+        d = decide(r, state_comment=None, tl_approved=False)
+        assert d.action is ActionKind.NOTIFY_HUMAN
+        assert "GATE DT" in d.reason
