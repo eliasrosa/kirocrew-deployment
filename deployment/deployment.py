@@ -4344,17 +4344,50 @@ class _LedgerStateReader:
 class _LedgerDispatcher:
     """Dispatcher concreto: mapeia o State ativo para o _dispatch_* real."""
 
-    def __init__(self, ctx: object, cfg: dict) -> None:
+    def __init__(self, ctx: object, cfg: dict, provider: object) -> None:
         self._ctx = ctx
         self._cfg = cfg
+        self._provider = provider
+
+    def _enrich_issue(self, repo: str, issue: dict) -> dict | None:
+        """Completa o ``issue`` do motor com ``title`` (e demais campos) via
+        ``get_work_item``.
+
+        O motor (``ledger_tick``) monta o dict só com ``number`` e ``key`` — ele
+        não conhece o título da issue. Os prompts de dispatch (`_spec_stage_prompt`)
+        montam o título da sessão com ``issue['title']``; sem esse campo o dispatch
+        estourava ``KeyError: 'title'`` (Gap B), o que criava o backstop lock e
+        abortava sem NUNCA subir a sessão sidebar.
+
+        Busca o work_item real (1 chamada de rede, só no dispatch — não no scan) e
+        devolve o ``issue`` mesclado. Retorna ``None`` se a busca falhar, para que
+        ``dispatch_stage`` reporte abort (``False``) e o tick NÃO avance no vazio
+        (mesma disciplina do Gap A)."""
+        key = issue.get("key") or issue.get("number")
+        try:
+            item = self._provider.get_work_item(repo, str(key))  # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.warning(
+                "single-flow: get_work_item falhou ao enriquecer o issue %s (%s): %s — dispatch abortado",
+                key, repo, exc,
+            )
+            return None
+        # Preserva number/key do motor; acrescenta title e o que mais vier do provider.
+        merged = {**item, **issue}
+        if "title" not in merged or not merged.get("title"):
+            merged["title"] = item.get("title", "")
+        return merged
 
     def dispatch_stage(self, repo: str, issue: dict, stage: State) -> bool:
+        if stage not in (State.BRIEFING, State.PLANNING_SPECS):
+            logger.info("single-flow: estágio %s não é ativo — sem disparo", stage.value)
+            return False
+        enriched = self._enrich_issue(repo, issue)
+        if enriched is None:
+            return False
         if stage is State.BRIEFING:
-            return _dispatch_briefing(self._ctx, repo, issue, self._cfg)
-        if stage is State.PLANNING_SPECS:
-            return _dispatch_planning(self._ctx, repo, issue, self._cfg)
-        logger.info("single-flow: estágio %s não é ativo — sem disparo", stage.value)
-        return False
+            return _dispatch_briefing(self._ctx, repo, enriched, self._cfg)
+        return _dispatch_planning(self._ctx, repo, enriched, self._cfg)
 
 
 def _resolve_squad_id(cfg: dict) -> str:
@@ -4397,7 +4430,7 @@ def _single_flow_tick(ctx: object) -> str:
     ledger = SqliteRunLedger(squad_id)
     try:
         reader = _LedgerStateReader(provider)
-        dispatcher = _LedgerDispatcher(ctx, cfg)
+        dispatcher = _LedgerDispatcher(ctx, cfg, provider)
         result = tick(ledger, dispatcher, reader)
         logger.info("deployment[single-flow]: tick → %s", result)
         return result
