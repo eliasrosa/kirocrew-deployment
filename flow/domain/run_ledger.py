@@ -62,6 +62,10 @@ class Run:
     ``stage_session``  — id/handle da sessão one-shot do estágio atual (se houver)
     ``started_at``     — ISO timestamp de quando a run foi presa (claim)
     ``last_transition``— ISO timestamp da última mudança de estágio
+    ``stage_started_at``— ISO timestamp de quando o ESTÁGIO ATUAL começou (cada
+                          ``advance`` ou ``claim`` grava o momento; permite calcular
+                          quanto tempo a task está parada num estágio para o
+                          ``stall_timeout`` planejado)
     ``attempts``       — nº de tentativas do estágio atual (para detectar loop)
     ``status``         — RunStatus
     ``review_sha``     — SHA do commit analisado no último review (anti-loop por SHA)
@@ -87,6 +91,7 @@ class Run:
     review_iterations: int = 0
     review_approved: bool | None = None
     approvals: dict[str, str] = field(default_factory=dict)
+    stage_started_at: str = ""  # quando o estágio atual começou (claim/advance)
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +183,8 @@ CREATE TABLE IF NOT EXISTS run_ledger (
     review_sha        TEXT NOT NULL DEFAULT '',
     review_iterations INTEGER NOT NULL DEFAULT 0,
     review_approved   INTEGER NULL,
-    approvals         TEXT NOT NULL DEFAULT '{}'
+    approvals         TEXT NOT NULL DEFAULT '{}',
+    stage_started_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
 
@@ -189,6 +195,7 @@ _MIGRATION_COLUMNS: tuple[tuple[str, str], ...] = (
     ("review_iterations", "INTEGER NOT NULL DEFAULT 0"),
     ("review_approved",   "INTEGER NULL"),
     ("approvals",         "TEXT NOT NULL DEFAULT '{}'"),
+    ("stage_started_at",  "TEXT NOT NULL DEFAULT ''"),
 )
 
 _DEFAULT_DATA_DIR = Path.home() / ".kiro" / "crew" / "kirocrew-flow"
@@ -203,11 +210,12 @@ def _db_path(squad_id: str, data_dir: Path | None = None) -> Path:
 def _row_to_run(row: tuple) -> Run:
     # Colunas novas podem não existir em bancos ainda-não-migrados lidos por
     # um SELECT * — mas _migrate roda no __init__, então a partir daí a row tem
-    # 12 colunas. Toleramos rows curtas por segurança (defaults).
+    # 13 colunas. Toleramos rows curtas por segurança (defaults).
     review_sha        = row[8]  if len(row) > 8  else ""
     review_iterations = row[9]  if len(row) > 9  else 0
     review_approved_raw = row[10] if len(row) > 10 else None
     approvals_raw     = row[11] if len(row) > 11 else "{}"
+    stage_started_at  = row[12] if len(row) > 12 else ""
     return Run(
         task_key=row[0],
         repo=row[1],
@@ -221,6 +229,7 @@ def _row_to_run(row: tuple) -> Run:
         review_iterations=review_iterations or 0,
         review_approved=(None if review_approved_raw is None else bool(review_approved_raw)),
         approvals=json.loads(approvals_raw) if approvals_raw else {},
+        stage_started_at=stage_started_at or "",
     )
 
 
@@ -263,13 +272,14 @@ class SqliteRunLedger:
             return existing_active.task_key == task_key
         self._conn.execute(
             """
-            INSERT INTO run_ledger (task_key, repo, current_stage, status)
-            VALUES (?, ?, ?, 'running')
+            INSERT INTO run_ledger (task_key, repo, current_stage, status, stage_started_at)
+            VALUES (?, ?, ?, 'running', datetime('now'))
             ON CONFLICT(task_key) DO UPDATE SET
-                repo          = excluded.repo,
-                current_stage = excluded.current_stage,
-                status        = 'running',
-                last_transition = datetime('now')
+                repo             = excluded.repo,
+                current_stage    = excluded.current_stage,
+                status           = 'running',
+                last_transition  = datetime('now'),
+                stage_started_at = datetime('now')
             """,
             (task_key, repo, stage),
         )
@@ -283,7 +293,8 @@ class SqliteRunLedger:
                SET current_stage   = ?,
                    stage_session   = ?,
                    attempts        = 0,
-                   last_transition = datetime('now')
+                   last_transition  = datetime('now'),
+                   stage_started_at = datetime('now')
              WHERE task_key = ?
             """,
             (new_stage, stage_session, task_key),
