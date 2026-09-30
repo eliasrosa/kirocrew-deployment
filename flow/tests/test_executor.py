@@ -685,3 +685,78 @@ class TestReviewOkReviewFail:
         )
         d = decide(r, state_comment=None)
         assert d.action is ActionKind.NOTIFY_HUMAN
+
+
+# ---------------------------------------------------------------------------
+# Modo single-flow — estágios de especificação (briefing / planning-specs)
+# ---------------------------------------------------------------------------
+
+class TestSingleFlowSpecStages:
+    """Os estados de spec só despacham sessão de agente quando single_flow=True.
+
+    Com single_flow=False (default), o comportamento paralelo atual é mantido
+    byte-a-byte: BRIEFING notifica TL, PLANNING_SPECS faz SKIP.
+    """
+
+    # ── Default (single_flow=False) — comportamento paralelo inalterado ──
+
+    def test_briefing_default_notifica_tl(self) -> None:
+        r = _result(
+            labels=["flow:briefing", "flow:feature"],
+            state=State.BRIEFING,
+        )
+        d = decide(r)
+        assert d.action is ActionKind.NOTIFY_HUMAN
+        assert d.notify_role is HumanRole.TL
+
+    def test_planning_specs_default_skip(self) -> None:
+        r = _result(
+            labels=["flow:planning-specs", "flow:feature"],
+            state=State.PLANNING_SPECS,
+        )
+        d = decide(r)
+        assert d.action is ActionKind.SKIP
+
+    def test_briefing_single_flow_false_explicito_notifica_tl(self) -> None:
+        r = _result(labels=["flow:briefing"], state=State.BRIEFING)
+        d = decide(r, single_flow=False)
+        assert d.action is ActionKind.NOTIFY_HUMAN
+
+    # ── single_flow=True — despacha as sessões de spec ───────────────────
+
+    def test_briefing_single_flow_despacha_briefing(self) -> None:
+        r = _result(
+            labels=["flow:briefing", "flow:feature"],
+            state=State.BRIEFING,
+        )
+        d = decide(r, single_flow=True)
+        assert d.action is ActionKind.DISPATCH_BRIEFING
+
+    def test_planning_specs_single_flow_despacha_planning(self) -> None:
+        r = _result(
+            labels=["flow:planning-specs", "flow:feature"],
+            state=State.PLANNING_SPECS,
+        )
+        d = decide(r, single_flow=True)
+        assert d.action is ActionKind.DISPATCH_PLANNING
+
+    # ── planning-review continua gate humano em ambos os modos ───────────
+
+    def test_planning_review_single_flow_ainda_notifica_tl(self) -> None:
+        r = _result(
+            labels=["flow:planning-review", "flow:feature"],
+            state=State.PLANNING_REVIEW,
+        )
+        d = decide(r, single_flow=True)
+        assert d.action is ActionKind.NOTIFY_HUMAN
+        assert d.notify_role is HumanRole.TL
+
+    # ── single_flow não afeta o estágio de desenvolvimento ───────────────
+
+    def test_develop_waiting_inalterado_com_single_flow(self) -> None:
+        r = _result(
+            labels=["flow:develop-waiting", "flow:feature"],
+            state=State.DEVELOP_WAITING,
+        )
+        assert decide(r, single_flow=True).action is ActionKind.DISPATCH_DEV
+        assert decide(r, single_flow=False).action is ActionKind.DISPATCH_DEV

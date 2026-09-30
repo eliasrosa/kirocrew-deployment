@@ -374,3 +374,46 @@ class TestRealTemplates:
         )
         assert "headRefOid" in result
         assert "gh pr view 5 --repo owner/myrepo --json headRefOid" in result
+
+
+    # ── Templates single-flow: briefing e planning_specs ─────────────────
+
+    def _spec_vars(self, stage_short: str) -> dict[str, str]:
+        """Exatamente as variáveis que _spec_stage_prompt fornece no dispatch."""
+        return {
+            "repo": "owner/myrepo",
+            "repo_short": "myrepo",
+            "issue_number": "42",
+            "issue_title": "Nova feature",
+            "issue_url": "https://github.com/owner/myrepo/issues/42",
+            "session_title": "myrepo #42: Nova feature",
+            "notify_step": "reporte o resultado, ",
+            "prompt_extra": "",
+        }
+
+    def test_briefing_template_real_renderiza_sem_erro(self) -> None:
+        result = render_prompt("briefing", **self._spec_vars("briefing"))
+        assert "owner/myrepo" in result
+        assert "#42" in result
+        assert "flow:planning-specs" in result   # transição de saída
+        assert "flow:briefing" in result
+        assert "sub-task" in result.lower()
+
+    def test_planning_specs_template_real_renderiza_sem_erro(self) -> None:
+        result = render_prompt("planning_specs", **self._spec_vars("planning"))
+        assert "owner/myrepo" in result
+        assert "#42" in result
+        assert "flow:planning-review" in result   # transição de saída
+        assert "flow:planning-specs" in result
+
+    def test_briefing_template_com_prompt_extra(self) -> None:
+        v = self._spec_vars("briefing")
+        v["prompt_extra"] = "regra extra da squad"
+        result = render_prompt("briefing", **v)
+        assert "regra extra da squad" in result
+
+    def test_planning_specs_template_com_prompt_extra(self) -> None:
+        v = self._spec_vars("planning")
+        v["prompt_extra"] = "regra extra da squad"
+        result = render_prompt("planning_specs", **v)
+        assert "regra extra da squad" in result
