@@ -4261,6 +4261,54 @@ def run_planning_review(ctx: object) -> None:
     _run_stage(ctx, _STAGE_PLANNING_REVIEW)
 
 
+# Ordem dos estágios no orquestrador single-flow. Do início do fluxo ao fim:
+# uma task por vez (garantido pelo RunLedger + max_concurrent=1) percorre estes
+# estágios. Cada _run_stage faz seu próprio scan zero-token e só age no estado
+# que lhe cabe, então varrer todos num tick é seguro e barato — o custo de LLM
+# só ocorre quando um estágio efetivamente dispara uma sessão.
+_SINGLE_FLOW_STAGES = (
+    _STAGE_BRIEFING,
+    _STAGE_PLANNING,
+    _STAGE_PLANNING_REVIEW,
+    _STAGE_DEV,
+    _STAGE_REVIEWER,
+    _STAGE_MERGE_REVIEW,
+    _STAGE_CONFLITO,
+    _STAGE_MERGE_QA,
+)
+
+
+def run_single_flow(ctx: object) -> None:
+    """Entrypoint ÚNICO do modo single-flow (frente 5).
+
+    Uma só cron (recomendado: every=30s, zero-token) que orquestra o fluxo
+    inteiro. A cada tick percorre todos os estágios do single-flow em ordem,
+    delegando a ``_run_stage`` — que faz scan determinístico do estado (custo
+    zero de token) e só aciona o LLM quando há uma sessão a despachar.
+
+    A concorrência "uma task por vez" é imposta por ``max_concurrent: 1`` na
+    config e pelo RunLedger (fonte de verdade do estágio atual da task). Um
+    estágio que levante exceção é logado e não interrompe os demais — o tick
+    é resiliente por estágio.
+
+    Só tem efeito com ``single_flow: true`` na config; com a flag desligada,
+    cada ``_run_stage`` roda o scan mas o executor não emite as ações de
+    briefing/planning/advance, então nada single-flow é despachado.
+
+    Registro (uma vez):
+        cron_add(name="flow-single",
+                 script="~/.kiro/crew/crons/deployment.py:run_single_flow",
+                 every=30)
+    """
+    for stage in _SINGLE_FLOW_STAGES:
+        try:
+            _run_stage(ctx, stage)
+        except Exception as exc:
+            logger.error(
+                "deployment[single-flow]: estágio %s falhou: %s", stage, exc
+            )
+
+
 # ── Stub de compatibilidade — re-exporta entrypoints de deployment/flow/ ─────
 #
 # Os crons novos apontam para deployment/flow/<modulo>.py:run.
