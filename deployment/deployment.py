@@ -4320,25 +4320,43 @@ def run_single_flow(ctx: object) -> None:
 
 
 class _LedgerStateReader:
-    """StateReader concreto: lê o State real da issue via provider.get_work_item."""
+    """StateReader concreto: deriva o State real da issue de EVIDÊNCIA externa
+    (branch + PR + issue fechada), NÃO de labels de estado.
+
+    C3 da frente estado-local (#301): o estado da esteira é 100% local (o ledger
+    SQLite é a fonte de verdade do estágio). O motor ainda precisa saber quando um
+    estágio de ESPERA (develop/review/qa) recebeu o sinal externo — mas esse sinal
+    é FATO do repositório (a branch existe? há PR? a PR foi aprovada? a issue
+    fechou?), não uma label de estado. Isso vem de ``implicit_state`` (puro, já
+    testado). Assim o single-flow não lê mais nenhuma label ``flow:*``.
+    """
 
     def __init__(self, provider: object) -> None:
         self._provider = provider
 
     def read_state(self, repo: str, task_key: str) -> State | None:
-        from flow.domain.state import EstadoAmbiguo, parse_state
-        try:
-            item = self._provider.get_work_item(repo, task_key)  # type: ignore[attr-defined]
-        except Exception as exc:
-            logger.warning(
-                "single-flow: get_work_item falhou para %s (%s): %s",
-                task_key, repo, exc,
-            )
+        # Deriva o estado de evidência externa (branch/PR/issue fechada).
+        # _collect_implicit_state faz o I/O (branch check + PR + reviews) e delega
+        # a lógica pura a implicit_state(). Fail-safe: erro → None (motor aguarda).
+        from flow.domain.gates import WorkItem
+        from flow.scan.scanner import ScanResult
+
+        # O reader recebe só repo + task_key; monta um ScanResult mínimo para
+        # reusar _collect_implicit_state (que espera result.item.key).
+        stub = ScanResult(
+            item=WorkItem(key=task_key, title="", labels=frozenset()),
+            current_state=None,
+            modifiers=frozenset(),
+            dispatch_candidate=False,
+            spec_valid=None,
+            changed=False,
+            reason="single-flow read_state",
+        )
+        implicit = _collect_implicit_state(stub, self._provider, repo)
+        if implicit is None:
             return None
-        try:
-            return parse_state(set(item.get("labels", [])))
-        except EstadoAmbiguo:
-            return None
+        mapping = _build_implicit_to_explicit_map()
+        return mapping.get(implicit)  # type: ignore[arg-type]
 
 
 class _LedgerDispatcher:
