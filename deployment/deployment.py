@@ -1352,7 +1352,6 @@ def _spec_accepted_for(provider: object, result: object, repos: list[str]) -> bo
     mantendo a task em planning-review (não avança sem confirmação).
     """
     from flow.domain.gates import can_leave_planning
-    from flow.scan.scanner import ScanResult
 
     r: ScanResult = result  # type: ignore[assignment]
     repo = r.item.key.split("/issues/")[0].replace("https://github.com/", "") or (repos[0] if repos else "")
@@ -4304,7 +4303,7 @@ def run_single_flow(ctx: object) -> None:
 # O estado da task vive no RunLedger (SQLite local), NÃO nas labels do GitHub.
 # O tick lê a task ativa (1 query local), lê o estado real da issue (1 chamada
 # de rede) e a empurra estágio a estágio. Custo O(1) por tick — some o scan que
-# varria 16 estados × 8 estágios (~128 chamadas gh) do modelo anterior.
+# varria 16 estados x 8 estágios (~128 chamadas gh) do modelo anterior.
 
 
 class _LedgerStateReader:
@@ -4317,7 +4316,7 @@ class _LedgerStateReader:
         from flow.domain.state import EstadoAmbiguo, parse_state
         try:
             item = self._provider.get_work_item(repo, task_key)  # type: ignore[attr-defined]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 "single-flow: get_work_item falhou para %s (%s): %s",
                 task_key, repo, exc,

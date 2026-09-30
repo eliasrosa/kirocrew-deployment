@@ -27,9 +27,22 @@ except ImportError:
     import importlib.util
     import os
 
-    _DEPLOY_PY = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "deployment.py",
+    # Dois layouts possíveis do deployment.py:
+    #   - No repo:   deployment/deployment.py   (um nível acima de flow/)
+    #   - Instalado: ~/.kiro/crew/crons/deployment.py (o install-cron.sh copia
+    #                o deployment.py para a RAIZ de crons/, não para deployment/)
+    _FLOW_DIR = os.path.dirname(os.path.abspath(__file__))
+    _DEPLOYMENT_DIR = os.path.dirname(_FLOW_DIR)
+    _DEPLOY_PY = next(
+        (
+            _cand
+            for _cand in (
+                os.path.join(_DEPLOYMENT_DIR, "deployment.py"),                  # repo
+                os.path.join(os.path.dirname(_DEPLOYMENT_DIR), "deployment.py"),  # instalado
+            )
+            if os.path.isfile(_cand)
+        ),
+        os.path.join(_DEPLOYMENT_DIR, "deployment.py"),
     )
     _spec = importlib.util.spec_from_file_location("_kirocrew_flow_deploy", _DEPLOY_PY)
     _mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
