@@ -1141,6 +1141,144 @@ def _dispatch(
     _post_agent_session(ctx, message, slot=slot, cfg=cfg)
 
 
+# ── Estágios de especificação single-flow: briefing e planning-specs ─────
+#
+# Sessões one-shot que NÃO tocam código: leem a task, criam/preenchem as
+# sub-tasks e transicionam a label. Espelham o padrão de _dispatch (guard de
+# issue CLOSED + backstop lock atômico + POST /api/chat), mas sem worktree,
+# rebase ou PR — a spec vive nas sub-tasks da issue, não em branch.
+
+_BRIEFING_PROMPT_FALLBACK = (
+    "# {{session_title}}\n\n"
+    "Sessão ONE-SHOT de briefing (single-flow) para {{repo}}#{{issue_number}} — "
+    "{{issue_title}} ({{issue_url}}).\n\n"
+    "Se a issue estiver CLOSED, encerre sem ação. Leia steerings/README/docs e a "
+    "issue com comentários; entenda a demanda. Se vaga, marque flow:blocked e pare. "
+    "Crie 2 sub-tasks fixas (Especificação, Implementação) referenciando a pai, "
+    "registre os números num comentário, transicione flow:briefing → "
+    "flow:planning-specs e {{notify_step}}. NÃO escreva a spec, NÃO code, NÃO abra "
+    "PR. Estimativa é manual.\n\n{{prompt_extra}}"
+)
+
+_PLANNING_PROMPT_FALLBACK = (
+    "# {{session_title}}\n\n"
+    "Sessão ONE-SHOT de especificação (single-flow) para {{repo}}#{{issue_number}} — "
+    "{{issue_title}} ({{issue_url}}).\n\n"
+    "Se a issue estiver CLOSED, encerre sem ação. Releia o material e as decisões do "
+    "briefing. Monte a spec padrão Kiro (requirements + design + tasks) na Sub-task 1 "
+    "· Especificação. Sinalize pontos de design em aberto para o TL/PM. Peça a revisão "
+    "(fechar a Sub-task 1 marca o aceite), transicione flow:planning-specs → "
+    "flow:planning-review e {{notify_step}}. NÃO feche a sub-task, NÃO code, NÃO abra "
+    "PR. Estimativa é manual.\n\n{{prompt_extra}}"
+)
+
+
+def _spec_stage_prompt(
+    stage_template: str,
+    fallback: str,
+    repo: str,
+    issue: dict,
+    cfg: dict,
+    prompt_extra: str = "",
+) -> str:
+    """Renderiza o prompt de um estágio de especificação (briefing/planning).
+
+    Usa ``flow/prompts/<stage_template>.md`` como fonte primária, caindo no
+    ``fallback`` embutido se o arquivo estiver ausente. Variável faltando →
+    ``PromptRenderError`` (fail-closed), como os demais estágios.
+    """
+    short = repo.split("/")[-1]
+    chat_id = cfg.get("notify_chat_id") or ""
+    notify_step = (
+        f"avise via voice_maybe (chat_id {chat_id}, intent auto) com TL;DR, "
+        if chat_id else "reporte o resultado, "
+    )
+    session_title = f"{short} #{issue['number']}: {issue['title']}"
+    return render_prompt(
+        stage_template,
+        fallback=fallback,
+        repo=repo,
+        repo_short=short,
+        issue_number=str(issue["number"]),
+        issue_title=issue["title"],
+        issue_url=issue["url"],
+        session_title=session_title,
+        notify_step=notify_step,
+        prompt_extra=prompt_extra.strip(),
+    )
+
+
+def _dispatch_spec_stage(
+    ctx: object,
+    repo: str,
+    issue: dict,
+    cfg: dict,
+    *,
+    stage_template: str,
+    fallback: str,
+    slot_prefix: str,
+    prompt_extra: str = "",
+) -> None:
+    """Despacha uma sessão one-shot de estágio de especificação (single-flow).
+
+    Guard de issue CLOSED + backstop lock atômico antes do POST — mesma
+    disciplina de concorrência de ``_dispatch``.
+    """
+    if _is_issue_closed(repo, issue["number"]):
+        logger.info(
+            "deployment[%s]: dispatch abortado — issue %s#%s está CLOSED",
+            slot_prefix, repo, issue["number"],
+        )
+        return
+
+    acquired, _lock_path = _try_acquire_dispatch_lock(repo, issue["number"])
+    if not acquired:
+        logger.info(
+            "deployment[%s]: dispatch abortado — backstop lock já existe para %s#%s",
+            slot_prefix, repo, issue["number"],
+        )
+        return
+
+    slot = f"{slot_prefix}-{repo.split('/')[-1]}-{issue['number']}"
+    try:
+        message = _spec_stage_prompt(
+            stage_template, fallback, repo, issue, cfg, prompt_extra=prompt_extra,
+        )
+    except PromptRenderError as exc:
+        logger.error(
+            "deployment[%s]: dispatch abortado — template %r inválido para %s#%s: %s",
+            slot_prefix, stage_template, repo, issue["number"], exc,
+        )
+        return
+    _post_agent_session(ctx, message, slot=slot, cfg=cfg)
+
+
+def _dispatch_briefing(
+    ctx: object, repo: str, issue: dict, cfg: dict, prompt_extra: str = "",
+) -> None:
+    """Despacha a sessão one-shot de briefing (flow:briefing, single-flow)."""
+    _dispatch_spec_stage(
+        ctx, repo, issue, cfg,
+        stage_template="briefing",
+        fallback=_BRIEFING_PROMPT_FALLBACK,
+        slot_prefix="briefing",
+        prompt_extra=prompt_extra,
+    )
+
+
+def _dispatch_planning(
+    ctx: object, repo: str, issue: dict, cfg: dict, prompt_extra: str = "",
+) -> None:
+    """Despacha a sessão one-shot de especificação (flow:planning-specs, single-flow)."""
+    _dispatch_spec_stage(
+        ctx, repo, issue, cfg,
+        stage_template="planning_specs",
+        fallback=_PLANNING_PROMPT_FALLBACK,
+        slot_prefix="planning",
+        prompt_extra=prompt_extra,
+    )
+
+
 # ── Monitor zero-token da issue (issue #211) ─────────────────────────────
 
 def _create_issue_monitor(repo: str, issue_number: int) -> None:
@@ -3106,6 +3244,8 @@ def _execute_auto_merges(
 #     conflito:  "kirocrew"            # re-trabalho pós-review
 
 _STAGE_DEV           = "dev"
+_STAGE_BRIEFING      = "briefing"       # single-flow: sessão de briefing (flow:briefing)
+_STAGE_PLANNING      = "planning"       # single-flow: sessão de especificação (flow:planning-specs)
 _STAGE_REVIEWER      = "reviewer"
 _STAGE_MERGE         = "merge"
 _STAGE_MERGE_REVIEW  = "merge_review"   # merge após flow:review-approved → flow:qa-waiting
@@ -3127,6 +3267,8 @@ _STAGE_CONFLITO      = "conflito"
 #   - merge_qa     → apenas issues em State.QA_APPROVED
 _STAGE_ACTIONS = {
     _STAGE_DEV:          frozenset({"dispatch_dev"}),
+    _STAGE_BRIEFING:     frozenset({"dispatch_briefing"}),
+    _STAGE_PLANNING:     frozenset({"dispatch_planning"}),
     _STAGE_REVIEWER:     frozenset({"dispatch_reviewer", "mark_conflito"}),
     _STAGE_MERGE:        frozenset({"merge_pr"}),
     _STAGE_MERGE_REVIEW: frozenset({"merge_pr"}),
@@ -3274,8 +3416,14 @@ def _run_stage(ctx: object, stage: str) -> None:
     # Filtra pelo conjunto de ações deste estágio
     allowed_actions = _STAGE_ACTIONS[stage]
 
+    # Modo single-flow (opt-in). Quando desligado (default), os estados de spec
+    # mantêm NOTIFY_HUMAN/SKIP e os estágios briefing/planning não produzem ação.
+    single_flow = bool(cfg.get("single_flow", False))
+
     spec_invalid: list = []
     dispatch_devs: list = []
+    dispatch_briefings: list = []  # (repo, issue) — single-flow: sessão de briefing
+    dispatch_plannings: list = []  # (repo, issue) — single-flow: sessão de especificação
     dispatch_reviewers: list = []
     dispatch_reworks: list = []
     conflict_resolvers: list = []  # (repo, issue) — despacha sessão de resolução de conflito
@@ -3340,7 +3488,7 @@ def _run_stage(ctx: object, stage: str) -> None:
                             _rw_issue_number, _rw_issue_number,
                         )
 
-        decision = decide(result, state_comment=state_comment, squad=squad, pr_head_sha=pr_head_sha, pr_mergeable=pr_mergeable)
+        decision = decide(result, state_comment=state_comment, squad=squad, pr_head_sha=pr_head_sha, pr_mergeable=pr_mergeable, single_flow=single_flow)
 
         template = resolve_template(result, squad)
         logger.info(
@@ -3370,6 +3518,20 @@ def _run_stage(ctx: object, stage: str) -> None:
                 repo = repos[0] if repos else ""
             issue = _scan_result_to_issue(result)
             dispatch_devs.append((repo, issue, decision))
+
+        elif decision.action is ActionKind.DISPATCH_BRIEFING:
+            repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            if not repo:
+                repo = repos[0] if repos else ""
+            issue = _scan_result_to_issue(result)
+            dispatch_briefings.append((repo, issue))
+
+        elif decision.action is ActionKind.DISPATCH_PLANNING:
+            repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            if not repo:
+                repo = repos[0] if repos else ""
+            issue = _scan_result_to_issue(result)
+            dispatch_plannings.append((repo, issue))
 
         elif decision.action is ActionKind.DISPATCH_REVIEWER:
             repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
@@ -3429,7 +3591,8 @@ def _run_stage(ctx: object, stage: str) -> None:
         spec_invalid=len(spec_invalid),
     )
 
-    if not any([spec_invalid, dispatch_devs, dispatch_reviewers, dispatch_reworks,
+    if not any([spec_invalid, dispatch_devs, dispatch_briefings, dispatch_plannings,
+                dispatch_reviewers, dispatch_reworks,
                 conflict_resolvers, mark_conflitos,
                 needs_human, blocked_bypass, rebranded, merge_prs, dead_session_candidates_stage]):
         return
@@ -3452,6 +3615,54 @@ def _run_stage(ctx: object, stage: str) -> None:
 
     # ── Executa as ações do estágio ──────────────────────────────────────
     vm = f" (voice_maybe chat_id {chat_id}, intent auto)" if chat_id else ""
+
+    if stage == _STAGE_BRIEFING:
+        _disp_b: list = []
+        for repo, issue in dispatch_briefings:
+            if not _auto_for_repo(squad, repo, auto):
+                continue
+            if _issue_has_active_session(repo, issue["number"], dev_root):
+                logger.info(
+                    "deployment[briefing]: sessão ativa para %s#%s — dispatch ignorado",
+                    repo, issue["number"],
+                )
+                continue
+            try:
+                prompt_extra = squad.dispatch_prompt_extra if squad else ""
+                _dispatch_briefing(ctx, repo, issue, cfg, prompt_extra=prompt_extra)
+                _disp_b.append((repo, issue))
+            except Exception as exc:
+                logger.error("deployment[briefing]: erro ao despachar %s: %s", issue.get("number"), exc)
+        if auto and _disp_b:
+            linhas = "\n".join(f"  - {r}#{i['number']}: {i['title']}" for r, i in _disp_b)
+            ctx.notify(  # type: ignore[attr-defined]
+                f"KiroCrew Flow [briefing]: disparei sessão(ões) de briefing.{vm}\n{linhas}"
+            )
+        return
+
+    if stage == _STAGE_PLANNING:
+        _disp_p: list = []
+        for repo, issue in dispatch_plannings:
+            if not _auto_for_repo(squad, repo, auto):
+                continue
+            if _issue_has_active_session(repo, issue["number"], dev_root):
+                logger.info(
+                    "deployment[planning]: sessão ativa para %s#%s — dispatch ignorado",
+                    repo, issue["number"],
+                )
+                continue
+            try:
+                prompt_extra = squad.dispatch_prompt_extra if squad else ""
+                _dispatch_planning(ctx, repo, issue, cfg, prompt_extra=prompt_extra)
+                _disp_p.append((repo, issue))
+            except Exception as exc:
+                logger.error("deployment[planning]: erro ao despachar %s: %s", issue.get("number"), exc)
+        if auto and _disp_p:
+            linhas = "\n".join(f"  - {r}#{i['number']}: {i['title']}" for r, i in _disp_p)
+            ctx.notify(  # type: ignore[attr-defined]
+                f"KiroCrew Flow [planning]: disparei sessão(ões) de especificação.{vm}\n{linhas}"
+            )
+        return
 
     if stage == _STAGE_DEV:
         _backstop_count_stage = _active_sessions()

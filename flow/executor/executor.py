@@ -29,6 +29,8 @@ from enum import StrEnum
 # ---------------------------------------------------------------------------
 
 class ActionKind(StrEnum):
+    DISPATCH_BRIEFING         = "dispatch_briefing"         # dispara sessão one-shot de briefing (single-flow)
+    DISPATCH_PLANNING         = "dispatch_planning"         # dispara sessão one-shot de especificação (single-flow)
     DISPATCH_DEV              = "dispatch_dev"              # dispara sessão one-shot de implementação
     DISPATCH_REVIEWER         = "dispatch_reviewer"         # dispara kiro-reviewer
     DISPATCH_REWORK           = "dispatch_rework"           # dispara sessão dev de re-trabalho (pós-review com pedidos)
@@ -132,6 +134,7 @@ def decide(
     max_review_iterations: int | None = None,
     pr_mergeable: str | None = None,
     auto_merge_on_approve: bool | None = None,
+    single_flow: bool = False,
 ) -> ExecutorDecision:
     """Decide o que fazer com a issue.
 
@@ -160,6 +163,11 @@ def decide(
                                Quando False, para em SKIP mantendo flow:review-approved para
                                merge manual. None usa a configuração da squad (se disponível)
                                ou False como default seguro.
+        single_flow:           Quando True, ativa o modo single-flow: os estados de
+                               especificação (BRIEFING, PLANNING_SPECS) passam a emitir
+                               DISPATCH_BRIEFING / DISPATCH_PLANNING (sessões de agente)
+                               em vez de NOTIFY_HUMAN / SKIP. Default False mantém o modo
+                               paralelo atual byte-a-byte (a fase de spec só notifica humano).
 
     Returns:
         ExecutorDecision com a ação e os metadados para o executor de I/O.
@@ -386,7 +394,7 @@ def decide(
             )
 
     # ── Ações por estado ───────────────────────────────────────────────
-    return _decide_by_state(current_state, template, r, pr_mergeable=pr_mergeable)
+    return _decide_by_state(current_state, template, r, pr_mergeable=pr_mergeable, single_flow=single_flow)
 
 
 def _decide_by_state(
@@ -394,6 +402,7 @@ def _decide_by_state(
     template: str,
     r: object,
     pr_mergeable: str | None = None,
+    single_flow: bool = False,
 ) -> ExecutorDecision:
     """Decide a ação com base no estado atual da issue."""
     from flow.domain.state import State
@@ -447,7 +456,14 @@ def _decide_by_state(
         )
 
     if s is State.BRIEFING:
-        # Avisa PM/TL que a demanda precisa de atenção
+        if single_flow:
+            # Modo single-flow: despacha a sessão de briefing (entende a task,
+            # cria as 2 sub-tasks, transiciona para planning-specs).
+            return ExecutorDecision(
+                action=ActionKind.DISPATCH_BRIEFING,
+                reason="flow:briefing (single-flow): despachando sessão de briefing",
+            )
+        # Modo paralelo (default): apenas avisa PM/TL que a demanda precisa de atenção
         return ExecutorDecision(
             action=ActionKind.NOTIFY_HUMAN,
             reason="flow:briefing: aguardando TL/PM fechar o briefing",
@@ -455,6 +471,14 @@ def _decide_by_state(
         )
 
     if s is State.PLANNING_SPECS:
+        if single_flow:
+            # Modo single-flow: despacha a sessão de especificação (monta a spec
+            # padrão Kiro na Sub-task 1 e transiciona para planning-review).
+            return ExecutorDecision(
+                action=ActionKind.DISPATCH_PLANNING,
+                reason="flow:planning-specs (single-flow): despachando sessão de especificação",
+            )
+        # Modo paralelo (default): dev humano montando a spec — nada a fazer
         return ExecutorDecision(
             action=ActionKind.SKIP,
             reason="flow:planning-specs: dev montando spec — aguardando",
