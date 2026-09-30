@@ -4485,6 +4485,35 @@ def _spec_slot_is_running(slot_name: str, port: int, secret: str) -> bool:
         return False
 
 
+def _load_provider_env(provider_name: str) -> None:
+    """Carrega variáveis de ambiente do provider de um arquivo .env opcional.
+
+    Procura por <crons_dir>/<provider>.env e seta as vars no processo atual
+    (sem sobrescrever vars já definidas). Permite configurar credenciais do
+    Jira (JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN) e outros providers fora
+    do código, num arquivo chmod 600.
+
+    Se o arquivo não existir, retorna silenciosamente.
+    """
+    env_file = os.path.join(os.path.dirname(__file__), f"{provider_name}.env")
+    if not os.path.exists(env_file):
+        return
+    try:
+        with open(env_file) as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                if key and key not in os.environ:
+                    os.environ[key] = val.strip()
+    except Exception as exc:
+        logger.warning("single-flow: falha ao carregar %s: %s", env_file, exc)
+
+
 def _single_flow_tick(ctx: object) -> str:
     """Um ciclo do motor ledger-driven. Retorna o diagnóstico do tick."""
     from flow.domain.run_ledger import SqliteRunLedger
@@ -4494,6 +4523,9 @@ def _single_flow_tick(ctx: object) -> str:
     cfg = _load_config()
     squad_id = _resolve_squad_id(cfg)
     issue_provider_name = cfg.get("issue_provider", "github")
+
+    # Carrega vars de ambiente do provider (ex: jira.env com JIRA_BASE_URL etc.)
+    _load_provider_env(issue_provider_name)
 
     provider = provider_for(issue_provider_name)
     ledger = SqliteRunLedger(squad_id)
