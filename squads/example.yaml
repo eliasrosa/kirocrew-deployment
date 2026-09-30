@@ -5,7 +5,9 @@
 id: example-squad
 name: Squad Exemplo
 
-# Provedor de issues: "github" ou "jira"
+# Provedor de issues (default da squad): "github" ou "jira".
+# Azure DevOps: apenas SCM (repos[].url), NUNCA issue_provider.
+# Providers de issue suportados: github | jira.
 issue_provider: jira
 
 # Jira: chave do projeto
@@ -30,6 +32,19 @@ project: VGAT
 # normaliza a url para o identificador que o scanner/provider consome
 # (github.com/owner/repo → owner/repo; dev.azure.com/org/proj/_git/repo →
 # org/proj/repo), de modo que a URL crua nunca chega ao scanner.
+#
+# issue_provider por repo (override por-repo, issue #311) — cada entrada de
+# `repos:` aceita `issue_provider: github | jira` para sobrescrever o default
+# da squad (o `issue_provider` do raiz acima). Omitir = herda o default.
+# Precedência: override por-repo > default da squad. Útil quando a squad usa
+# Jira como tracker padrão, mas um repo específico tem suas issues no GitHub.
+# Lembrete: Azure DevOps é SCM-only — nunca aceita issue_provider.
+# Exemplo (default da squad = jira):
+#   repos:
+#     - url: https://github.com/eliasrosa/kirocrew-flow
+#       issue_provider: github   # override: este repo usa GitHub Issues
+#     - url: https://dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/_git/api-subscription2
+#       # sem issue_provider → herda jira do raiz (Azure DevOps entra só como SCM)
 repos:
   - url: https://github.com/org/api-gateway2
     auto_dispatch: true

@@ -20,10 +20,31 @@ notify_chat_id: "<SEU_CHAT_ID>"
 auto_dispatch: false
 
 # ── Configuração de squad (opcional mas recomendado) ──────────────────────
-# Caminho para um arquivo squads/*.yaml. Se fornecido, a squad config é
-# carregada dele (routing declarativo, workflow_params, etc.). Caso contrário,
-# o deployment constrói a squad inline com os campos abaixo.
+# Há duas formas de fornecer a squad config; a seleção segue esta ordem de
+# precedência: squads_dir (diretório) > squad_config (arquivo único) > inline.
+#
+# 1) squads_dir (RECOMENDADO para o app instalado) — um DIRETÓRIO com vários
+#    arquivos squads/*.yaml (um por squad/projeto), NÃO um arquivo único. O
+#    motor carrega TODAS as squads do diretório via load_squads_dir e seleciona
+#    a que casa com os `repos` acima. Arquivos prefixados com "_" e o próprio
+#    "example.yaml" são ignorados no load. IMPORTANTE: este diretório vive no
+#    APP INSTALADO (ex: ~/.kiro/crew/crons/squads/), NÃO dentro do repo da
+#    squad. Um squads_dir setado mas inexistente é ERRO.
+# squads_dir: ~/.kiro/crew/crons/squads/
+#
+# 2) squad_config (fallback/compatibilidade) — caminho para UM arquivo
+#    squads/*.yaml. Continua suportado para auto-teste e setups de arquivo
+#    único; usado apenas quando squads_dir não está setado.
 # squad_config: /path/to/squads/my-squad.yaml
+#
+# ── Onboarding do dev (padrão do app instalado) ───────────────────────────
+# 1. Instale o app kirocrew-flow (ver README / scripts/install-cron.sh).
+# 2. O app já vem com um diretório de squads vazio (ex: ~/.kiro/crew/crons/squads/).
+# 3. O dev adiciona ali seus próprios arquivos de squad YAML — um por
+#    squad/projeto — baseados em squads/example.yaml.
+# 4. O motor carrega TODAS automaticamente via load_squads_dir (basta apontar
+#    `squads_dir` acima para esse diretório). Não é preciso listar cada arquivo.
+# O diretório de squads é do app instalado, e não versionado dentro do repo da squad.
 
 # Identificador da squad (usado no nome do cache SQLite)
 # squad_id: cogna-gateway

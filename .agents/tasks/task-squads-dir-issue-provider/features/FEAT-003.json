@@ -2,7 +2,7 @@
   "id": "FEAT-003",
   "type": "docs",
   "description": "Documentation: update squads/example.yaml with the explicit Azure-DevOps-is-SCM-only note and the per-repo issue_provider override example, and document the dev onboarding flow (install app -> add squad yamls locally to ~/.kiro/crew/crons/squads/) plus the new squads_dir deployment config field in config.example.yaml (and README/steering if warranted). All prose in Portuguese to match the codebase.",
-  "status": "pending",
+  "status": "completed",
   "steps": [
     "Edit squads/example.yaml: near issue_provider, add an explicit comment (pt-BR) 'Azure DevOps: apenas SCM (repos[].url), NUNCA issue_provider. Providers de issue suportados: github | jira.'",
     "In squads/example.yaml under the `repos:` block, add a commented example showing a per-repo issue_provider override — mirroring the issue's example: squad default issue_provider: jira, one repo `https://github.com/eliasrosa/kirocrew-flow` with `issue_provider: github  # override: este repo usa GitHub Issues`, and an Azure DevOps repo entry that inherits jira (no issue_provider). Explain precedence (override por-repo > default da squad) in a comment.",
@@ -23,5 +23,5 @@
     "grep confirms the required strings exist in squads/example.yaml and config.example.yaml"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Docs-only change, no source logic touched. Edited squads/example.yaml (Azure-DevOps-is-SCM-only note near issue_provider + commented per-repo issue_provider override example: default jira, github override on eliasrosa/kirocrew-flow, ADO repo inheriting jira; precedence noted). Edited config.example.yaml (squads_dir directory field with precedence squads_dir > squad_config > inline, squad_config kept as fallback/compat, squads dir lives in installed app, pt-BR onboarding section). Added two short pointer blocks in README.md (squads_dir + per-repo issue_provider) pointing to config.example.yaml as authoritative; no steering edits needed (arquitetura.md's squad_config reference is a code-path narration, not the config mechanism). Verified squads/example.yaml still parses under BOTH PyYAML and forced _mini_yaml fallback (kept override illustration in comments to avoid fallback-parsing risk). Test suite: 1094 passed, 1 skipped, 1 failed — the 1 failure is the known pre-existing chmod-as-root test test_prompts_loader.py::TestRenderPromptFallback::test_template_corrompido_ilegivel_usa_fallback (unrelated). Baseline preserved."
 }
