@@ -31,6 +31,7 @@ from enum import StrEnum
 class ActionKind(StrEnum):
     DISPATCH_BRIEFING         = "dispatch_briefing"         # dispara sessão one-shot de briefing (single-flow)
     DISPATCH_PLANNING         = "dispatch_planning"         # dispara sessão one-shot de especificação (single-flow)
+    ADVANCE_TO_DEVELOP        = "advance_to_develop"        # single-flow: Sub-task 1 aceita → planning-review vira develop-waiting
     DISPATCH_DEV              = "dispatch_dev"              # dispara sessão one-shot de implementação
     DISPATCH_REVIEWER         = "dispatch_reviewer"         # dispara kiro-reviewer
     DISPATCH_REWORK           = "dispatch_rework"           # dispara sessão dev de re-trabalho (pós-review com pedidos)
@@ -135,6 +136,7 @@ def decide(
     pr_mergeable: str | None = None,
     auto_merge_on_approve: bool | None = None,
     single_flow: bool = False,
+    spec_accepted: bool | None = None,
 ) -> ExecutorDecision:
     """Decide o que fazer com a issue.
 
@@ -168,6 +170,12 @@ def decide(
                                DISPATCH_BRIEFING / DISPATCH_PLANNING (sessões de agente)
                                em vez de NOTIFY_HUMAN / SKIP. Default False mantém o modo
                                paralelo atual byte-a-byte (a fase de spec só notifica humano).
+        spec_accepted:         Só usado no single-flow em PLANNING_REVIEW. Pré-computado pelo
+                               driving adapter via ``gates.can_leave_planning(item, subtasks)``
+                               (I/O de sub-tasks fica no driver, não aqui). Quando True, a
+                               Sub-task 1 (Especificação) está aceita e o executor emite
+                               ADVANCE_TO_DEVELOP (troca planning-review → develop-waiting).
+                               None/False mantém NOTIFY_HUMAN (aguarda a aprovação humana).
 
     Returns:
         ExecutorDecision com a ação e os metadados para o executor de I/O.
@@ -394,7 +402,7 @@ def decide(
             )
 
     # ── Ações por estado ───────────────────────────────────────────────
-    return _decide_by_state(current_state, template, r, pr_mergeable=pr_mergeable, single_flow=single_flow)
+    return _decide_by_state(current_state, template, r, pr_mergeable=pr_mergeable, single_flow=single_flow, spec_accepted=spec_accepted)
 
 
 def _decide_by_state(
@@ -403,6 +411,7 @@ def _decide_by_state(
     r: object,
     pr_mergeable: str | None = None,
     single_flow: bool = False,
+    spec_accepted: bool | None = None,
 ) -> ExecutorDecision:
     """Decide a ação com base no estado atual da issue."""
     from flow.domain.state import State
@@ -485,6 +494,18 @@ def _decide_by_state(
         )
 
     if s is State.PLANNING_REVIEW:
+        if single_flow and spec_accepted:
+            # Modo single-flow: a Sub-task 1 (Especificação) está aceita (fechada).
+            # Transiciona planning-review → develop-waiting entregando a task à
+            # esteira de desenvolvimento que já existe. O driver aplica a troca
+            # de labels a partir de add_labels/remove_labels.
+            return ExecutorDecision(
+                action=ActionKind.ADVANCE_TO_DEVELOP,
+                reason="flow:planning-review (single-flow): Sub-task 1 aceita — avançando para develop-waiting",
+                add_labels=(State.DEVELOP_WAITING.value,),
+                remove_labels=(State.PLANNING_REVIEW.value,),
+            )
+        # Default (modo paralelo) e single-flow ainda sem aceite: aguarda o humano.
         return ExecutorDecision(
             action=ActionKind.NOTIFY_HUMAN,
             reason="flow:planning-review: aguardando revisão do TL/PM",

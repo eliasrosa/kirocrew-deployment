@@ -740,7 +740,7 @@ class TestSingleFlowSpecStages:
         d = decide(r, single_flow=True)
         assert d.action is ActionKind.DISPATCH_PLANNING
 
-    # ── planning-review continua gate humano em ambos os modos ───────────
+    # ── planning-review: gate humano sem aceite; avança com spec aceita ──
 
     def test_planning_review_single_flow_ainda_notifica_tl(self) -> None:
         r = _result(
@@ -750,6 +750,34 @@ class TestSingleFlowSpecStages:
         d = decide(r, single_flow=True)
         assert d.action is ActionKind.NOTIFY_HUMAN
         assert d.notify_role is HumanRole.TL
+
+    def test_planning_review_spec_aceita_avanca_para_develop(self) -> None:
+        r = _result(
+            labels=["flow:planning-review", "flow:feature"],
+            state=State.PLANNING_REVIEW,
+        )
+        d = decide(r, single_flow=True, spec_accepted=True)
+        assert d.action is ActionKind.ADVANCE_TO_DEVELOP
+        assert "flow:develop-waiting" in d.add_labels
+        assert "flow:planning-review" in d.remove_labels
+
+    def test_planning_review_spec_nao_aceita_notifica_tl(self) -> None:
+        r = _result(
+            labels=["flow:planning-review", "flow:feature"],
+            state=State.PLANNING_REVIEW,
+        )
+        d = decide(r, single_flow=True, spec_accepted=False)
+        assert d.action is ActionKind.NOTIFY_HUMAN
+
+    def test_planning_review_spec_aceita_sem_single_flow_ignora(self) -> None:
+        # spec_accepted só age sob single_flow — no modo paralelo default,
+        # planning-review sempre notifica o humano.
+        r = _result(
+            labels=["flow:planning-review", "flow:feature"],
+            state=State.PLANNING_REVIEW,
+        )
+        d = decide(r, single_flow=False, spec_accepted=True)
+        assert d.action is ActionKind.NOTIFY_HUMAN
 
     # ── single_flow não afeta o estágio de desenvolvimento ───────────────
 

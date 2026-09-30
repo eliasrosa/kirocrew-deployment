@@ -193,7 +193,7 @@ hoje. Quando `true`, o driver resolve a task presa no ledger e passa **só ela**
 - `flow/adapters/github_client.py` e `jira_client.py` — implementar sub-tasks.
 - `flow/domain/gates.py` — novo `can_leave_planning`.
 - `flow/domain/run_ledger.py` (novo) — interface + `SqliteRunLedger`.
-- `deployment.py run()` — ramo `single_flow`: resolver task presa, empurrar.
+- `deployment.py run()` — ramo `single_flow`: resolver task presa, empurrar. **[FEITO — frente 4]** Implementado no `_run_stage` via os entrypoints `run_briefing`/`run_planning`/`run_planning_review` (stages `_STAGE_BRIEFING`/`_STAGE_PLANNING`/`_STAGE_PLANNING_REVIEW`). Em `planning-review`, o driver lê as sub-tasks (`_spec_accepted_for`), passa `spec_accepted` ao `decide()`, que emite `ADVANCE_TO_DEVELOP`; a transição é registrada no `RunLedger` (`_ledger_advance`).
 - `deployment.config.yaml` + `squads/*.yaml` — flags novas.
 
 ---
