@@ -24,8 +24,9 @@ banco por squad em ``<data_dir>/run_ledger_<squad_id>.db``.
 
 from __future__ import annotations
 
+import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -63,6 +64,15 @@ class Run:
     ``last_transition``— ISO timestamp da última mudança de estágio
     ``attempts``       — nº de tentativas do estágio atual (para detectar loop)
     ``status``         — RunStatus
+    ``review_sha``     — SHA do commit analisado no último review (anti-loop por SHA)
+    ``review_iterations`` — nº de ciclos review↔dev (re-trabalho pós-review)
+    ``review_approved``   — veredito do último review (None = ainda não analisado)
+    ``approvals``      — gates aprovados (ex: {"gate-tl": "@elias|2026-09-30"})
+
+    ESTADO LOCAL É A FONTE DE VERDADE: estes campos migraram do comentário
+    ``KIRO-FLOW-STATE`` (que espelhava estado no GitHub) para cá. O comentário
+    de review no PR (``KIRO-FLOW-REVIEW``) segue sendo escrito como registro da
+    ação, mas NUNCA é lido de volta para decidir transição — quem manda é o ledger.
     """
 
     task_key: str
@@ -73,6 +83,10 @@ class Run:
     last_transition: str
     attempts: int
     status: RunStatus
+    review_sha: str = ""
+    review_iterations: int = 0
+    review_approved: bool | None = None
+    approvals: dict[str, str] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +137,25 @@ class RunLedger(Protocol):
         """
         ...
 
+    def set_review_result(
+        self, task_key: str, approved: bool, sha: str
+    ) -> None:
+        """Grava o veredito do reviewer no ledger (fonte de verdade anti-loop).
+
+        Substitui a leitura de ``reviewer_result.sha`` do comentário
+        ``KIRO-FLOW-STATE``. O reviewer consulta ``get(task_key).review_sha``
+        para não re-analisar o mesmo commit.
+        """
+        ...
+
+    def bump_review_iteration(self, task_key: str) -> int:
+        """Incrementa e retorna o contador de ciclos review↔dev (re-trabalho)."""
+        ...
+
+    def add_approval(self, task_key: str, gate: str, actor: str, when: str) -> None:
+        """Registra a aprovação de um gate (ex: 'gate-tl') no ledger."""
+        ...
+
     def all(self) -> list[Run]:
         """Retorna todas as runs conhecidas (para a visão OTL futura)."""
         ...
@@ -141,9 +174,22 @@ CREATE TABLE IF NOT EXISTS run_ledger (
     started_at      TEXT NOT NULL DEFAULT (datetime('now')),
     last_transition TEXT NOT NULL DEFAULT (datetime('now')),
     attempts        INTEGER NOT NULL DEFAULT 0,
-    status          TEXT NOT NULL DEFAULT 'running'
+    status          TEXT NOT NULL DEFAULT 'running',
+    review_sha        TEXT NOT NULL DEFAULT '',
+    review_iterations INTEGER NOT NULL DEFAULT 0,
+    review_approved   INTEGER NULL,
+    approvals         TEXT NOT NULL DEFAULT '{}'
 );
 """
+
+#: Colunas adicionadas após o schema original (v1). Migração idempotente:
+#: bancos antigos não têm estas colunas — ``_migrate`` faz ADD COLUMN sob demanda.
+_MIGRATION_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("review_sha",        "TEXT NOT NULL DEFAULT ''"),
+    ("review_iterations", "INTEGER NOT NULL DEFAULT 0"),
+    ("review_approved",   "INTEGER NULL"),
+    ("approvals",         "TEXT NOT NULL DEFAULT '{}'"),
+)
 
 _DEFAULT_DATA_DIR = Path.home() / ".kiro" / "crew" / "kirocrew-flow"
 
@@ -155,6 +201,13 @@ def _db_path(squad_id: str, data_dir: Path | None = None) -> Path:
 
 
 def _row_to_run(row: tuple) -> Run:
+    # Colunas novas podem não existir em bancos ainda-não-migrados lidos por
+    # um SELECT * — mas _migrate roda no __init__, então a partir daí a row tem
+    # 12 colunas. Toleramos rows curtas por segurança (defaults).
+    review_sha        = row[8]  if len(row) > 8  else ""
+    review_iterations = row[9]  if len(row) > 9  else 0
+    review_approved_raw = row[10] if len(row) > 10 else None
+    approvals_raw     = row[11] if len(row) > 11 else "{}"
     return Run(
         task_key=row[0],
         repo=row[1],
@@ -164,6 +217,10 @@ def _row_to_run(row: tuple) -> Run:
         last_transition=row[5],
         attempts=row[6],
         status=RunStatus(row[7]),
+        review_sha=review_sha or "",
+        review_iterations=review_iterations or 0,
+        review_approved=(None if review_approved_raw is None else bool(review_approved_raw)),
+        approvals=json.loads(approvals_raw) if approvals_raw else {},
     )
 
 
@@ -177,7 +234,25 @@ class SqliteRunLedger:
     def __init__(self, squad_id: str, data_dir: Path | None = None) -> None:
         self._conn = sqlite3.connect(str(_db_path(squad_id, data_dir)))
         self._conn.execute(_SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Adiciona colunas novas a bancos criados antes delas (idempotente).
+
+        ``CREATE TABLE IF NOT EXISTS`` não altera uma tabela que já existe, então
+        bancos antigos ficam sem as colunas de review. Este passo faz o
+        ``ALTER TABLE ADD COLUMN`` só para as que faltam.
+        """
+        existing = {
+            row[1]  # name
+            for row in self._conn.execute("PRAGMA table_info(run_ledger)").fetchall()
+        }
+        for col_name, col_def in _MIGRATION_COLUMNS:
+            if col_name not in existing:
+                self._conn.execute(
+                    f"ALTER TABLE run_ledger ADD COLUMN {col_name} {col_def}"
+                )
 
     # -- escrita -----------------------------------------------------------
 
@@ -234,6 +309,40 @@ class SqliteRunLedger:
              WHERE task_key = ?
             """,
             (status.value, task_key),
+        )
+        self._conn.commit()
+
+    def set_review_result(self, task_key: str, approved: bool, sha: str) -> None:
+        self._conn.execute(
+            """
+            UPDATE run_ledger
+               SET review_approved = ?, review_sha = ?, last_transition = datetime('now')
+             WHERE task_key = ?
+            """,
+            (1 if approved else 0, sha, task_key),
+        )
+        self._conn.commit()
+
+    def bump_review_iteration(self, task_key: str) -> int:
+        self._conn.execute(
+            "UPDATE run_ledger SET review_iterations = review_iterations + 1 WHERE task_key = ?",
+            (task_key,),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT review_iterations FROM run_ledger WHERE task_key = ?", (task_key,)
+        ).fetchone()
+        return row[0] if row else 0
+
+    def add_approval(self, task_key: str, gate: str, actor: str, when: str) -> None:
+        row = self._conn.execute(
+            "SELECT approvals FROM run_ledger WHERE task_key = ?", (task_key,)
+        ).fetchone()
+        approvals: dict[str, str] = json.loads(row[0]) if row and row[0] else {}
+        approvals[gate] = f"{actor}|{when}"
+        self._conn.execute(
+            "UPDATE run_ledger SET approvals = ? WHERE task_key = ?",
+            (json.dumps(approvals), task_key),
         )
         self._conn.commit()
 
