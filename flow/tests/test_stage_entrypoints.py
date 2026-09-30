@@ -15,6 +15,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Any, cast
 from unittest import mock
 
 _REPO_ROOT = str(Path(__file__).parent.parent.parent)
@@ -864,3 +865,59 @@ class TestRunSingleFlow:
         assert _SINGLE_FLOW_STAGES[1] == _STAGE_PLANNING
         assert _SINGLE_FLOW_STAGES[2] == _STAGE_PLANNING_REVIEW
         assert _STAGE_DEV in _SINGLE_FLOW_STAGES
+
+
+# ===========================================================================
+# deployment/flow/single_flow.py — módulo de cron do manifest (frente 6)
+# ===========================================================================
+
+
+def _load_single_flow_module() -> Any:
+    """Carrega deployment/flow/single_flow.py isoladamente (como o cron runner)."""
+    import importlib.util
+
+    mod_path = (
+        Path(__file__).parent.parent.parent
+        / "deployment"
+        / "flow"
+        / "single_flow.py"
+    )
+    spec = importlib.util.spec_from_file_location("_kc_single_flow", str(mod_path))
+    module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    return cast(Any, module)
+
+
+class TestSingleFlowCronModule:
+    """O módulo de cron single_flow.py delega a _run_stage para todos os estágios."""
+
+    def test_run_percorre_todos_os_estagios(self) -> None:
+        module = _load_single_flow_module()
+        ctx = _make_ctx()
+        chamados: list[str] = []
+
+        with mock.patch.object(
+            module, "_run_stage", side_effect=lambda _c, s: chamados.append(s)
+        ):
+            module.run(ctx)
+
+        assert chamados == list(module._SINGLE_FLOW_STAGES)
+        # A ordem começa no briefing e inclui o gate planning_review.
+        assert chamados[0] == _STAGE_BRIEFING
+        assert _STAGE_PLANNING_REVIEW in chamados
+
+    def test_run_resiliente_a_falha_de_estagio(self) -> None:
+        module = _load_single_flow_module()
+        ctx = _make_ctx()
+        chamados: list[str] = []
+
+        def _fake(_c: object, s: str) -> None:
+            chamados.append(s)
+            if s == _STAGE_PLANNING:
+                raise RuntimeError("falha simulada")
+
+        with mock.patch.object(module, "_run_stage", side_effect=_fake):
+            module.run(ctx)
+
+        # Uma falha num estágio não interrompe os seguintes.
+        assert chamados == list(module._SINGLE_FLOW_STAGES)

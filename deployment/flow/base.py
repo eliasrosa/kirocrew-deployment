@@ -55,6 +55,7 @@ _run_stage = _mod._run_stage
 _STAGE_DEV           = _mod._STAGE_DEV
 _STAGE_BRIEFING      = _mod._STAGE_BRIEFING
 _STAGE_PLANNING      = _mod._STAGE_PLANNING
+_STAGE_PLANNING_REVIEW = _mod._STAGE_PLANNING_REVIEW
 _STAGE_REVIEWER      = _mod._STAGE_REVIEWER
 _STAGE_MERGE         = _mod._STAGE_MERGE
 _STAGE_MERGE_REVIEW  = _mod._STAGE_MERGE_REVIEW
@@ -69,6 +70,7 @@ __all__ = [
     "_STAGE_MERGE_QA",
     "_STAGE_MERGE_REVIEW",
     "_STAGE_PLANNING",
+    "_STAGE_PLANNING_REVIEW",
     "_STAGE_REVIEWER",
     "_run_stage",
 ]
