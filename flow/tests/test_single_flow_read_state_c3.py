@@ -106,7 +106,9 @@ def test_single_flow_tick_passa_stage_running_quando_sessao_viva() -> None:
         mock.patch(f"{_MOD}._resolve_squad_id", return_value="kirocrew-flow"),
         mock.patch(f"{_MOD}.provider_for", return_value=mock.MagicMock()),
         mock.patch("flow.domain.run_ledger.SqliteRunLedger", return_value=fake_ledger),
-        mock.patch(f"{_MOD}._issue_has_active_session", return_value=True) as m_active,
+        # Item A: spec-stage usa _spec_slot_is_running, NÃO _issue_has_active_session
+        mock.patch(f"{_MOD}._spec_slot_is_running", return_value=True) as m_slot,
+        mock.patch(f"{_MOD}._issue_has_active_session", return_value=False) as m_active,
         mock.patch("flow.engine.ledger_tick.tick", side_effect=_fake_tick),
     ):
         from deployment.deployment import _single_flow_tick
@@ -114,7 +116,8 @@ def test_single_flow_tick_passa_stage_running_quando_sessao_viva() -> None:
 
     assert captured["stage_running"] is True   # sessão viva → não redispara
     assert result.startswith("waiting:")
-    m_active.assert_called_once()
+    m_slot.assert_called_once()        # spec-slot verificado
+    m_active.assert_not_called()       # _issue_has_active_session NÃO chamado para spec-stage
 
 
 def test_single_flow_tick_stage_running_false_quando_sem_stage_session() -> None:
@@ -141,6 +144,7 @@ def test_single_flow_tick_stage_running_false_quando_sem_stage_session() -> None
         mock.patch(f"{_MOD}._resolve_squad_id", return_value="kirocrew-flow"),
         mock.patch(f"{_MOD}.provider_for", return_value=mock.MagicMock()),
         mock.patch("flow.domain.run_ledger.SqliteRunLedger", return_value=fake_ledger),
+        mock.patch(f"{_MOD}._spec_slot_is_running", return_value=True) as m_slot,
         mock.patch(f"{_MOD}._issue_has_active_session", return_value=True) as m_active,
         mock.patch("flow.engine.ledger_tick.tick", side_effect=_fake_tick),
     ):
@@ -148,4 +152,87 @@ def test_single_flow_tick_stage_running_false_quando_sem_stage_session() -> None
         _single_flow_tick(mock.MagicMock())
 
     assert captured["stage_running"] is False  # sem stage_session, nem checa
+    m_slot.assert_not_called()
     m_active.assert_not_called()
+
+# ---------------------------------------------------------------------------
+# Item A — _spec_slot_is_running e bifurcação spec vs develop
+# ---------------------------------------------------------------------------
+
+class TestSpecSlotIsRunning:
+    """_spec_slot_is_running consulta GET /api/chat/slots e retorna running."""
+
+    def _make_response(self, slots: list) -> mock.MagicMock:
+        import json as _json
+        m = mock.MagicMock()
+        m.read.return_value = _json.dumps(slots).encode()
+        m.__enter__ = lambda s: s
+        m.__exit__ = mock.MagicMock(return_value=False)
+        return m
+
+    def test_retorna_true_quando_slot_running(self) -> None:
+        resp = self._make_response([
+            {"key": "briefing-repo-42", "running": True},
+            {"key": "outro-slot", "running": False},
+        ])
+        with mock.patch("urllib.request.urlopen", return_value=resp):
+            from deployment.deployment import _spec_slot_is_running
+            assert _spec_slot_is_running("briefing-repo-42", 5476, "secret") is True
+
+    def test_retorna_false_quando_slot_nao_running(self) -> None:
+        resp = self._make_response([
+            {"key": "briefing-repo-42", "running": False},
+        ])
+        with mock.patch("urllib.request.urlopen", return_value=resp):
+            from deployment.deployment import _spec_slot_is_running
+            assert _spec_slot_is_running("briefing-repo-42", 5476, "secret") is False
+
+    def test_retorna_false_quando_slot_nao_encontrado(self) -> None:
+        resp = self._make_response([
+            {"key": "outro-slot", "running": True},
+        ])
+        with mock.patch("urllib.request.urlopen", return_value=resp):
+            from deployment.deployment import _spec_slot_is_running
+            assert _spec_slot_is_running("briefing-repo-42", 5476, "secret") is False
+
+    def test_fail_safe_retorna_false_em_erro_de_rede(self) -> None:
+        with mock.patch("urllib.request.urlopen", side_effect=OSError("timeout")):
+            from deployment.deployment import _spec_slot_is_running
+            assert _spec_slot_is_running("briefing-repo-42", 5476, "secret") is False
+
+
+def test_single_flow_tick_develop_usa_issue_has_active_session() -> None:
+    """Develop-waiting usa _issue_has_active_session, NÃO _spec_slot_is_running."""
+    from flow.domain.run_ledger import Run, RunStatus
+
+    run_dev = Run(
+        task_key="owner/repo#42", repo="owner/repo",
+        current_stage="flow:develop-waiting",
+        stage_session="algum-marcador-de-sessao",
+        started_at="", last_transition="", attempts=0, status=RunStatus.RUNNING,
+    )
+    fake_ledger = mock.MagicMock()
+    fake_ledger.active.return_value = run_dev
+
+    captured: dict = {}
+
+    def _fake_tick(ledger, dispatcher, reader, *, stage_running=False):
+        captured["stage_running"] = stage_running
+        return f"waiting:{run_dev.current_stage}"
+
+    with (
+        mock.patch(f"{_MOD}._check_installed_version"),
+        mock.patch(f"{_MOD}._load_config", return_value={"issue_provider": "github"}),
+        mock.patch(f"{_MOD}._resolve_squad_id", return_value="kirocrew-flow"),
+        mock.patch(f"{_MOD}.provider_for", return_value=mock.MagicMock()),
+        mock.patch("flow.domain.run_ledger.SqliteRunLedger", return_value=fake_ledger),
+        mock.patch(f"{_MOD}._spec_slot_is_running", return_value=False) as m_slot,
+        mock.patch(f"{_MOD}._issue_has_active_session", return_value=True) as m_active,
+        mock.patch("flow.engine.ledger_tick.tick", side_effect=_fake_tick),
+    ):
+        from deployment.deployment import _single_flow_tick
+        _single_flow_tick(mock.MagicMock())
+
+    assert captured["stage_running"] is True   # _issue_has_active_session retornou True
+    m_active.assert_called_once()              # foi chamado para develop-stage
+    m_slot.assert_not_called()                 # _spec_slot_is_running NÃO chamado
