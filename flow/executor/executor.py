@@ -23,6 +23,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from flow.audit.state_comment import ReviewerResult
 
 # ---------------------------------------------------------------------------
 # Tipos de ação
@@ -137,6 +141,9 @@ def decide(
     auto_merge_on_approve: bool | None = None,
     single_flow: bool = False,
     spec_accepted: bool | None = None,
+    reviewer_result: ReviewerResult | None = None,
+    review_iterations: int | None = None,
+    tl_approved: bool | None = None,
 ) -> ExecutorDecision:
     """Decide o que fazer com a issue.
 
@@ -227,10 +234,12 @@ def decide(
 
     # ── GATE de entrada do débito técnico ──────────────────────────────
     if template == "debt" and current_state is State.DEVELOP_WAITING:
-        # Verifica se o TL já aprovou via comentário de estado
-        from flow.audit.state_comment import parse as _parse_comment
-        sc = _parse_comment(state_comment) if state_comment else None
-        tl_approved = sc is not None and sc.has_approval("gate-tl")
+        # Fonte de verdade: ledger (tl_approved). Fallback: comentário KIRO-FLOW-STATE
+        # durante a coexistência (o driving adapter passa tl_approved lido do ledger).
+        if tl_approved is None:
+            from flow.audit.state_comment import parse as _parse_comment
+            sc = _parse_comment(state_comment) if state_comment else None
+            tl_approved = sc is not None and sc.has_approval("gate-tl")
 
         if not tl_approved:
             return ExecutorDecision(
@@ -262,8 +271,11 @@ def decide(
     # Apenas notifica TL e aguarda decisão manual.
     # O humano move manualmente para flow:develop-waiting ou flow:develop-running.
     if current_state is State.REVIEW_REFUSED:
-        from flow.audit.state_comment import get_review_iterations_from_comment
-        iterations = get_review_iterations_from_comment(state_comment)
+        # Fonte de verdade: ledger (review_iterations). Fallback: comentário.
+        iterations = review_iterations
+        if iterations is None:
+            from flow.audit.state_comment import get_review_iterations_from_comment
+            iterations = get_review_iterations_from_comment(state_comment)
         _max_iter = (
             max_review_iterations
             if max_review_iterations is not None
@@ -336,8 +348,12 @@ def decide(
     # indica que o reviewer ainda está rodando ou acabou de processar mas
     # ainda não atualizou as labels semânticas.
     if current_state is State.REVIEW_WAITING and Modifier.REVIEWED in modifiers:
-        from flow.audit.state_comment import get_reviewer_result_from_comment
-        reviewer_result = get_reviewer_result_from_comment(state_comment)
+        # Fonte de verdade: ledger (reviewer_result). Fallback: comentário.
+        # O driving adapter monta um ReviewerResult a partir de
+        # ledger.get(task_key).review_sha/review_approved e passa aqui.
+        if reviewer_result is None:
+            from flow.audit.state_comment import get_reviewer_result_from_comment
+            reviewer_result = get_reviewer_result_from_comment(state_comment)
 
         if reviewer_result is None:
             # Reviewer ainda não postou resultado — aguardar
