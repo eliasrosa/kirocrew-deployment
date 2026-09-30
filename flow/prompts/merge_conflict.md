@@ -25,22 +25,18 @@ Execute UMA vez, do início ao fim, e PARE:
    fi
    ```
    Se a issue estiver CLOSED, encerre silenciosamente sem criar commit, sem fazer push.
-2. SINALIZE O INÍCIO IMEDIATAMENTE (após confirmar que a issue está OPEN):
-   - Comente na issue que você está iniciando a resolução de conflito:
-     `gh issue comment {{issue_number}} --repo {{repo}} --body "🔵 kiro-dev iniciando resolução de conflito. Analisando diff e base."`
-   Este comentário torna o trabalho visível de imediato.
-3. CONTEXTO — leia antes de agir:
+2. CONTEXTO — leia antes de agir:
    - `.kiro/steering/*.md` (steerings do projeto)
    - A issue: `gh issue view {{issue_number}} --repo {{repo}}`
    - O diff e estado atual do PR: `gh pr diff {{pr_number}} --repo {{repo}}`
    - Quais arquivos estão em conflito: `gh pr view {{pr_number}} --repo {{repo}} --json mergeable,mergeStateStatus`
-4. USE O WORKTREE E BRANCH EXISTENTES — NÃO crie branch nova, NÃO abra PR novo.
+3. USE O WORKTREE E BRANCH EXISTENTES — NÃO crie branch nova, NÃO abra PR novo.
    A branch `feat/issue-{{issue_number}}` já existe. Use o worktree:
    `cd {{worktree_path}}`
    Se o worktree não existir (foi removido), re-crie-o:
    `cd {{dev_root}}/{{repo_short}} && git fetch origin && git worktree add {{worktree_path}} feat/issue-{{issue_number}}`
    Trabalhe DENTRO do worktree. NUNCA toque em outros worktrees.
-5. RESOLVA O CONFLITO via rebase na branch base:
+4. RESOLVA O CONFLITO via rebase na branch base:
    ```
    cd {{worktree_path}}
    git fetch origin
@@ -52,20 +48,20 @@ Execute UMA vez, do início ao fim, e PARE:
    c. `git rebase --continue`
    Se o rebase falhar irrecuperavelmente, tente merge da base:
    `git merge origin/{{base_branch}}` e resolva os conflitos.
-6. Valide que o código ainda funciona após o rebase (build/testes relevantes).
-   Se falhar e não conseguir corrigir, pare em `flow:blocked`.
-7. Faça push na branch existente (force-with-lease é seguro após rebase):
+5. Valide que o código ainda funciona após o rebase (build/testes relevantes).
+   Se falhar e não conseguir corrigir, comente o motivo na issue e ENCERRE (o
+   bloqueio é estado — controlado pelo motor; você não aplica label).
+6. Faça push na branch existente (force-with-lease é seguro após rebase):
    `git push origin feat/issue-{{issue_number}} --force-with-lease`
-   Isso invalida `flow:review-running` automaticamente (novo SHA).
-8. Verifique que o PR voltou para estado mergeable:
+   O novo SHA é a evidência que o motor lê para reavaliar o PR.
+7. Verifique que o PR voltou para estado mergeable:
    `gh pr view {{pr_number}} --repo {{repo}} --json mergeable,mergeStateStatus`
-9. Troque as labels: remove `flow:merge-conflict`, mantém `flow:review-waiting`:
-   `gh issue edit {{issue_number}} --repo {{repo}} --remove-label "flow:merge-conflict"`
-10. Comente na issue o que foi feito:
-   `gh issue comment {{issue_number}} --repo {{repo}} --body "Conflito resolvido via rebase em {{base_branch}}. Branch atualizada."`
-11. Ao terminar: {{notify_step}}
+8. Registre o que foi feito como comentário NO PR (registro da ação):
+   `gh pr comment {{pr_number}} --repo {{repo}} --body "Conflito resolvido via rebase em {{base_branch}}. Branch atualizada."`
+9. Ao terminar: {{notify_step}}
 
-   e ENCERRE.
+   e ENCERRE. **NÃO troque label de estado e NÃO escreva comentário de estado na
+   issue.** O motor detecta o novo SHA (evidência) e reavalia o PR localmente.
 
 {{vault_step}}
 
@@ -75,6 +71,8 @@ Execute UMA vez, do início ao fim, e PARE:
 - NUNCA mergeie. NUNCA faça deploy.
 - NUNCA abra PR novo — use a branch `feat/issue-{{issue_number}}` existente.
 - Resolva APENAS o conflito de merge/rebase. Não adicione features ou refatorações.
-- Se bloquear, marque `flow:blocked`, avise, e pare.
+- **NÃO mexa em labels de estado (`flow:*`) nem escreva comentário de estado na
+  issue.** O estado é 100% local (ledger SQLite) — o motor controla as transições.
+- Se precisar bloquear, comente o motivo na issue e pare.
 
 {{prompt_extra}}
