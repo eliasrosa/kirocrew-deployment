@@ -159,8 +159,10 @@ class TestRealTemplates:
         assert "#42" in result
         assert "Fix bug" in result
         assert "NUNCA mergeie" in result
-        assert "flow:develop-running" in result
-        assert "flow:blocked" in result
+        # C4/C6: não troca label de estado; abre PR com Closes # e o motor avança
+        assert "add-label" not in result
+        assert "Closes #" in result
+        assert "NÃO mexa em labels de estado" in result
 
     def test_dev_template_real_contem_worktree_path(self) -> None:
         result = render_prompt(
@@ -253,7 +255,10 @@ class TestRealTemplates:
         assert "#5" in result
         assert "#42" in result
         assert "NUNCA mergeie" in result
-        assert "flow:review-approved" in result
+        # C4/C6: review vai NO PR (registro); não troca label nem escreve estado
+        assert "add-label" not in result
+        assert "upsert_state_comment" not in result
+        assert "NÃO mexa em labels de estado" in result
 
     def test_reviewer_template_real_session_title(self) -> None:
         result = render_prompt(
@@ -312,8 +317,9 @@ class TestRealTemplates:
         )
         assert "CI vermelho" in result or "failure" in result or "bloqueio" in result
 
-    def test_reviewer_template_posta_nos_dois_lugares(self) -> None:
-        """Resultado completo deve ser postado tanto no PR quanto na issue."""
+    def test_reviewer_template_posta_so_no_pr(self) -> None:
+        """C4/C6: o resultado do review é postado SÓ no PR (registro da ação);
+        não é mais copiado para a issue nem gravado como comentário de estado."""
         result = render_prompt(
             "review_waiting",
             repo="owner/myrepo",
@@ -326,9 +332,9 @@ class TestRealTemplates:
         )
         # Posta no PR
         assert "POSTE O RESULTADO COMPLETO DO REVIEW NO PR" in result
-        # Posta na issue também (completo, não só referência curta)
-        assert "POSTE O RESULTADO COMPLETO DO REVIEW NA ISSUE" in result
-        assert "gh issue comment" in result
+        # NÃO copia para a issue nem escreve comentário de estado
+        assert "NA ISSUE" not in result
+        assert "upsert_state_comment" not in result
 
     def test_reviewer_template_aprovado_somente_com_ci_verde_e_sem_comentarios(self) -> None:
         """A decisão de aprovação deve exigir CI verde + zero comentários."""
@@ -342,9 +348,9 @@ class TestRealTemplates:
             example_approved="",
             example_changes="",
         )
-        # A decisão exige as três condições
+        # A decisão exige CI verde; o estado é derivado pelo motor da evidência do PR
         assert "CI verde" in result
-        assert "flow:review-approved" in result
+        assert "add-label" not in result
 
     def test_reviewer_template_contem_head_sha_injetado(self) -> None:
         """O prompt deve incluir o SHA injetado para que o reviewer saiba qual HEAD revisar."""
@@ -395,16 +401,18 @@ class TestRealTemplates:
         result = render_prompt("briefing", **self._spec_vars("briefing"))
         assert "owner/myrepo" in result
         assert "#42" in result
-        assert "flow:planning-specs" in result   # transição de saída
-        assert "flow:briefing" in result
         assert "sub-task" in result.lower()
+        # C4/C6: não instrui mais transição de label de estado
+        assert "add-label" not in result
+        assert "NÃO mexa em labels de estado" in result
 
     def test_planning_specs_template_real_renderiza_sem_erro(self) -> None:
         result = render_prompt("planning_specs", **self._spec_vars("planning"))
         assert "owner/myrepo" in result
         assert "#42" in result
-        assert "flow:planning-review" in result   # transição de saída
-        assert "flow:planning-specs" in result
+        # C4/C6: não instrui mais transição de label; o motor controla o estado
+        assert "add-label" not in result
+        assert "NÃO mexa em labels de estado" in result
 
     def test_briefing_template_com_prompt_extra(self) -> None:
         v = self._spec_vars("briefing")

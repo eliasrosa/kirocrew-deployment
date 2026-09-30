@@ -29,11 +29,7 @@ Execute UMA vez, do início ao fim, e PARE:
    ```
    Se a issue estiver CLOSED, encerre silenciosamente sem comentar e sem criar nada.
 
-2. SINALIZE O INÍCIO (após confirmar que a issue está OPEN):
-   `gh issue comment {{issue_number}} --repo {{repo}} --body "🟣 kiro-briefing iniciando — lendo a demanda e o contexto do repo."`
-   **Nota:** a label `flow:briefing` já está aplicada. Não troque a label neste passo.
-
-3. CONTEXTO — leia TODO o material que informa a task:
+2. CONTEXTO — leia TODO o material que informa a task:
    - `.kiro/steering/*.md` (steerings do projeto — convenções e gotchas críticos)
    - `README.md` e `docs/` se existirem
    - A própria issue: `gh issue view {{issue_number}} --repo {{repo}}`
@@ -41,13 +37,13 @@ Execute UMA vez, do início ao fim, e PARE:
    - Qualquer nota/MD/imagem anexada ou referenciada na issue.
    Não pule esta etapa.
 
-4. AVALIAÇÃO DE ENTENDIMENTO:
-   - Se a demanda estiver **clara o suficiente para especificar**, siga para o passo 5.
+3. AVALIAÇÃO DE ENTENDIMENTO:
+   - Se a demanda estiver **clara o suficiente para especificar**, siga para o passo 4.
    - Se estiver **vaga ou faltar decisão que só o TL/PM pode tomar**, NÃO avance.
-     Comente as perguntas de esclarecimento na issue, aplique `flow:blocked` e ENCERRE:
-     `gh issue edit {{issue_number}} --repo {{repo}} --add-label "flow:blocked"`
+     Comente as perguntas de esclarecimento na issue e ENCERRE. O estado (bloqueio)
+     é controlado localmente pelo motor — você não aplica label.
 
-5. CRIE AS 2 SUB-TASKS FIXAS na issue pai (modelo single-flow):
+4. CRIE AS 2 SUB-TASKS FIXAS na issue pai (modelo single-flow):
    - **Sub-task 1 · "Especificação"** — cobrirá requirements + design + tasks (padrão Kiro).
      Crie a sub-issue referenciando a pai:
      `gh issue create --repo {{repo}} --title "[Especificação] {{issue_title}}" --body "Sub-task de especificação da issue #{{issue_number}}. Cobre requirements + design + tasks (padrão Kiro).\n\nParent: #{{issue_number}}"`
@@ -56,18 +52,18 @@ Execute UMA vez, do início ao fim, e PARE:
    Registre os números das duas sub-tasks num comentário na issue pai para rastreio.
    **Estimativa (pontos/horas) é MANUAL** — não preencha; o humano estima depois.
 
-6. TRANSIÇÃO — mova a task para a fase de especificação, atomicamente:
-   `gh issue edit {{issue_number}} --repo {{repo}} --add-label "flow:planning-specs" --remove-label "flow:briefing"`
+5. Ao terminar: {{notify_step}}
 
-7. Ao terminar: {{notify_step}}
-
-   ENCERRE.
+   ENCERRE. O avanço para a fase de especificação é decidido pelo motor
+   (ledger local) com base na evidência — você NÃO troca label de estado.
 
 ### Regras críticas
 
 - UMA passada. Terminou, acabou. NÃO entre em loop.
 - NÃO escreva a spec aqui — isso é do estágio `planning-specs`.
 - NÃO implemente código. NÃO abra PR. NÃO mergeie.
-- Se bloquear, marque `flow:blocked`, avise, e pare.
+- **NÃO mexa em labels de estado (`flow:*`) nem escreva comentário de estado.**
+  O estado da esteira é 100% local (ledger SQLite) — o motor controla as transições.
+- Se precisar bloquear, comente o motivo na issue e pare.
 
 {{prompt_extra}}

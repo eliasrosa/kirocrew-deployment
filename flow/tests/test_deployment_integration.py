@@ -955,8 +955,10 @@ class TestReviewerPrompt:
 
         prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
 
-        assert "flow:review-approved" in prompt
-        assert "flow:review-refused" in prompt
+        # C4/C6: o reviewer não troca mais label de estado — o motor deriva o
+        # estado da evidência do PR (review APPROVED vs pedidos de mudança).
+        assert "add-label" not in prompt
+        assert "NÃO mexa em labels de estado" in prompt
 
     def test_contem_regra_nunca_merge(self) -> None:
         from deployment.deployment import _reviewer_prompt
@@ -975,18 +977,18 @@ class TestReviewerPrompt:
         assert "# review: kirocrew-flow PR #5 (issue #70)" in prompt
 
     def test_instrui_postar_no_pr_via_gh_pr_comment(self) -> None:
-        """O prompt manda postar o resultado NO PR (passo 7) e NA ISSUE (passo 8).
+        """C4/C6: o resultado do review vai SÓ no PR (registro da ação).
 
-        Com a issue #88 o resultado completo vai nos dois lugares.
+        Não é mais copiado para a issue nem gravado como comentário de estado.
         """
         from deployment.deployment import _reviewer_prompt
 
         prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
 
-        # Passo 7: postar no PR (instrução de postar o review completo)
+        # Postar no PR (instrução de postar o review completo)
         assert "POSTE O RESULTADO COMPLETO DO REVIEW NO PR" in prompt
-        # Passo 8: postar na issue também via gh issue comment
-        assert "gh issue comment 42 --repo owner/myrepo" in prompt
+        # NÃO copia para a issue
+        assert "gh issue comment 42 --repo owner/myrepo" not in prompt
 
     def test_contem_formato_kirocrew_review(self) -> None:
         """O prompt referencia o formato KiroCrew Review do comentário do PR."""
@@ -1001,46 +1003,44 @@ class TestReviewerPrompt:
         assert "*Reviewer automático — issue #42*" in prompt
 
     def test_resultado_completo_na_issue_em_vez_de_referencia_curta(self) -> None:
-        """Com a issue #88: resultado completo na issue, não só referência curta.
+        """C4/C6: o resultado do review NÃO é mais postado na issue — vai só no PR."""
+        from deployment.deployment import _reviewer_prompt
 
-        O reviewer posta o mesmo comentário nos dois lugares (PR e issue),
-        em vez de postar só "Review postado em PR #X — status".
+        prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
+
+        # Não copia o review para a issue
+        assert "POSTE O RESULTADO COMPLETO DO REVIEW NA ISSUE" not in prompt
+        # A referência curta também não é usada
+        assert "Review postado em PR #99" not in prompt
+
+    def test_preserva_state_comment_na_issue(self) -> None:
+        """C4/C6: o reviewer NÃO escreve mais o comentário de estado na issue.
+
+        O veredito é derivado pelo motor da evidência do PR (review APPROVED);
+        o SHA anti-loop vive no ledger local, não no comentário KIRO-FLOW-STATE.
         """
         from deployment.deployment import _reviewer_prompt
 
         prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
 
-        # Resultado completo na issue (passo 8)
-        assert "POSTE O RESULTADO COMPLETO DO REVIEW NA ISSUE" in prompt
-        assert "gh issue comment" in prompt
-        # A referência curta já não é o comportamento esperado
-        assert "Review postado em PR #99" not in prompt
-
-    def test_preserva_state_comment_na_issue(self) -> None:
-        """O prompt continua instruindo o upsert do ReviewerResult NA ISSUE."""
-        from deployment.deployment import _reviewer_prompt
-
-        prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
-
-        assert "upsert_state_comment" in prompt
-        assert "<!-- KIRO-FLOW-STATE -->" in prompt
-        assert "ReviewerResult" in prompt
+        assert "upsert_state_comment" not in prompt
+        assert "<!-- KIRO-FLOW-STATE -->" not in prompt
 
     def test_regressao_todos_substrings_antigos(self) -> None:
-        """Guard de regressão: todos os substrings previamente asseridos seguem presentes."""
+        """Guard: os substrings que PERMANECEM válidos após C4/C6."""
         from deployment.deployment import _reviewer_prompt
 
         prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
 
-        # Novo formato: tabela + H1 em vez de lista plana (issue #126)
         assert "owner/myrepo" in prompt
         assert "#99" in prompt
         assert "#42" in prompt
         assert "# review: myrepo PR #99 (issue #42)" in prompt
         assert "gh issue view 42 --repo owner/myrepo" in prompt
         assert "gh pr diff 99 --repo owner/myrepo" in prompt
-        assert "flow:review-approved" in prompt
         assert "NUNCA mergeie" in prompt
+        # C4/C6: não troca mais label de estado
+        assert "add-label" not in prompt
 
     def test_exemplar_do_pr_derivado_do_helper(self) -> None:
         """Fonte única de verdade: o exemplar do comentário do PR no prompt é
@@ -1068,21 +1068,15 @@ class TestReviewerPrompt:
             assert (f"     {line}" if line else line) in prompt
 
     def test_resultado_completo_postado_nos_dois_lugares(self) -> None:
-        """O prompt instrui a postar resultado completo TANTO no PR quanto na issue.
-
-        Com a issue #88, o reviewer posta o resultado completo em dois lugares —
-        PR e issue — em vez de só uma referência curta.
-        """
+        """C4/C6: o reviewer posta o resultado completo SÓ no PR (registro da ação)."""
         from deployment.deployment import _reviewer_prompt
 
         prompt = _reviewer_prompt("owner/myrepo", pr_number=99, issue_number=42)
 
-        # Passo 7: postar no PR
+        # Postar no PR
         assert "POSTE O RESULTADO COMPLETO DO REVIEW NO PR" in prompt
-        # Passo 8: postar na issue também (completo)
-        assert "POSTE O RESULTADO COMPLETO DO REVIEW NA ISSUE" in prompt
-        assert "gh issue comment" in prompt
-        assert "mesmo corpo completo" in prompt.lower() or "mesmo corpo" in prompt
+        # NÃO na issue
+        assert "POSTE O RESULTADO COMPLETO DO REVIEW NA ISSUE" not in prompt
 
 
 class TestDispatchReviewerFunction:
