@@ -1218,18 +1218,25 @@ def _dispatch_spec_stage(
     fallback: str,
     slot_prefix: str,
     prompt_extra: str = "",
-) -> None:
+) -> bool:
     """Despacha uma sessão one-shot de estágio de especificação (single-flow).
 
     Guard de issue CLOSED + backstop lock atômico antes do POST — mesma
     disciplina de concorrência de ``_dispatch``.
+
+    Retorna ``True`` só quando a sessão foi de fato despachada (os dois POSTs
+    de ``_post_agent_session`` OK). Retorna ``False`` em QUALQUER abort — issue
+    CLOSED, backstop lock já existente, template inválido, ou POST falho — para
+    que o motor ledger-driven (``tick``) NÃO avance o estágio quando nenhum
+    trabalho começou (Gap A). Antes esta função devolvia ``None`` e o dispatcher
+    do single-flow assumia sucesso sempre, avançando o ledger no vazio.
     """
     if _is_issue_closed(repo, issue["number"]):
         logger.info(
             "deployment[%s]: dispatch abortado — issue %s#%s está CLOSED",
             slot_prefix, repo, issue["number"],
         )
-        return
+        return False
 
     acquired, _lock_path = _try_acquire_dispatch_lock(repo, issue["number"])
     if not acquired:
@@ -1237,7 +1244,7 @@ def _dispatch_spec_stage(
             "deployment[%s]: dispatch abortado — backstop lock já existe para %s#%s",
             slot_prefix, repo, issue["number"],
         )
-        return
+        return False
 
     slot = f"{slot_prefix}-{repo.split('/')[-1]}-{issue['number']}"
     try:
@@ -1249,15 +1256,18 @@ def _dispatch_spec_stage(
             "deployment[%s]: dispatch abortado — template %r inválido para %s#%s: %s",
             slot_prefix, stage_template, repo, issue["number"], exc,
         )
-        return
-    _post_agent_session(ctx, message, slot=slot, cfg=cfg)
+        return False
+    return _post_agent_session(ctx, message, slot=slot, cfg=cfg)
 
 
 def _dispatch_briefing(
     ctx: object, repo: str, issue: dict, cfg: dict, prompt_extra: str = "",
-) -> None:
-    """Despacha a sessão one-shot de briefing (flow:briefing, single-flow)."""
-    _dispatch_spec_stage(
+) -> bool:
+    """Despacha a sessão one-shot de briefing (flow:briefing, single-flow).
+
+    Retorna ``True`` só quando a sessão foi despachada; ``False`` em abort.
+    """
+    return _dispatch_spec_stage(
         ctx, repo, issue, cfg,
         stage_template="briefing",
         fallback=_BRIEFING_PROMPT_FALLBACK,
@@ -1268,9 +1278,12 @@ def _dispatch_briefing(
 
 def _dispatch_planning(
     ctx: object, repo: str, issue: dict, cfg: dict, prompt_extra: str = "",
-) -> None:
-    """Despacha a sessão one-shot de especificação (flow:planning-specs, single-flow)."""
-    _dispatch_spec_stage(
+) -> bool:
+    """Despacha a sessão one-shot de especificação (flow:planning-specs, single-flow).
+
+    Retorna ``True`` só quando a sessão foi despachada; ``False`` em abort.
+    """
+    return _dispatch_spec_stage(
         ctx, repo, issue, cfg,
         stage_template="planning_specs",
         fallback=_PLANNING_PROMPT_FALLBACK,
@@ -4337,11 +4350,9 @@ class _LedgerDispatcher:
 
     def dispatch_stage(self, repo: str, issue: dict, stage: State) -> bool:
         if stage is State.BRIEFING:
-            _dispatch_briefing(self._ctx, repo, issue, self._cfg)
-            return True
+            return _dispatch_briefing(self._ctx, repo, issue, self._cfg)
         if stage is State.PLANNING_SPECS:
-            _dispatch_planning(self._ctx, repo, issue, self._cfg)
-            return True
+            return _dispatch_planning(self._ctx, repo, issue, self._cfg)
         logger.info("single-flow: estágio %s não é ativo — sem disparo", stage.value)
         return False
 
