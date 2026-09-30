@@ -185,6 +185,56 @@ def can_leave_spec(item: WorkItem, squad: Squad) -> Result:
 
 
 # ---------------------------------------------------------------------------
+# GATE de saída do planning — a Sub-task 1 (Especificação) está aceita?
+# ---------------------------------------------------------------------------
+
+# Palavras-chave que identificam a sub-task de Especificação (case-insensitive).
+# O modelo single-flow tem 2 sub-tasks fixas: "Especificação" e "Implementação".
+_SPEC_SUBTASK_KEYWORDS = ("especifica", "spec")
+
+
+def _is_spec_subtask(subtask: dict) -> bool:
+    """A sub-task é a de Especificação? (por palavra-chave no título)."""
+    title = str(subtask.get("title", "")).lower()
+    return any(kw in title for kw in _SPEC_SUBTASK_KEYWORDS)
+
+
+def can_leave_planning(item: WorkItem, subtasks: list[dict]) -> Result:
+    """GATE de saída do planning (single-flow) — pode ir para develop-waiting?
+
+    Condição: a **Sub-task 1 (Especificação)** tem que estar ACEITA
+    (aceite == sub-task fechada; decisão fechada no design doc §10).
+
+    ``subtasks`` são os dicts normalizados de ``IssueProvider.list_subtasks``
+    — cada um com ``title`` e ``accepted`` já pré-computado pelo adapter, para
+    este gate permanecer puro (sem I/O, sem conhecer o formato do provedor).
+
+    Regra de identificação da sub-task de Especificação:
+      1. Se alguma sub-task tem "especifica"/"spec" no título, é essa.
+      2. Se nenhuma casa a palavra-chave, cai na PRIMEIRA sub-task (a Sub-task 1
+         do modelo de 2 sub-tasks — Especificação sempre criada primeiro).
+
+    Falha quando: não há sub-tasks, ou a de Especificação não está aceita.
+    """
+    if not subtasks:
+        return Result.fail(
+            "sem sub-tasks — o modo single-flow espera a Sub-task 1 "
+            "(Especificação) criada e aceita antes de ir para develop-waiting."
+        )
+
+    spec = next((st for st in subtasks if _is_spec_subtask(st)), subtasks[0])
+
+    if not spec.get("accepted", False):
+        return Result.fail(
+            f"Sub-task de Especificação ({spec.get('key', '?')}) ainda não "
+            f"aceita — feche a sub-task de spec (requirements+design+tasks) "
+            f"após a aprovação do TL/PM antes de avançar para develop-waiting."
+        )
+
+    return Result.success(data=spec.get("key"))
+
+
+# ---------------------------------------------------------------------------
 # GATE 0 (hotfix) — triagem: é mesmo hotfix ou rebaixa pra bug?
 # ---------------------------------------------------------------------------
 

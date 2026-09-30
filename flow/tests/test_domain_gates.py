@@ -11,6 +11,7 @@ from flow.domain.gates import (
     Squad,
     TemplateSwitch,
     WorkItem,
+    can_leave_planning,
     can_leave_spec,
     can_start_debt,
     has_equivalence_test,
@@ -286,3 +287,64 @@ class TestValidateHmlBypass:
         result = validate_hml_bypass(item, justification=motivo)
         assert result
         assert result.data == motivo
+
+
+# ---------------------------------------------------------------------------
+# GATE de saída do planning — can_leave_planning (single-flow, frente 3)
+# ---------------------------------------------------------------------------
+
+class TestCanLeavePlanning:
+    def _item(self) -> WorkItem:
+        return WorkItem(key="VGAT-100", title="[api-gateway2] Nova feature")
+
+    def test_falha_sem_subtasks(self) -> None:
+        result = can_leave_planning(self._item(), subtasks=[])
+        assert result.failed
+        assert "sem sub-tasks" in result.reason
+
+    def test_falha_spec_nao_aceita(self) -> None:
+        subtasks = [
+            {"key": "VGAT-101", "title": "Especificação", "accepted": False},
+            {"key": "VGAT-102", "title": "Implementação", "accepted": False},
+        ]
+        result = can_leave_planning(self._item(), subtasks=subtasks)
+        assert result.failed
+        assert "VGAT-101" in result.reason
+
+    def test_sucesso_spec_aceita(self) -> None:
+        subtasks = [
+            {"key": "VGAT-101", "title": "Especificação", "accepted": True},
+            {"key": "VGAT-102", "title": "Implementação", "accepted": False},
+        ]
+        result = can_leave_planning(self._item(), subtasks=subtasks)
+        assert result
+        assert result.data == "VGAT-101"
+
+    def test_identifica_spec_por_palavra_chave_case_insensitive(self) -> None:
+        # a spec não é a primeira sub-task, mas é identificada pelo título
+        subtasks = [
+            {"key": "VGAT-102", "title": "Implementação da API", "accepted": False},
+            {"key": "VGAT-101", "title": "SPEC — requisitos e design", "accepted": True},
+        ]
+        result = can_leave_planning(self._item(), subtasks=subtasks)
+        assert result
+        assert result.data == "VGAT-101"
+
+    def test_implementacao_aceita_nao_libera_se_spec_pendente(self) -> None:
+        # só a Sub-task 2 fechada não basta — a de Especificação manda
+        subtasks = [
+            {"key": "VGAT-101", "title": "Especificação", "accepted": False},
+            {"key": "VGAT-102", "title": "Implementação", "accepted": True},
+        ]
+        result = can_leave_planning(self._item(), subtasks=subtasks)
+        assert result.failed
+
+    def test_fallback_primeira_subtask_quando_sem_palavra_chave(self) -> None:
+        # nenhuma casa a palavra-chave -> usa a PRIMEIRA (Sub-task 1)
+        subtasks = [
+            {"key": "VGAT-101", "title": "Fase de entendimento", "accepted": True},
+            {"key": "VGAT-102", "title": "Fase de código", "accepted": False},
+        ]
+        result = can_leave_planning(self._item(), subtasks=subtasks)
+        assert result
+        assert result.data == "VGAT-101"

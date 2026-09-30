@@ -433,3 +433,56 @@ class TestGetPrChecks:
         with mock.patch.object(github_transport, "_run", return_value=checks):
             result = github_client.get_pr_checks("owner/repo", 5)
         assert result[0]["state"] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# Sub-tasks (single-flow, frente 3)
+# ---------------------------------------------------------------------------
+
+def _raw_sub_issue(number: int, title: str, state: str) -> dict:
+    return {
+        "number": number,
+        "title": title,
+        "state": state,
+        "html_url": f"https://github.com/owner/repo/issues/{number}",
+    }
+
+
+class TestSubtasksGitHub:
+    def test_normalize_subtask_fechada_aceita(self) -> None:
+        raw = _raw_sub_issue(101, "Especificação", "closed")
+        st = norm.normalize_subtask(raw)
+        assert st["key"] == "https://github.com/owner/repo/issues/101"
+        assert st["title"] == "Especificação"
+        assert st["accepted"] is True
+
+    def test_normalize_subtask_aberta_nao_aceita(self) -> None:
+        raw = _raw_sub_issue(102, "Implementação", "open")
+        st = norm.normalize_subtask(raw)
+        assert st["accepted"] is False
+
+    def test_normalize_subtask_state_case_insensitive(self) -> None:
+        raw = _raw_sub_issue(103, "Spec", "CLOSED")
+        st = norm.normalize_subtask(raw)
+        assert st["accepted"] is True
+
+    def test_list_subtasks_normaliza_via_transport(self) -> None:
+        raw_list = [
+            _raw_sub_issue(101, "Especificação", "closed"),
+            _raw_sub_issue(102, "Implementação", "open"),
+        ]
+        with mock.patch.object(github_transport, "list_sub_issues", return_value=raw_list):
+            subs = github_client.list_subtasks("owner/repo", "100")
+        assert len(subs) == 2
+        assert subs[0]["accepted"] is True
+        assert subs[1]["accepted"] is False
+
+    def test_list_subtasks_vazio_sem_sub_issues(self) -> None:
+        with mock.patch.object(github_transport, "list_sub_issues", return_value=[]):
+            subs = github_client.list_subtasks("owner/repo", "100")
+        assert subs == []
+
+    def test_get_subtask_acceptance(self) -> None:
+        assert github_client.get_subtask_acceptance({"accepted": True}) is True
+        assert github_client.get_subtask_acceptance({"accepted": False}) is False
+        assert github_client.get_subtask_acceptance({}) is False
