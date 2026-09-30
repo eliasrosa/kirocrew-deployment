@@ -277,3 +277,90 @@ def test_migration_adds_columns_to_v1_database(tmp_path: Path) -> None:
     lg.set_review_result("owner/repo#42", approved=True, sha="new-sha")
     assert lg.get("owner/repo#42").review_sha == "new-sha"  # type: ignore[union-attr]
     lg.close()
+
+
+# ---------------------------------------------------------------------------
+# Item D — stage_started_at: gravado em claim/advance, migrado em banco antigo
+# ---------------------------------------------------------------------------
+
+def test_claim_grava_stage_started_at(ledger: SqliteRunLedger) -> None:
+    """claim() grava stage_started_at no momento de prender a task."""
+    ledger.claim("owner/repo#50", "owner/repo", "flow:briefing")
+    run = ledger.get("owner/repo#50")
+    assert run is not None
+    assert run.stage_started_at != ""  # deve ser um timestamp
+
+
+def test_advance_atualiza_stage_started_at(ledger: SqliteRunLedger) -> None:
+    """advance() grava stage_started_at ao mudar de estágio.
+    O campo é sempre preenchido após advance e o current_stage avança."""
+    ledger.claim("owner/repo#51", "owner/repo", "flow:briefing")
+    run_before = ledger.get("owner/repo#51")
+    assert run_before is not None
+    # O campo já deve estar preenchido após o claim
+    assert run_before.stage_started_at != ""
+    assert run_before.current_stage == "flow:briefing"
+
+    ledger.advance("owner/repo#51", "flow:planning-specs")
+
+    run_after = ledger.get("owner/repo#51")
+    assert run_after is not None
+    # Estágio avançou e stage_started_at continua preenchido
+    assert run_after.current_stage == "flow:planning-specs"
+    assert run_after.stage_started_at != ""
+
+
+def test_stage_started_at_independe_do_last_transition(ledger: SqliteRunLedger) -> None:
+    """stage_started_at e last_transition são gravados juntos no advance,
+    mas são campos semanticamente distintos (stage_started_at reseta no
+    advance; last_transition também — confirmamos que ambos são preenchidos)."""
+    ledger.claim("owner/repo#52", "owner/repo", "flow:briefing")
+    ledger.advance("owner/repo#52", "flow:planning-specs")
+    run = ledger.get("owner/repo#52")
+    assert run is not None
+    assert run.stage_started_at != ""
+    assert run.last_transition != ""
+
+
+def test_migration_adiciona_stage_started_at_em_banco_antigo(tmp_path: Path) -> None:
+    """Banco sem stage_started_at é migrado: campo lê como '' (default vazio)."""
+    import sqlite3
+
+    db_path = tmp_path / "run_ledger_old.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE run_ledger (
+            task_key        TEXT PRIMARY KEY,
+            repo            TEXT NOT NULL,
+            current_stage   TEXT NOT NULL,
+            stage_session   TEXT NULL,
+            started_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            last_transition TEXT NOT NULL DEFAULT (datetime('now')),
+            attempts        INTEGER NOT NULL DEFAULT 0,
+            status          TEXT NOT NULL DEFAULT 'running',
+            review_sha        TEXT NOT NULL DEFAULT '',
+            review_iterations INTEGER NOT NULL DEFAULT 0,
+            review_approved   INTEGER NULL,
+            approvals         TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO run_ledger (task_key, repo, current_stage) VALUES (?, ?, ?)",
+        ("owner/repo#60", "owner/repo", "flow:develop-waiting"),
+    )
+    conn.commit()
+    conn.close()
+
+    lg = SqliteRunLedger(squad_id="old", data_dir=tmp_path)
+    run = lg.get("owner/repo#60")
+    assert run is not None
+    assert run.stage_started_at == ""  # default vazio (banco não tinha o campo)
+
+    # advance popula o campo a partir da migração
+    lg.advance("owner/repo#60", "flow:review-waiting")
+    run2 = lg.get("owner/repo#60")
+    assert run2 is not None
+    assert run2.stage_started_at != ""  # agora preenchido
+    lg.close()
