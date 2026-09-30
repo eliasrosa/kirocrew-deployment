@@ -67,12 +67,14 @@ def test_waiting_quando_sessao_do_estagio_esta_viva(ledger: SqliteRunLedger) -> 
 
 
 # ---------------------------------------------------------------------------
-# estágios ativos (briefing/planning) — o motor dispara e avança
+# estágios ativos (briefing/planning) — dispara UMA vez, avança quando a
+# sessão termina (Gap C: não redispara enquanto a sessão está viva)
 # ---------------------------------------------------------------------------
 
-def test_dispara_briefing_e_avanca_para_planning(ledger: SqliteRunLedger) -> None:
+def test_dispara_briefing_prende_sessao_sem_avancar(ledger: SqliteRunLedger) -> None:
     ledger.claim("owner/repo#1", "owner/repo", State.BRIEFING.value)
     disp = FakeDispatcher(accept=True)
+    # 1º tick: dispara e PRENDE a sessão, SEM avançar (fica em briefing).
     result = tick(ledger, disp, FakeReader())
     assert result == f"dispatched:{State.BRIEFING.value}"
     assert len(disp.calls) == 1
@@ -80,20 +82,46 @@ def test_dispara_briefing_e_avanca_para_planning(ledger: SqliteRunLedger) -> Non
     assert repo == "owner/repo"
     assert issue["number"] == 1
     assert stage is State.BRIEFING
-    # ledger avançou para planning-specs
+    run = ledger.get("owner/repo#1")
+    assert run is not None
+    assert run.current_stage == State.BRIEFING.value  # NÃO avançou ainda
+    assert run.stage_session  # sessão prendida
+
+    # Enquanto a sessão vive (stage_running=True), NÃO redispara.
+    result2 = tick(ledger, disp, FakeReader(), stage_running=True)
+    assert result2 == f"waiting:{State.BRIEFING.value}"
+    assert len(disp.calls) == 1  # nenhum disparo novo (Gap C corrigido)
+
+
+def test_avanca_briefing_quando_sessao_terminou(ledger: SqliteRunLedger) -> None:
+    ledger.claim("owner/repo#1", "owner/repo", State.BRIEFING.value)
+    disp = FakeDispatcher(accept=True)
+    tick(ledger, disp, FakeReader())  # dispara e prende
+    # 2º tick com stage_running=False (sessão morreu) → avança.
+    result = tick(ledger, disp, FakeReader())
+    assert result == f"advanced:{State.BRIEFING.value}->{State.PLANNING_SPECS.value}"
     run = ledger.get("owner/repo#1")
     assert run is not None
     assert run.current_stage == State.PLANNING_SPECS.value
+    assert not run.stage_session  # marcador limpo ao avançar
+    assert len(disp.calls) == 1  # não redisparou briefing
 
 
-def test_dispara_planning_e_avanca_para_planning_review(ledger: SqliteRunLedger) -> None:
+def test_dispara_planning_prende_sessao_sem_avancar(ledger: SqliteRunLedger) -> None:
     ledger.claim("owner/repo#2", "owner/repo", State.PLANNING_SPECS.value)
     disp = FakeDispatcher(accept=True)
     result = tick(ledger, disp, FakeReader())
     assert result == f"dispatched:{State.PLANNING_SPECS.value}"
     run = ledger.get("owner/repo#2")
     assert run is not None
-    assert run.current_stage == State.PLANNING_REVIEW.value
+    assert run.current_stage == State.PLANNING_SPECS.value  # não avançou
+    assert run.stage_session
+    # sessão terminou → 2º tick avança
+    result2 = tick(ledger, disp, FakeReader())
+    assert result2 == f"advanced:{State.PLANNING_SPECS.value}->{State.PLANNING_REVIEW.value}"
+    run2 = ledger.get("owner/repo#2")
+    assert run2 is not None
+    assert run2.current_stage == State.PLANNING_REVIEW.value
 
 
 def test_dispatch_abortado_nao_avanca_ledger(ledger: SqliteRunLedger) -> None:
