@@ -2,7 +2,7 @@
   "id": "FEAT-002",
   "type": "feat",
   "description": "Core implementation: (a) per-repo issue_provider override in the squad model, (b) squads_dir support in the deployment config loader with squad_config kept as fallback, and (c) wire the single-flow engine to resolve the provider per repo via squad.issue_provider_for(repo). This is one cohesive unit because the engine change depends on the new resolver method, and both are exercised by the same integration paths. Includes tests covering PyYAML AND the mini_yaml fallback.",
-  "status": "pending",
+  "status": "completed",
   "steps": [
     "PART A — squad model (flow/config/squad.py):",
     "In RepoConfig (frozen, slots dataclass), add field `issue_provider: str | None = None` after auto_merge, with a Portuguese comment '# None = herda do issue_provider raiz da squad'. Update the RepoConfig docstring example to show issue_provider.",
@@ -40,5 +40,5 @@
     ".venv/bin/mypy flow deployment completes with no new errors"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Implemented all parts. PART A: RepoConfig gained issue_provider: str|None=None; _normalize_repos and _parse_repo_configs parse+validate it via new helper _parse_repo_issue_provider (github|jira only, pt-BR error); SquadConfig.issue_provider_for(repo) added (repo override > squad default). PART B: extracted shared _load_single_flow_squad(cfg) + _select_squad_for_repos(squads, repos) in deployment.py; selection order squads_dir(dir) > squad_config(file) > inline; non-existent squads_dir raises RuntimeError('squads_dir ...'); run()/_run_stage() now delegate to the helper. PART B also updated _resolve_squad_id to honor squads_dir. PART C: added _resolve_provider_for_repo helper; _LedgerStateReader/_LedgerDispatcher accept optional squad kwarg and resolve provider per repo via issue_provider_for->provider_for, falling back to default when squad is None; _single_flow_tick loads squad and passes it. Behavior preserved when no squad/override (default==root). PART D: added TestRepoIssueProvider (8 tests incl. _mini_yaml fallback both via _no_pyyaml fixture and direct _mini_yaml call) in test_config_squad_workflow.py; per-repo provider tests in test_single_flow_read_state_c3.py; TestSquadsDirLoader (6 tests) in test_deployment_integration.py. Verification: .venv/bin/pytest flow/tests/ -> 1094 passed, 1 skipped, 1 failed (only the known pre-existing test_template_corrompido_ilegivel_usa_fallback chmod-as-root failure; baseline was 1077 passed, so +17 new tests all green). ruff check flow/ = All checks passed. mypy flow/ --ignore-missing-imports = Success no issues (74 files). Coverage gate: 87.45% >= 75%. Note: RuntimeError for a non-existent squads_dir uses a generic 'deployment:' prefix (not stage-tagged) since it comes from the shared helper; the message still contains 'squads_dir'."
 }

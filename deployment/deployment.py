@@ -252,6 +252,133 @@ def _mini_yaml(path: str) -> dict:
     return dict(_shared_mini_yaml(Path(path)))
 
 
+def _select_squad_for_repos(squads: list, repos: list[str]):
+    """Seleciona, dentre as squads carregadas de ``squads_dir``, aquela cujos
+    repos/projetos intersectam os ``repos`` configurados no deployment (#311).
+
+    O deployment dirige UMA squad por tick/estágio. Quando ``squads_dir`` tem
+    vários arquivos, escolhemos a squad cujos ``projects``/``repos`` casam com
+    ao menos um repo de ``cfg['repos']`` — o critério de casamento reusa
+    ``_normalize_repo_identifier`` para comparar identificadores canônicos
+    (owner/repo), de modo que urls completas e formas ``owner/repo`` casem.
+
+    Regra de resolução:
+      - 0 squads carregadas → ``None`` (o chamador cai para squad_config/inline);
+      - exatamente 1 squad carregada → usa ela (mesmo sem casar repos, para
+        manter o comportamento simples de "um squads_dir, uma squad");
+      - várias squads → a primeira cujos repos/projetos intersectam ``repos``;
+        se nenhuma casar, ``None``.
+    """
+    from flow.config.squad import _normalize_repo_identifier
+
+    if not squads:
+        return None
+    if len(squads) == 1:
+        return squads[0]
+
+    wanted = {_normalize_repo_identifier(str(r)) for r in repos}
+    for squad in squads:
+        candidates = {
+            _normalize_repo_identifier(str(p)) for p in squad.projects
+        } | {_normalize_repo_identifier(str(r)) for r in squad.repos}
+        if wanted & candidates:
+            return squad
+    return None
+
+
+def _load_single_flow_squad(cfg: dict):
+    """Carrega a SquadConfig para o deployment, com a ordem de seleção do #311.
+
+    Ordem de precedência (documentada aqui para run()/_run_stage()/single-flow
+    compartilharem UM único caminho):
+
+      1. ``squads_dir`` (diretório) — preferido quando setado e existente:
+         carrega TODAS as squads via ``load_squads_dir`` e seleciona a que
+         casa com ``cfg['repos']`` (ver ``_select_squad_for_repos``). Um
+         ``squads_dir`` setado mas inexistente é ERRO (RuntimeError), espelhando
+         a mensagem de ``squad_config`` não encontrado.
+      2. ``squad_config`` (arquivo único) — fallback/compatibilidade.
+      3. inline — construída a partir da config legada (repos/issue_provider/...).
+
+    Retorna a SquadConfig (com os globais já populados) ou ``None`` quando nem
+    squads_dir nem squad_config produzem squad e a construção inline falha.
+    """
+    from flow.config.squad import (
+        SquadConfig,
+        SquadConfigError,
+        load_squad,
+        load_squads_dir,
+    )
+
+    repos: list[str] = cfg.get("repos") or []
+    issue_provider_name: str = cfg.get("issue_provider", "github")
+    squad: SquadConfig | None = None
+
+    # ── (1) squads_dir: diretório de squads do app instalado (#311) ────────
+    squads_dir = cfg.get("squads_dir")
+    if squads_dir and not os.path.isdir(squads_dir):
+        raise RuntimeError(
+            f"deployment: squads_dir aponta para um diretório que não existe: {squads_dir!r}"
+        )
+    if squads_dir and os.path.isdir(squads_dir):
+        try:
+            squads = load_squads_dir(squads_dir)
+            squad = _select_squad_for_repos(squads, repos)
+            if squad is not None:
+                logger.info(
+                    "deployment: squad carregada de squads_dir %s (%s)",
+                    squads_dir, squad.id,
+                )
+        except SquadConfigError as exc:
+            logger.warning("deployment: falha ao carregar squads_dir: %s", exc)
+
+    # ── (2) squad_config: arquivo único (fallback/compat) ──────────────────
+    if squad is None:
+        squad_file = cfg.get("squad_config")
+        if squad_file and not os.path.exists(squad_file):
+            raise RuntimeError(
+                f"deployment: squad_config aponta para um arquivo que não existe: {squad_file!r}"
+            )
+        if squad_file and os.path.exists(squad_file):
+            try:
+                squad = load_squad(squad_file)
+                logger.info(
+                    "deployment: squad carregada de %s (%s)", squad_file, squad.id
+                )
+            except SquadConfigError as exc:
+                logger.warning("deployment: falha ao carregar squad config: %s", exc)
+
+    # ── (3) inline: construída a partir da config legada ───────────────────
+    if squad is None:
+        from flow.config.squad import _parse_squad
+        raw: dict = {
+            "id": cfg.get("squad_id", "default"),
+            "issue_provider": issue_provider_name,
+            "repos": repos,
+            "workflow_template": cfg.get("workflow_template", "versao-c"),
+        }
+        if cfg.get("project"):
+            raw["project"] = cfg["project"]
+        raw_params = cfg.get("workflow_params") or {}
+        if raw_params:
+            raw["workflow_params"] = raw_params
+        raw_routing = cfg.get("routing") or []
+        if raw_routing:
+            raw["routing"] = raw_routing
+        try:
+            squad = _parse_squad(raw)
+            logger.debug("deployment: squad construída inline (id=%s)", squad.id)
+        except SquadConfigError as exc:
+            logger.error("deployment: squad config inválida: %s", exc)
+
+    # ── Popula os defaults globais na SquadConfig (issue #264) ─────────────
+    if squad is not None:
+        squad.global_auto_dispatch = bool(cfg.get("auto_dispatch", False))
+        squad.global_auto_merge = bool(squad.workflow_params.auto_merge_on_approve)
+
+    return squad
+
+
 # ── Sessões ativas ────────────────────────────────────────────────────────
 
 def _sessdir() -> str:
@@ -1677,52 +1804,14 @@ def run(ctx: object) -> None:
         logger.warning("deployment: nenhum repo/projeto configurado")
         return
 
-    # ── Carrega a SquadConfig: arquivo squads/<id>.yaml > inline da config ─
-    from flow.config.squad import SquadConfig, SquadConfigError, load_squad
+    # ── Carrega a SquadConfig: squads_dir (dir) > squad_config (arquivo) > inline ─
+    # A ordem de seleção (squads_dir preferido quando setado+existente, senão
+    # squad_config, senão inline) está documentada em _load_single_flow_squad,
+    # compartilhado por run()/_run_stage()/single-flow (#311). Os defaults
+    # globais (auto_dispatch/auto_merge) já são populados lá dentro.
+    from flow.config.squad import SquadConfig
 
-    squad: SquadConfig | None = None
-    squad_file = cfg.get("squad_config")   # caminho opcional na config
-    if squad_file and not os.path.exists(squad_file):
-        raise RuntimeError(
-            f"deployment: squad_config aponta para um arquivo que não existe: {squad_file!r}"
-        )
-    if squad_file and os.path.exists(squad_file):
-        try:
-            squad = load_squad(squad_file)
-            logger.info("deployment: squad carregada de %s (%s)", squad_file, squad.id)
-        except SquadConfigError as exc:
-            logger.warning("deployment: falha ao carregar squad config: %s", exc)
-
-    if squad is None:
-        # Constrói inline a partir da config legada
-        from flow.config.squad import _parse_squad
-        raw: dict = {
-            "id": cfg.get("squad_id", "default"),
-            "issue_provider": issue_provider_name,
-            "repos": repos,
-            "workflow_template": cfg.get("workflow_template", "versao-c"),
-        }
-        if cfg.get("project"):
-            raw["project"] = cfg["project"]
-        raw_params = cfg.get("workflow_params") or {}
-        if raw_params:
-            raw["workflow_params"] = raw_params
-        raw_routing = cfg.get("routing") or []
-        if raw_routing:
-            raw["routing"] = raw_routing
-        try:
-            squad = _parse_squad(raw)
-            logger.debug("deployment: squad construída inline (id=%s)", squad.id)
-        except SquadConfigError as exc:
-            logger.error("deployment: squad config inválida: %s", exc)
-
-    # ── Popula os defaults globais na SquadConfig (issue #264) ─────────────
-    # Assim squad.auto_dispatch(repo_url)/squad.auto_merge(repo_url) resolvem o
-    # fallback global internamente. auto_dispatch vem de cfg['auto_dispatch'];
-    # auto_merge vem de workflow_params.auto_merge_on_approve da squad.
-    if squad is not None:
-        squad.global_auto_dispatch = auto
-        squad.global_auto_merge = bool(squad.workflow_params.auto_merge_on_approve)
+    squad: SquadConfig | None = _load_single_flow_squad(cfg)
 
     # ── Inicializa o provider e o cache ────────────────────────────────────
     provider = provider_for(issue_provider_name)
@@ -3388,44 +3477,11 @@ def _run_stage(ctx: object, stage: str) -> None:
         logger.warning("deployment[%s]: nenhum repo/projeto configurado", stage)
         return
 
-    # ── Carrega a SquadConfig ────────────────────────────────────────────
-    from flow.config.squad import SquadConfig, SquadConfigError, load_squad
+    # ── Carrega a SquadConfig: squads_dir > squad_config > inline (#311) ──
+    # Mesmo caminho compartilhado de run()/single-flow (ver _load_single_flow_squad).
+    from flow.config.squad import SquadConfig
 
-    squad: SquadConfig | None = None
-    squad_file = cfg.get("squad_config")
-    if squad_file and not os.path.exists(squad_file):
-        raise RuntimeError(
-            f"deployment[{stage}]: squad_config aponta para um arquivo que não existe: {squad_file!r}"
-        )
-    if squad_file and os.path.exists(squad_file):
-        try:
-            squad = load_squad(squad_file)
-        except SquadConfigError as exc:
-            logger.warning("deployment[%s]: falha ao carregar squad config: %s", stage, exc)
-
-    if squad is None:
-        from flow.config.squad import _parse_squad
-        raw: dict = {
-            "id": cfg.get("squad_id", "default"),
-            "issue_provider": issue_provider_name,
-            "repos": repos,
-            "workflow_template": cfg.get("workflow_template", "versao-c"),
-        }
-        if cfg.get("project"):
-            raw["project"] = cfg["project"]
-        if cfg.get("workflow_params"):
-            raw["workflow_params"] = cfg["workflow_params"]
-        if cfg.get("routing"):
-            raw["routing"] = cfg["routing"]
-        try:
-            squad = _parse_squad(raw)
-        except SquadConfigError as exc:
-            logger.error("deployment[%s]: squad config inválida: %s", stage, exc)
-
-    # ── Popula os defaults globais na SquadConfig (issue #264) ─────────────
-    if squad is not None:
-        squad.global_auto_dispatch = auto
-        squad.global_auto_merge = bool(squad.workflow_params.auto_merge_on_approve)
+    squad: SquadConfig | None = _load_single_flow_squad(cfg)
 
     provider = provider_for(issue_provider_name)
 
@@ -4319,6 +4375,25 @@ def run_single_flow(ctx: object) -> None:
 # varria 16 estados x 8 estágios (~128 chamadas gh) do modelo anterior.
 
 
+def _resolve_provider_for_repo(
+    squad: object | None, repo: str, default_provider: object
+) -> object:
+    """Resolve o issue provider efetivo para um repo (issue #311).
+
+    Quando há uma SquadConfig, usa ``squad.issue_provider_for(repo)`` (override
+    do repo > default da squad) e mapeia o nome para o adaptador via
+    ``provider_for``. Sem squad, devolve o ``default_provider`` (provider raiz)
+    — preservando byte-a-byte o comportamento anterior quando não há override.
+    """
+    if squad is None:
+        return default_provider
+    try:
+        name = squad.issue_provider_for(repo)  # type: ignore[attr-defined]
+    except Exception:
+        return default_provider
+    return provider_for(name)
+
+
 class _LedgerStateReader:
     """StateReader concreto: deriva o State real da issue de EVIDÊNCIA externa
     (branch + PR + issue fechada), NÃO de labels de estado.
@@ -4331,8 +4406,11 @@ class _LedgerStateReader:
     testado). Assim o single-flow não lê mais nenhuma label ``flow:*``.
     """
 
-    def __init__(self, provider: object) -> None:
+    def __init__(self, provider: object, squad: object | None = None) -> None:
+        # provider = provider raiz/default (fallback); squad = SquadConfig
+        # opcional para resolver o issue_provider POR REPO (issue #311).
         self._provider = provider
+        self._squad = squad
 
     def read_state(self, repo: str, task_key: str) -> State | None:
         # Deriva o estado de evidência externa (branch/PR/issue fechada).
@@ -4340,6 +4418,10 @@ class _LedgerStateReader:
         # a lógica pura a implicit_state(). Fail-safe: erro → None (motor aguarda).
         from flow.domain.gates import WorkItem
         from flow.scan.scanner import ScanResult
+
+        # Resolve o provider POR REPO: se há squad, usa issue_provider_for(repo)
+        # (override do repo > default da squad); senão, o provider default.
+        provider = _resolve_provider_for_repo(self._squad, repo, self._provider)
 
         # O reader recebe só repo + task_key; monta um ScanResult mínimo para
         # reusar _collect_implicit_state (que espera result.item.key).
@@ -4352,7 +4434,7 @@ class _LedgerStateReader:
             changed=False,
             reason="single-flow read_state",
         )
-        implicit = _collect_implicit_state(stub, self._provider, repo)
+        implicit = _collect_implicit_state(stub, provider, repo)
         if implicit is None:
             return None
         mapping = _build_implicit_to_explicit_map()
@@ -4362,10 +4444,15 @@ class _LedgerStateReader:
 class _LedgerDispatcher:
     """Dispatcher concreto: mapeia o State ativo para o _dispatch_* real."""
 
-    def __init__(self, ctx: object, cfg: dict, provider: object) -> None:
+    def __init__(
+        self, ctx: object, cfg: dict, provider: object, squad: object | None = None
+    ) -> None:
         self._ctx = ctx
         self._cfg = cfg
+        # provider = provider raiz/default (fallback); squad = SquadConfig
+        # opcional para resolver o issue_provider POR REPO (issue #311).
         self._provider = provider
+        self._squad = squad
 
     def _enrich_issue(self, repo: str, issue: dict) -> dict | None:
         """Completa o ``issue`` do motor com ``title`` (e demais campos) via
@@ -4382,8 +4469,9 @@ class _LedgerDispatcher:
         ``dispatch_stage`` reporte abort (``False``) e o tick NÃO avance no vazio
         (mesma disciplina do Gap A)."""
         key = issue.get("key") or issue.get("number")
+        provider = _resolve_provider_for_repo(self._squad, repo, self._provider)
         try:
-            item = self._provider.get_work_item(repo, str(key))  # type: ignore[attr-defined]
+            item = provider.get_work_item(repo, str(key))  # type: ignore[attr-defined]
         except Exception as exc:
             logger.warning(
                 "single-flow: get_work_item falhou ao enriquecer o issue %s (%s): %s — dispatch abortado",
@@ -4419,16 +4507,38 @@ def _resolve_squad_id(cfg: dict) -> str:
     """Resolve o id canônico da squad para nomear o RunLedger.
 
     O id real (ex: ``kirocrew-flow``) vive DENTRO do yaml apontado por
-    ``squad_config`` — a config raiz não tem a chave ``squad_id``. O modo
-    parallel resolve isso via ``load_squad(...).id``; aqui replicamos a mesma
-    ordem de resolução para que o single-flow abra o MESMO banco
+    ``squad_config`` (ou de um arquivo em ``squads_dir``) — a config raiz não
+    tem a chave ``squad_id``. O modo parallel resolve isso via
+    ``load_squad(...).id``; aqui replicamos a MESMA ordem de seleção de
+    ``_load_single_flow_squad`` para que o single-flow abra o MESMO banco
     (``run_ledger_kirocrew-flow.db``), e não o ``run_ledger_default.db``.
 
-    Ordem: (1) yaml de ``squad_config`` → ``squad.id``; (2) chave ``squad_id``
-    da config raiz; (3) ``"default"``.
+    Ordem: (1) squads_dir → squad selecionada → ``squad.id``; (2) yaml de
+    ``squad_config`` → ``squad.id``; (3) chave ``squad_id`` da config raiz;
+    (4) ``"default"``.
     """
-    from flow.config.squad import SquadConfigError, load_squad
+    from flow.config.squad import (
+        SquadConfigError,
+        load_squad,
+        load_squads_dir,
+    )
 
+    repos: list[str] = cfg.get("repos") or []
+
+    # (1) squads_dir: seleciona a squad que casa com cfg['repos'].
+    squads_dir = cfg.get("squads_dir")
+    if squads_dir and os.path.isdir(squads_dir):
+        try:
+            squad = _select_squad_for_repos(load_squads_dir(squads_dir), repos)
+            if squad is not None:
+                return squad.id
+        except SquadConfigError as exc:
+            logger.warning(
+                "single-flow: squads_dir inválido (%s) — caindo para squad_config/squad_id",
+                exc,
+            )
+
+    # (2) squad_config: arquivo único.
     squad_file = cfg.get("squad_config")
     if squad_file and os.path.exists(squad_file):
         try:
@@ -4528,10 +4638,11 @@ def _single_flow_tick(ctx: object) -> str:
     _load_provider_env(issue_provider_name)
 
     provider = provider_for(issue_provider_name)
+    squad = _load_single_flow_squad(cfg)
     ledger = SqliteRunLedger(squad_id)
     try:
-        reader = _LedgerStateReader(provider)
-        dispatcher = _LedgerDispatcher(ctx, cfg, provider)
+        reader = _LedgerStateReader(provider, squad=squad)
+        dispatcher = _LedgerDispatcher(ctx, cfg, provider, squad=squad)
 
         # Gap C: calcula se a sessão do estágio atual ainda está viva. Sem isso
         # o tick passava stage_running=False sempre e redisparava a cada 1min,
