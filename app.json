@@ -39,10 +39,22 @@
     },
     "crons": [
         {
+            "name": "flow-single",
+            "script": "~/.kiro/crew/crons/deployment/flow/single_flow.py:run",
+            "every": 60,
+            "enabled": true,
+            "persistent_session": false,
+            "silent": true,
+            "secrets": [
+                "KIROCREW_WEBHOOK_URL",
+                "KIROCREW_WEBHOOK_TOKEN"
+            ]
+        },
+        {
             "name": "flow-develop-waiting",
             "script": "~/.kiro/crew/crons/deployment/flow/develop_waiting.py:run",
             "every": 300,
-            "enabled": true,
+            "enabled": false,
             "persistent_session": false,
             "silent": true,
             "secrets": [
@@ -54,7 +66,7 @@
             "name": "flow-review-waiting",
             "script": "~/.kiro/crew/crons/deployment/flow/review_waiting.py:run",
             "every": 180,
-            "enabled": true,
+            "enabled": false,
             "persistent_session": false,
             "silent": true,
             "secrets": [
@@ -66,7 +78,7 @@
             "name": "flow-review-approved",
             "script": "~/.kiro/crew/crons/deployment/flow/review_approved.py:run",
             "every": 120,
-            "enabled": true,
+            "enabled": false,
             "persistent_session": false,
             "silent": true
         },
@@ -74,7 +86,7 @@
             "name": "flow-review-refused",
             "script": "~/.kiro/crew/crons/deployment/flow/rework.py:run",
             "every": 3600,
-            "enabled": true,
+            "enabled": false,
             "persistent_session": false,
             "silent": true,
             "secrets": [
@@ -86,7 +98,7 @@
             "name": "flow-merge-conflict",
             "script": "~/.kiro/crew/crons/deployment/flow/merge_conflict.py:run",
             "every": 300,
-            "enabled": true,
+            "enabled": false,
             "persistent_session": false,
             "silent": true,
             "secrets": [
@@ -98,7 +110,7 @@
             "name": "flow-qa-waiting",
             "script": "~/.kiro/crew/crons/deployment/flow/qa_waiting.py:run",
             "every": 600,
-            "enabled": true,
+            "enabled": false,
             "persistent_session": false,
             "silent": true
         },
@@ -106,7 +118,7 @@
             "name": "flow-qa-approved",
             "script": "~/.kiro/crew/crons/deployment/flow/qa_approved.py:run",
             "every": 120,
-            "enabled": true,
+            "enabled": false,
             "persistent_session": false,
             "silent": true
         },
@@ -114,7 +126,7 @@
             "name": "flow-qa-refused",
             "script": "~/.kiro/crew/crons/deployment/flow/qa_refused.py:run",
             "every": 3600,
-            "enabled": true,
+            "enabled": false,
             "persistent_session": false,
             "silent": true
         },
