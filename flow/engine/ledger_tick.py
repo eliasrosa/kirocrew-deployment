@@ -82,11 +82,13 @@ class Dispatcher(Protocol):
     Nos testes, um fake registra as chamadas sem tocar rede.
     """
 
-    def dispatch_stage(self, repo: str, issue: dict, stage: State) -> bool:
+    def dispatch_stage(self, repo: str, issue: dict, stage: State) -> object:
         """Dispara o trabalho do ``stage`` para a issue.
 
-        Retorna ``True`` se o disparo aconteceu, ``False`` se foi abortado
-        (issue fechada, lock já existe, etc.) — o motor não avança o ledger
+        Retorna um valor TRUTHY quando o disparo aconteceu (idealmente o id da
+        sessão criada, uma ``str``, que o motor grava como ``stage_session``),
+        e um valor FALSY (``False``/``None``/``""``) quando foi abortado (issue
+        fechada, lock já existe, etc.) — o motor não avança nem prende sessão
         num disparo abortado.
         """
         ...
@@ -166,15 +168,32 @@ def tick(
         ledger.release(run.task_key, status)
         return f"released:{status.value}"
 
-    # Estágio ATIVO (briefing/planning): o motor dispara o trabalho e avança.
+    # Estágio ATIVO (briefing/planning): o motor dispara a sessão UMA vez e
+    # espera ela terminar antes de avançar. Isso evita o Gap C (enxame de
+    # sessões duplicadas): sem prender a sessão criada, cada tick de 1min
+    # abria uma nova. Agora:
+    #   - sem sessão registrada ainda   → dispara, grava stage_session, NÃO avança
+    #   - sessão registrada e ainda viva → aguarda (stage_running cobre isso acima)
+    #   - sessão registrada mas já morta → avança para o próximo estágio
     if current in _ACTIVE_STAGES:
+        # Sessão do estágio já foi criada num tick anterior e terminou
+        # (stage_running=False chegou até aqui) → o trabalho do estágio acabou;
+        # avança para o próximo estágio, limpando o marcador de sessão.
+        if run.stage_session:
+            nxt = _NEXT_STATE[current]
+            ledger.advance(run.task_key, nxt.value, stage_session=None)
+            return f"advanced:{current.value}->{nxt.value}"
+
+        # Primeira vez neste estágio: dispara a sessão e a PRENDE no ledger.
         number = _task_number(run.task_key)
         issue = {"number": number, "key": run.task_key}
-        dispatched = dispatcher.dispatch_stage(run.repo, issue, current)
-        if not dispatched:
+        session = dispatcher.dispatch_stage(run.repo, issue, current)
+        if not session:
             return f"dispatch-aborted:{current.value}"
-        nxt = _NEXT_STATE[current]
-        ledger.advance(run.task_key, nxt.value)
+        # Grava a sessão SEM trocar de estágio: o próximo tick vê stage_session
+        # preenchido e (enquanto viva) aguarda; quando morta, avança.
+        session_id = session if isinstance(session, str) else f"{current.value}:{number}"
+        ledger.advance(run.task_key, current.value, stage_session=session_id)
         return f"dispatched:{current.value}"
 
     # Estágio de ESPERA (develop/review/qa): avança quando o estado real da

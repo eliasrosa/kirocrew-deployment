@@ -87,7 +87,13 @@ def test_sucesso_post_ok_retorna_true(stage: State) -> None:
         mock.patch(f"{_MOD}._spec_stage_prompt", return_value="prompt"),
         mock.patch(f"{_MOD}._post_agent_session", return_value=True),
     ):
-        assert _dispatcher().dispatch_stage(_REPO, _ISSUE, stage) is True
+        # Sucesso agora devolve um marcador de sessão (str truthy), não True,
+        # para o motor gravar como stage_session (Gap C). Continua sendo o
+        # sinal de "despachou".
+        result = _dispatcher().dispatch_stage(_REPO, _ISSUE, stage)
+        assert result  # truthy
+        assert isinstance(result, str)
+        assert stage.value in result
 
 
 def test_estagio_nao_ativo_retorna_false() -> None:
@@ -115,7 +121,7 @@ def test_gapb_enriquece_issue_com_title_antes_do_dispatch(stage: State) -> None:
     target = "_dispatch_briefing" if stage is State.BRIEFING else "_dispatch_planning"
     with mock.patch(f"{_MOD}.{target}", side_effect=_fake_dispatch):
         # o issue do motor NÃO tem title
-        assert _dispatcher(prov).dispatch_stage(_REPO, {"number": 292, "key": "owner/repo#292"}, stage) is True
+        assert _dispatcher(prov).dispatch_stage(_REPO, {"number": 292, "key": "owner/repo#292"}, stage)
 
     # o dispatch recebeu o issue JÁ com title (Gap B fechado)
     assert captured.get("title") == "docs: single-flow"
