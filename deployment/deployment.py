@@ -1341,6 +1341,63 @@ def _scan_result_to_issue(result: object) -> dict:
     }
 
 
+# ── Single-flow: sub-tasks e RunLedger ───────────────────────────────────
+
+def _spec_accepted_for(provider: object, result: object, repos: list[str]) -> bool:
+    """Retorna se a Sub-task 1 (Especificação) da issue está aceita (fechada).
+
+    Faz o I/O de sub-tasks aqui no driver (``provider.list_subtasks``) e delega
+    a decisão ao gate puro ``gates.can_leave_planning`` — o executor não faz I/O.
+    Fail-safe: qualquer erro (provider sem suporte, falha de rede) retorna False,
+    mantendo a task em planning-review (não avança sem confirmação).
+    """
+    from flow.domain.gates import can_leave_planning
+    from flow.scan.scanner import ScanResult
+
+    r: ScanResult = result  # type: ignore[assignment]
+    repo = r.item.key.split("/issues/")[0].replace("https://github.com/", "") or (repos[0] if repos else "")
+    try:
+        if not hasattr(provider, "list_subtasks"):
+            return False
+        subtasks = provider.list_subtasks(repo, r.item.key)  # type: ignore[attr-defined]
+        verdict = can_leave_planning(r.item, subtasks)
+        return bool(verdict.ok)
+    except Exception as exc:
+        logger.warning(
+            "deployment[planning_review]: falha ao ler sub-tasks de %s (mantém em planning-review): %s",
+            r.item.key, exc,
+        )
+        return False
+
+
+def _ledger_advance(cfg: dict, squad_id: str, repo: str, issue: dict, new_stage: str) -> None:
+    """Registra no RunLedger a transição da task para ``new_stage`` (fail-safe).
+
+    Só age quando ``single_flow`` está ligado. O ledger é a fonte de verdade do
+    "onde a task está" no modo single-flow; qualquer erro é logado e engolido
+    — o ledger NUNCA pode derrubar a transição de label já aplicada.
+    """
+    if not bool(cfg.get("single_flow", False)):
+        return
+    try:
+        from flow.domain.run_ledger import SqliteRunLedger
+
+        task_key = issue.get("url") or f"{repo}#{issue.get('number')}"
+        ledger = SqliteRunLedger(squad_id)
+        try:
+            # claim é idempotente: prende a task se o slot estiver livre, ou
+            # confirma que já é a task ativa. advance registra o novo estágio.
+            ledger.claim(task_key, repo, new_stage)
+            ledger.advance(task_key, new_stage)
+        finally:
+            ledger.close()
+    except Exception as exc:
+        logger.warning(
+            "deployment: falha ao registrar transição no RunLedger para %s#%s (transição preservada): %s",
+            repo, issue.get("number"), exc,
+        )
+
+
 # ── Shadow mode: estado implícito em paralelo com labels ─────────────────
 
 def _collect_implicit_state(
@@ -3246,6 +3303,7 @@ def _execute_auto_merges(
 _STAGE_DEV           = "dev"
 _STAGE_BRIEFING      = "briefing"       # single-flow: sessão de briefing (flow:briefing)
 _STAGE_PLANNING      = "planning"       # single-flow: sessão de especificação (flow:planning-specs)
+_STAGE_PLANNING_REVIEW = "planning_review"  # single-flow: gate spec aceita → develop-waiting (flow:planning-review)
 _STAGE_REVIEWER      = "reviewer"
 _STAGE_MERGE         = "merge"
 _STAGE_MERGE_REVIEW  = "merge_review"   # merge após flow:review-approved → flow:qa-waiting
@@ -3269,6 +3327,7 @@ _STAGE_ACTIONS = {
     _STAGE_DEV:          frozenset({"dispatch_dev"}),
     _STAGE_BRIEFING:     frozenset({"dispatch_briefing"}),
     _STAGE_PLANNING:     frozenset({"dispatch_planning"}),
+    _STAGE_PLANNING_REVIEW: frozenset({"advance_to_develop"}),
     _STAGE_REVIEWER:     frozenset({"dispatch_reviewer", "mark_conflito"}),
     _STAGE_MERGE:        frozenset({"merge_pr"}),
     _STAGE_MERGE_REVIEW: frozenset({"merge_pr"}),
@@ -3424,6 +3483,7 @@ def _run_stage(ctx: object, stage: str) -> None:
     dispatch_devs: list = []
     dispatch_briefings: list = []  # (repo, issue) — single-flow: sessão de briefing
     dispatch_plannings: list = []  # (repo, issue) — single-flow: sessão de especificação
+    advance_develops: list = []    # (repo, issue, decision) — single-flow: planning-review → develop-waiting
     dispatch_reviewers: list = []
     dispatch_reworks: list = []
     conflict_resolvers: list = []  # (repo, issue) — despacha sessão de resolução de conflito
@@ -3488,7 +3548,14 @@ def _run_stage(ctx: object, stage: str) -> None:
                             _rw_issue_number, _rw_issue_number,
                         )
 
-        decision = decide(result, state_comment=state_comment, squad=squad, pr_head_sha=pr_head_sha, pr_mergeable=pr_mergeable, single_flow=single_flow)
+        # ── Single-flow: em planning-review, lê as sub-tasks e computa se a
+        # Sub-task 1 (Especificação) está aceita (fechada). O I/O fica aqui no
+        # driver; o executor recebe só o booleano (permanece puro).
+        spec_accepted: bool | None = None
+        if single_flow and result.current_state is State.PLANNING_REVIEW:
+            spec_accepted = _spec_accepted_for(provider, result, repos)
+
+        decision = decide(result, state_comment=state_comment, squad=squad, pr_head_sha=pr_head_sha, pr_mergeable=pr_mergeable, single_flow=single_flow, spec_accepted=spec_accepted)
 
         template = resolve_template(result, squad)
         logger.info(
@@ -3532,6 +3599,13 @@ def _run_stage(ctx: object, stage: str) -> None:
                 repo = repos[0] if repos else ""
             issue = _scan_result_to_issue(result)
             dispatch_plannings.append((repo, issue))
+
+        elif decision.action is ActionKind.ADVANCE_TO_DEVELOP:
+            repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
+            if not repo:
+                repo = repos[0] if repos else ""
+            issue = _scan_result_to_issue(result)
+            advance_develops.append((repo, issue, decision))
 
         elif decision.action is ActionKind.DISPATCH_REVIEWER:
             repo = result.item.key.split("/issues/")[0].replace("https://github.com/", "")
@@ -3592,6 +3666,7 @@ def _run_stage(ctx: object, stage: str) -> None:
     )
 
     if not any([spec_invalid, dispatch_devs, dispatch_briefings, dispatch_plannings,
+                advance_develops,
                 dispatch_reviewers, dispatch_reworks,
                 conflict_resolvers, mark_conflitos,
                 needs_human, blocked_bypass, rebranded, merge_prs, dead_session_candidates_stage]):
@@ -3661,6 +3736,39 @@ def _run_stage(ctx: object, stage: str) -> None:
             linhas = "\n".join(f"  - {r}#{i['number']}: {i['title']}" for r, i in _disp_p)
             ctx.notify(  # type: ignore[attr-defined]
                 f"KiroCrew Flow [planning]: disparei sessão(ões) de especificação.{vm}\n{linhas}"
+            )
+        return
+
+    if stage == _STAGE_PLANNING_REVIEW:
+        # Single-flow: a Sub-task 1 (Especificação) está aceita → troca a label
+        # flow:planning-review por flow:develop-waiting, entregando a task à
+        # esteira de desenvolvimento. Registra a transição no RunLedger.
+        _adv: list = []
+        for repo, issue, decision in advance_develops:
+            if not _auto_for_repo(squad, repo, auto):
+                continue
+            try:
+                from flow.adapters import github_client as _gh
+                _gh.edit_issue_labels(
+                    repo, issue["number"],
+                    add=list(decision.add_labels),
+                    remove=list(decision.remove_labels),
+                )
+                _ledger_advance(cfg, scan_cfg.squad_id, repo, issue, "flow:develop-waiting")
+                _adv.append((repo, issue))
+                logger.info(
+                    "deployment[planning_review]: %s#%s planning-review → develop-waiting (spec aceita)",
+                    repo, issue["number"],
+                )
+            except Exception as exc:
+                logger.error(
+                    "deployment[planning_review]: erro ao avançar %s#%s: %s",
+                    repo, issue.get("number"), exc,
+                )
+        if auto and _adv:
+            linhas = "\n".join(f"  - {r}#{i['number']}: {i['title']}" for r, i in _adv)
+            ctx.notify(  # type: ignore[attr-defined]
+                f"KiroCrew Flow [planning-review]: Especificação aceita — avancei para develop-waiting.{vm}\n{linhas}"
             )
         return
 
@@ -4103,6 +4211,54 @@ def run_conflito(ctx: object) -> None:
                  every=300)
     """
     _run_stage(ctx, _STAGE_CONFLITO)
+
+
+def run_briefing(ctx: object) -> None:
+    """Entrypoint do cron de briefing (single-flow, opt-in).
+
+    Processa issues em ``flow:briefing`` e despacha sessões one-shot de briefing
+    (entende a task, cria as 2 sub-tasks, transiciona para planning-specs).
+    Só produz ação quando ``single_flow: true`` na deployment.config.yaml — no
+    modo paralelo default este cron é inócuo (o estado só notifica humano).
+
+    Registro (uma vez):
+        cron_add(name="flow-briefing",
+                 script="~/.kiro/crew/crons/deployment.py:run_briefing",
+                 every=600)
+    """
+    _run_stage(ctx, _STAGE_BRIEFING)
+
+
+def run_planning(ctx: object) -> None:
+    """Entrypoint do cron de especificação (single-flow, opt-in).
+
+    Processa issues em ``flow:planning-specs`` e despacha sessões one-shot que
+    montam a spec padrão Kiro (requirements+design+tasks) na Sub-task 1 e pedem
+    revisão do TL/PM. Só age com ``single_flow: true``.
+
+    Registro (uma vez):
+        cron_add(name="flow-planning",
+                 script="~/.kiro/crew/crons/deployment.py:run_planning",
+                 every=600)
+    """
+    _run_stage(ctx, _STAGE_PLANNING)
+
+
+def run_planning_review(ctx: object) -> None:
+    """Entrypoint do cron do gate de especificação (single-flow, opt-in).
+
+    Processa issues em ``flow:planning-review``: lê as sub-tasks e, quando a
+    Sub-task 1 (Especificação) está aceita (fechada), troca a label por
+    ``flow:develop-waiting``, entregando a task à esteira de desenvolvimento.
+    Registra a transição no RunLedger. Só age com ``single_flow: true``; caso
+    contrário o estado apenas notifica o TL/PM (aprovação humana).
+
+    Registro (uma vez):
+        cron_add(name="flow-planning-review",
+                 script="~/.kiro/crew/crons/deployment.py:run_planning_review",
+                 every=300)
+    """
+    _run_stage(ctx, _STAGE_PLANNING_REVIEW)
 
 
 # ── Stub de compatibilidade — re-exporta entrypoints de deployment/flow/ ─────

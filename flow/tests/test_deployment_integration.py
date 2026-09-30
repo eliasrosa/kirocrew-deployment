@@ -3683,3 +3683,102 @@ class TestAutoMergePerRepo:
             _execute_auto_merges(ctx, items, "", mock.MagicMock())
 
         mock_merge.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Single-flow (frente 4): _spec_accepted_for + _ledger_advance
+# ---------------------------------------------------------------------------
+
+class TestSpecAcceptedFor:
+    """_spec_accepted_for lê sub-tasks via provider e delega ao gate puro."""
+
+    def _result(self, key: str = "https://github.com/owner/repo/issues/7") -> object:
+        from flow.domain.gates import WorkItem
+        from flow.domain.state import State
+        from flow.scan.scanner import ScanResult
+
+        return ScanResult(
+            item=WorkItem(key=key, title="[repo] Task", labels=frozenset(["flow:planning-review"])),
+            current_state=State.PLANNING_REVIEW,
+            modifiers=frozenset(),
+            dispatch_candidate=False,
+            spec_valid=None,
+            changed=True,
+            reason="test",
+        )
+
+    def test_spec_aceita_quando_subtask_fechada(self) -> None:
+        from deployment.deployment import _spec_accepted_for
+
+        provider = mock.MagicMock()
+        provider.list_subtasks.return_value = [
+            {"key": "owner/repo#8", "title": "Especificação", "accepted": True},
+            {"key": "owner/repo#9", "title": "Implementação", "accepted": False},
+        ]
+        assert _spec_accepted_for(provider, self._result(), ["owner/repo"]) is True
+
+    def test_spec_nao_aceita_quando_subtask_aberta(self) -> None:
+        from deployment.deployment import _spec_accepted_for
+
+        provider = mock.MagicMock()
+        provider.list_subtasks.return_value = [
+            {"key": "owner/repo#8", "title": "Especificação", "accepted": False},
+        ]
+        assert _spec_accepted_for(provider, self._result(), ["owner/repo"]) is False
+
+    def test_provider_sem_suporte_a_subtasks_retorna_false(self) -> None:
+        from deployment.deployment import _spec_accepted_for
+
+        class NoSubtasks:
+            pass
+
+        assert _spec_accepted_for(NoSubtasks(), self._result(), ["owner/repo"]) is False
+
+    def test_erro_no_provider_e_fail_safe_false(self) -> None:
+        from deployment.deployment import _spec_accepted_for
+
+        provider = mock.MagicMock()
+        provider.list_subtasks.side_effect = RuntimeError("network down")
+        assert _spec_accepted_for(provider, self._result(), ["owner/repo"]) is False
+
+
+class TestLedgerAdvance:
+    """_ledger_advance registra a transição no RunLedger só sob single_flow."""
+
+    def test_single_flow_off_nao_toca_ledger(self) -> None:
+        from deployment.deployment import _ledger_advance
+
+        # Sem single_flow, nem importa o RunLedger — retorna sem efeito.
+        with mock.patch("flow.domain.run_ledger.SqliteRunLedger") as mock_ledger:
+            _ledger_advance({"single_flow": False}, "sq", "owner/repo",
+                            {"number": 7, "url": "owner/repo#7"}, "flow:develop-waiting")
+            mock_ledger.assert_not_called()
+
+    def test_single_flow_on_registra_claim_e_advance(self, tmp_path: Path) -> None:
+        from deployment.deployment import _ledger_advance
+        from flow.domain.run_ledger import SqliteRunLedger
+
+        # RunLedger real (SQLite em tmp) para verificar o efeito end-to-end.
+        with mock.patch(
+            "flow.domain.run_ledger.SqliteRunLedger",
+            lambda squad_id: SqliteRunLedger(squad_id, data_dir=tmp_path),
+        ):
+            _ledger_advance({"single_flow": True}, "sq", "owner/repo",
+                            {"number": 7, "url": "owner/repo#7"}, "flow:develop-waiting")
+
+        ledger = SqliteRunLedger("sq", data_dir=tmp_path)
+        try:
+            run = ledger.get("owner/repo#7")
+            assert run is not None
+            assert run.current_stage == "flow:develop-waiting"
+        finally:
+            ledger.close()
+
+    def test_erro_no_ledger_nao_propaga(self) -> None:
+        from deployment.deployment import _ledger_advance
+
+        with mock.patch("flow.domain.run_ledger.SqliteRunLedger",
+                        side_effect=RuntimeError("disk full")):
+            # Não deve levantar — a transição de label já aplicada é preservada.
+            _ledger_advance({"single_flow": True}, "sq", "owner/repo",
+                            {"number": 7, "url": "owner/repo#7"}, "flow:develop-waiting")
