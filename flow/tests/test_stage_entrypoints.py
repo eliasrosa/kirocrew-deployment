@@ -24,13 +24,18 @@ if _REPO_ROOT not in sys.path:
 import pytest  # noqa: E402
 
 from deployment.deployment import (  # noqa: E402
+    _SINGLE_FLOW_STAGES,
+    _STAGE_BRIEFING,
     _STAGE_DEV,
+    _STAGE_PLANNING,
+    _STAGE_PLANNING_REVIEW,
     _STAGE_REVIEWER,
     _stage_model,
     run_conflito,
     run_dev,
     run_merge,
     run_reviewer,
+    run_single_flow,
 )
 
 # ---------------------------------------------------------------------------
@@ -807,3 +812,55 @@ class TestDryRunPorEstagio:
             run_reviewer(ctx)
 
         mock_rev.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# run_single_flow — orquestrador único (frente 5)
+# ---------------------------------------------------------------------------
+
+class TestRunSingleFlow:
+    """O orquestrador percorre todos os estágios single-flow por tick."""
+
+    def test_percorre_todos_os_estagios_em_ordem(self) -> None:
+        """run_single_flow chama _run_stage para cada estágio, na ordem definida."""
+        ctx = _make_ctx()
+        chamados: list[str] = []
+
+        def _fake_run_stage(_ctx: object, stage: str) -> None:
+            chamados.append(stage)
+
+        with mock.patch(
+            "deployment.deployment._run_stage", side_effect=_fake_run_stage
+        ):
+            run_single_flow(ctx)
+
+        assert chamados == list(_SINGLE_FLOW_STAGES)
+        assert _STAGE_BRIEFING in chamados
+        assert _STAGE_PLANNING in chamados
+        assert _STAGE_PLANNING_REVIEW in chamados
+        assert _STAGE_DEV in chamados
+        assert _STAGE_REVIEWER in chamados
+
+    def test_falha_de_um_estagio_nao_interrompe_os_demais(self) -> None:
+        """Uma exceção num estágio é logada e os estágios seguintes ainda rodam."""
+        ctx = _make_ctx()
+        chamados: list[str] = []
+
+        def _fake_run_stage(_ctx: object, stage: str) -> None:
+            chamados.append(stage)
+            if stage == _STAGE_PLANNING:
+                raise RuntimeError("falha simulada no planning")
+
+        with mock.patch(
+            "deployment.deployment._run_stage", side_effect=_fake_run_stage
+        ):
+            run_single_flow(ctx)
+
+        assert chamados == list(_SINGLE_FLOW_STAGES)
+
+    def test_ordem_comeca_no_briefing(self) -> None:
+        """A ordem começa no briefing (entrada) e passa por dev."""
+        assert _SINGLE_FLOW_STAGES[0] == _STAGE_BRIEFING
+        assert _SINGLE_FLOW_STAGES[1] == _STAGE_PLANNING
+        assert _SINGLE_FLOW_STAGES[2] == _STAGE_PLANNING_REVIEW
+        assert _STAGE_DEV in _SINGLE_FLOW_STAGES
