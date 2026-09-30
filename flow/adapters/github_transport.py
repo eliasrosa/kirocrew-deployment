@@ -102,6 +102,22 @@ def list_issues_by_label(owner_repo: str, label: str, limit: int = 50) -> list:
     ]))
 
 
+def list_sub_issues(owner_repo: str, number: int) -> list:
+    """Lista as sub-issues de uma issue via API de sub-issues do GitHub.
+
+    Usa ``gh api repos/{owner}/{repo}/issues/{n}/sub_issues`` — a API nativa
+    de sub-issues do GitHub. Cada item cru traz ``number``, ``title``,
+    ``state`` ("open"/"closed") e ``html_url``.
+
+    Retorna lista vazia quando a issue não tem sub-issues.
+    """
+    return cast(list, _run([
+        "api",
+        f"repos/{owner_repo}/issues/{number}/sub_issues",
+        "--paginate",
+    ]))
+
+
 def set_issue_labels(owner_repo: str, number: int, labels: list[str]) -> None:
     """Substitui todas as labels da issue via API do GitHub (PUT /issues/{n}/labels)."""
     # gh api --input lê JSON do stdin — única forma de mandar array sem serializar como string

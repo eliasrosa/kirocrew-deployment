@@ -121,6 +121,31 @@ class IssueProvider(Protocol):
         """Retorna o conteúdo do comentário <!-- KIRO-FLOW-STATE --> ou None."""
         ...
 
+    def list_subtasks(self, project: str, key: str) -> list[dict]:
+        """Lista as sub-tasks (filhas) do item pai, normalizadas.
+
+        Usado pelo modo single-flow para verificar as 2 sub-tasks fixas
+        (Especificação + Implementação). Cada dict tem no mínimo:
+          key      : str        — identificador da sub-task
+          title    : str
+          accepted : bool       — a sub-task está aceita? (== fechada)
+
+          - Jira: sub-tasks nativas (issuetype Subtarefa/Sub-bug)
+          - GitHub: sub-issues (API sub_issues)
+
+        Retorna lista vazia se o item não tiver sub-tasks.
+        """
+        ...
+
+    def get_subtask_acceptance(self, subtask: dict) -> bool:
+        """A sub-task está aceita? (decisão fechada: aceite == sub-task FECHADA).
+
+        Recebe um dict de sub-task como retornado por ``list_subtasks`` e
+        devolve True quando ela está fechada/resolvida. Uniforme nos dois
+        providers — não depende de label nem status extra.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Dispatch

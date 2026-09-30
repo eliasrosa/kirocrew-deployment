@@ -145,6 +145,26 @@ def get_state_comment(project: str, key: str) -> str | None:
     return None
 
 
+def list_subtasks(project: str, key: str) -> list[dict]:
+    """Lista as sub-issues (sub-tasks) da issue pai, normalizadas.
+
+    ``project`` = "owner/repo", ``key`` = número/URL da issue pai.
+    Cada dict tem ``key``, ``title`` e ``accepted`` (== sub-issue fechada).
+    Retorna lista vazia se a issue não tiver sub-issues.
+    """
+    number = _parse_issue_number(key)
+    raw_list = transport.list_sub_issues(project, number)
+    return [norm.normalize_subtask(item) for item in raw_list]
+
+
+def get_subtask_acceptance(subtask: dict) -> bool:
+    """A sub-task está aceita? (aceite == sub-issue FECHADA).
+
+    Lê o ``accepted`` já pré-computado por ``normalize_subtask``.
+    """
+    return bool(subtask.get("accepted", False))
+
+
 def get_pr_for_issue(project: str, issue_number: int) -> dict | None:
     """Retorna o PR aberto associado à issue, ou None se não encontrado."""
     return transport.get_pr_for_issue(project, issue_number)
