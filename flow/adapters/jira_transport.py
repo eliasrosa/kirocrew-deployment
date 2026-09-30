@@ -56,6 +56,21 @@ def search_issues_by_label(project: str, label: str, max_results: int = 50) -> d
     )
 
 
+def get_subtasks(key: str) -> list[dict]:
+    """Retorna as sub-tasks nativas de uma issue do Jira.
+
+    Lê o campo ``fields.subtasks`` do issue pai — cada item cru traz
+    ``key``, ``fields.summary`` e ``fields.status.statusCategory.key``
+    ("done" quando resolvida). Retorna lista vazia se não houver sub-tasks.
+    """
+    raw = _rest_get(
+        f"/rest/api/2/issue/{key}",
+        params={"fields": "subtasks"},
+    )
+    fields = raw.get("fields") or {}
+    return fields.get("subtasks") or []
+
+
 def update_issue_labels(key: str, labels: list[str]) -> None:
     """Substitui as labels da issue."""
     _rest_put(f"/rest/api/2/issue/{key}", body={"fields": {"labels": labels}})

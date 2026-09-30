@@ -99,3 +99,22 @@ def get_state_comment(project: str, key: str) -> str | None:
         if norm.STATE_COMMENT_MARKER in comment_body:
             return comment_body
     return None
+
+
+def list_subtasks(project: str, key: str) -> list[dict]:
+    """Lista as sub-tasks nativas da issue pai, normalizadas.
+
+    ``project`` = chave do projeto (ex: "VGAT"), ``key`` = "VGAT-123".
+    Cada dict tem ``key``, ``title`` e ``accepted`` (== status "done").
+    Retorna lista vazia se a issue não tiver sub-tasks.
+    """
+    raw_list = transport.get_subtasks(key)
+    return [norm.normalize_subtask(item) for item in raw_list]
+
+
+def get_subtask_acceptance(subtask: dict) -> bool:
+    """A sub-task está aceita? (aceite == status "done"/resolvida).
+
+    Lê o ``accepted`` já pré-computado por ``normalize_subtask``.
+    """
+    return bool(subtask.get("accepted", False))

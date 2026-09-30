@@ -76,6 +76,29 @@ def normalize_items_from_search(search_result: dict) -> list[dict]:
     return [normalize_item(issue) for issue in search_result.get("issues", [])]
 
 
+def normalize_subtask(raw: dict) -> dict:
+    """Normaliza uma sub-task nativa do Jira para o contrato de sub-task.
+
+    Campos garantidos no retorno:
+      key      : str  — "VGAT-124"
+      title    : str
+      accepted : bool — True quando a categoria de status é "done"
+
+    O aceite (== fechada/resolvida) é detectado pela ``statusCategory.key``
+    do Jira ("done"), que é canônica e independe do nome da coluna/workflow.
+    O campo ``accepted`` é pré-computado aqui para o gate ficar puro.
+    """
+    fields = raw.get("fields") or {}
+    status = fields.get("status") or {}
+    category = (status.get("statusCategory") or {}).get("key", "")
+    return {
+        "key": raw.get("key", ""),
+        "title": fields.get("summary", ""),
+        "accepted": category == "done",
+        "_raw": raw,
+    }
+
+
 def labels_hash(labels: list[str]) -> str:
     """Hash determinístico de um conjunto de labels (para o cache do scan).
 

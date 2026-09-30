@@ -51,6 +51,26 @@ def normalize_items(raw_list: list[dict]) -> list[dict]:
     return [normalize_item(item) for item in raw_list]
 
 
+def normalize_subtask(raw: dict) -> dict:
+    """Normaliza uma sub-issue do GitHub para o contrato de sub-task.
+
+    A API de sub-issues retorna o objeto issue completo; extrai-se o mínimo:
+      key      : str  — "owner/repo#NUMBER" derivado do html_url, ou o número
+      title    : str
+      accepted : bool — True quando ``state == "closed"`` (aceite == fechada)
+
+    O campo ``accepted`` é pré-computado aqui para que o gate (puro, sem I/O)
+    não precise conhecer o formato do provedor.
+    """
+    state = (raw.get("state") or "").lower()
+    return {
+        "key": raw.get("html_url") or str(raw.get("number", "")),
+        "title": raw.get("title", ""),
+        "accepted": state == "closed",
+        "_raw": raw,
+    }
+
+
 def labels_hash(labels: list[str]) -> str:
     """Hash determinístico de um conjunto de labels (para o cache do scan).
 

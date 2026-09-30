@@ -252,3 +252,57 @@ class TestUpsertStateComment:
         marker_comments = [c for c in store if norm.STATE_COMMENT_MARKER in c["body"]]
         assert len(marker_comments) == 1
         assert marker_comments[0]["body"] == bodies[-1]
+
+
+# ---------------------------------------------------------------------------
+# Sub-tasks (single-flow, frente 3)
+# ---------------------------------------------------------------------------
+
+def _raw_subtask(key: str, summary: str, category_key: str) -> dict:
+    return {
+        "key": key,
+        "fields": {
+            "summary": summary,
+            "status": {"statusCategory": {"key": category_key}},
+        },
+    }
+
+
+class TestSubtasksJira:
+    def test_normalize_subtask_done_aceita(self) -> None:
+        raw = _raw_subtask("VGAT-101", "Especificação", "done")
+        st = norm.normalize_subtask(raw)
+        assert st["key"] == "VGAT-101"
+        assert st["title"] == "Especificação"
+        assert st["accepted"] is True
+
+    def test_normalize_subtask_em_progresso_nao_aceita(self) -> None:
+        raw = _raw_subtask("VGAT-102", "Implementação", "indeterminate")
+        st = norm.normalize_subtask(raw)
+        assert st["accepted"] is False
+
+    def test_normalize_subtask_todo_nao_aceita(self) -> None:
+        raw = _raw_subtask("VGAT-103", "Spec", "new")
+        st = norm.normalize_subtask(raw)
+        assert st["accepted"] is False
+
+    def test_list_subtasks_normaliza_via_transport(self) -> None:
+        raw_list = [
+            _raw_subtask("VGAT-101", "Especificação", "done"),
+            _raw_subtask("VGAT-102", "Implementação", "new"),
+        ]
+        with mock.patch.object(jira_transport, "get_subtasks", return_value=raw_list):
+            subs = jira_client.list_subtasks("VGAT", "VGAT-100")
+        assert len(subs) == 2
+        assert subs[0]["accepted"] is True
+        assert subs[1]["accepted"] is False
+
+    def test_list_subtasks_vazio_sem_subtasks(self) -> None:
+        with mock.patch.object(jira_transport, "get_subtasks", return_value=[]):
+            subs = jira_client.list_subtasks("VGAT", "VGAT-100")
+        assert subs == []
+
+    def test_get_subtask_acceptance(self) -> None:
+        assert jira_client.get_subtask_acceptance({"accepted": True}) is True
+        assert jira_client.get_subtask_acceptance({"accepted": False}) is False
+        assert jira_client.get_subtask_acceptance({}) is False
