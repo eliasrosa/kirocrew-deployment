@@ -46,6 +46,10 @@ from flow.domain.state import State  # noqa: E402
         ("https://github.com/eliasrosa/kirocrew-flow/issues/288",
          ("eliasrosa/kirocrew-flow", 288)),
         ("  eliasrosa/kirocrew-flow#12  ", ("eliasrosa/kirocrew-flow", 12)),
+        # Formatos Jira
+        ("VGAT-1009", ("VGAT", "VGAT-1009")),
+        ("VSUS-42", ("VSUS", "VSUS-42")),
+        ("PROJ-1", ("PROJ", "PROJ-1")),
     ],
 )
 def test_parse_claim_message_formats(message: str, expected: tuple[str, int]) -> None:
@@ -183,3 +187,24 @@ def test_claim_bad_message_returns_error(
 
     assert result == "error:bad-message"
     ctx.notify.assert_called_once()
+
+
+def test_claim_jira_task(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Claim de task Jira (VGAT-1009): task_key = chave Jira, repo = projeto."""
+    _patch_ledger(monkeypatch, tmp_path)
+    ctx = _make_ctx("VGAT-1009")
+
+    result = claim_single_flow(ctx)
+
+    assert result == "claimed:VGAT-1009"
+    lg = SqliteRunLedger(squad_id="test", data_dir=tmp_path)
+    try:
+        run = lg.active()
+        assert run is not None
+        assert run.task_key == "VGAT-1009"
+        assert run.repo == "VGAT"           # projeto Jira como "repo"
+        assert run.current_stage == State.BRIEFING.value
+    finally:
+        lg.close()
