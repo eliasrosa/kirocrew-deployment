@@ -197,6 +197,25 @@ squads/*.yaml
 | `run_merge` | `flow:review-approved` ou `flow:qa-approved` | `MERGE_PR` — ambos (depreciado) | 120s (2 min) |
 | `run_conflito` | `flow:merge-conflict` | `DISPATCH_CONFLICT_RESOLVER` | 300s (5 min) |
 
+### Crons do modo single-flow (opt-in — `single_flow: true`)
+
+Só produzem ação quando `single_flow: true` na `deployment.config.yaml`. No modo
+paralelo default (`single_flow: false`) estes crons são inócuos: os estados de
+spec apenas notificam o humano. A regra single-flow leva **uma** task por vez do
+briefing ao merge, com o `RunLedger` (SQLite local) como fonte de verdade do
+"onde a task está".
+
+| Entrypoint | Estado alvo | Ação | Intervalo recomendado |
+|---|---|---|---|
+| `run_briefing` | `flow:briefing` | `DISPATCH_BRIEFING` — sessão de briefing + 2 sub-tasks | 600s (10 min) |
+| `run_planning` | `flow:planning-specs` | `DISPATCH_PLANNING` — monta spec (req+design+tasks) na Sub-task 1 | 600s (10 min) |
+| `run_planning_review` | `flow:planning-review` | `ADVANCE_TO_DEVELOP` — Sub-task 1 aceita (fechada) → `flow:develop-waiting` | 300s (5 min) |
+
+Aceite da Especificação = **Sub-task 1 fechada** (uniforme GitHub/Jira). O
+`run_planning_review` lê as sub-tasks via `IssueProvider.list_subtasks`, aplica o
+gate puro `can_leave_planning`, e só então troca a label — entregando a task à
+esteira de `run_dev` em diante, que permanece intocada.
+
 ## Lock anti-loop: `flow:review-running`
 
 Uma análise por SHA. O cron/executor aplica `flow:review-running` atomicamente **antes**
