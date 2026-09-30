@@ -4441,6 +4441,50 @@ def _resolve_squad_id(cfg: dict) -> str:
     return cfg.get("squad_id", "default")
 
 
+_SPEC_STAGES: frozenset[str] = frozenset({
+    "flow:briefing",
+    "flow:planning-specs",
+})
+"""Estágios que criam sessão sidebar (sem worktree/PR).
+
+Para estes estágios ``_issue_has_active_session`` é cego (não há worktree nem
+PR para observar). O sinal correto é checar se o SLOT ainda existe no gateway
+e está ``running: true`` via GET /api/chat/slots.
+"""
+
+
+def _spec_slot_is_running(slot_name: str, port: int, secret: str) -> bool:
+    """Verifica se um slot de spec-stage ainda está rodando no gateway.
+
+    Faz GET /api/chat/slots e procura o slot pelo nome exato. Retorna
+    ``True`` se o slot existe e tem ``running: true``.
+
+    Fail-safe: qualquer erro de rede retorna ``False`` (o motor assume que a
+    sessão terminou e avança — comportamento conservador igual ao anterior).
+    """
+    import json as _json
+    import urllib.request as _u
+
+    try:
+        req = _u.Request(
+            f"http://localhost:{port}/api/chat/slots",
+            headers={"X-Internal-Secret": secret},
+        )
+        with _u.urlopen(req, timeout=5) as resp:
+            slots: list[dict] = _json.loads(resp.read())
+        for s in slots:
+            if s.get("key") == slot_name:
+                return bool(s.get("running", False))
+        # Slot não encontrado: sessão já foi limpa pelo gateway.
+        return False
+    except Exception as exc:
+        logger.warning(
+            "single-flow: falha ao checar slot %r no gateway (assume não-viva): %s",
+            slot_name, exc,
+        )
+        return False
+
+
 def _single_flow_tick(ctx: object) -> str:
     """Um ciclo do motor ledger-driven. Retorna o diagnóstico do tick."""
     from flow.domain.run_ledger import SqliteRunLedger
@@ -4461,24 +4505,63 @@ def _single_flow_tick(ctx: object) -> str:
         # o tick passava stage_running=False sempre e redisparava a cada 1min,
         # criando um enxame de sessões. Só checamos quando o ledger já registrou
         # uma stage_session (senão não há sessão a "prender").
+        #
+        # Item A: dois caminhos distintos por tipo de estágio —
+        #   spec-stages (briefing/planning-specs): criam sessão SIDEBAR sem
+        #     worktree nem PR → _issue_has_active_session é cego para eles.
+        #     Verificar pelo slot no gateway via GET /api/chat/slots.
+        #   develop/review/qa: criam worktree + PR → _issue_has_active_session
+        #     usa esses sinais (caminho anterior preservado).
         stage_running = False
         active = ledger.active()
         if active is not None and active.stage_session:
-            dev_root = cfg.get("dev_root") or os.path.expanduser(
-                "~/.kiro/crew/kirocrew-flow/worktrees"
-            )
-            number = _task_number_from_key(active.task_key)
-            if number is not None:
-                try:
-                    stage_running = _issue_has_active_session(
-                        active.repo, number, dev_root
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "single-flow: falha ao checar sessão ativa de %s (assume não-viva): %s",
-                        active.task_key, exc,
-                    )
-                    stage_running = False
+            if active.current_stage in _SPEC_STAGES:
+                # Spec-stage: o stage_session gravado É o slot name.
+                # Checar diretamente no gateway se o slot ainda está running.
+                port = getattr(ctx, "_port", None)
+                _sock_pattern = os.path.expanduser("~/.kiro/crew/dashboard-*.sock")
+                _socks = glob.glob(_sock_pattern)
+                if _socks:
+                    import re as _re
+                    _m = _re.search(r"dashboard-(\d+)\.sock", _socks[0])
+                    if _m:
+                        port = int(_m.group(1))
+                if not port:
+                    port = 5478
+                secret = ""
+                _gw_secret = os.path.expanduser(
+                    f"~/.kiro/crew/run/gateway-{port}.secret"
+                )
+                if os.path.exists(_gw_secret):
+                    with open(_gw_secret) as _f:
+                        secret = _f.read().strip()
+                if not secret:
+                    _loc = os.path.expanduser("~/.kiro/crew/.local_secret")
+                    if os.path.exists(_loc):
+                        with open(_loc) as _f:
+                            secret = _f.read().strip()
+                if not secret:
+                    secret = getattr(ctx, "_secret", "")
+                stage_running = _spec_slot_is_running(
+                    active.stage_session, port, secret
+                )
+            else:
+                # Develop/review/qa: usa worktree + PR + backstop lock (caminho anterior).
+                dev_root = cfg.get("dev_root") or os.path.expanduser(
+                    "~/.kiro/crew/kirocrew-flow/worktrees"
+                )
+                number = _task_number_from_key(active.task_key)
+                if number is not None:
+                    try:
+                        stage_running = _issue_has_active_session(
+                            active.repo, number, dev_root
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "single-flow: falha ao checar sessão ativa de %s (assume não-viva): %s",
+                            active.task_key, exc,
+                        )
+                        stage_running = False
 
         result = tick(ledger, dispatcher, reader, stage_running=stage_running)
         logger.info("deployment[single-flow]: tick → %s", result)
