@@ -196,6 +196,33 @@ hoje. Quando `true`, o driver resolve a task presa no ledger e passa **só ela**
 - `deployment.py run()` — ramo `single_flow`: resolver task presa, empurrar. **[FEITO — frente 4]** Implementado no `_run_stage` via os entrypoints `run_briefing`/`run_planning`/`run_planning_review` (stages `_STAGE_BRIEFING`/`_STAGE_PLANNING`/`_STAGE_PLANNING_REVIEW`). Em `planning-review`, o driver lê as sub-tasks (`_spec_accepted_for`), passa `spec_accepted` ao `decide()`, que emite `ADVANCE_TO_DEVELOP`; a transição é registrada no `RunLedger` (`_ledger_advance`).
 - `deployment.config.yaml` + `squads/*.yaml` — flags novas.
 
+### Frente 7 — motor ledger-driven (uma cron, O(1)/tick) **[FEITO]**
+
+Contexto: as frentes 5/6 fizeram a cron única varrer os 8 estágios chamando
+`_run_stage` por estágio; cada `_run_stage` roda `scan_candidates`, que lista
+issues **por estado** (16 estados). Resultado: ~128 chamadas `gh` por tick, mesmo
+com a fila vazia → `RuntimeError: Script timed out after 30s`.
+
+Solução: inverter a fonte de verdade para o `RunLedger` (SQLite local). O motor
+`flow/engine/ledger_tick.py:tick` lê a task ativa (1 query local), lê o estado
+REAL da issue via `provider.get_work_item` (1 chamada de rede), e a empurra um
+passo por tick pela máquina de estados linear `_NEXT_STATE`. Custo O(1) por tick.
+
+- `flow/engine/ledger_tick.py` (novo) — `tick(ledger, dispatcher, reader)` puro +
+  Protocols `Dispatcher`/`StateReader`. Estágios ativos (`briefing`/`planning-specs`)
+  são disparados pelo motor; estágios de espera (`develop`/`review`/`qa`) avançam
+  quando o estado real da issue já passou do estágio (sinal externo).
+- `deployment.py` — adapters concretos `_LedgerStateReader` (via `parse_state`) e
+  `_LedgerDispatcher` (mapeia `State` → `_dispatch_briefing`/`_dispatch_planning`);
+  `run_single_flow` agora chama `_single_flow_tick` (só com `single_flow: true`),
+  não varre mais estágios.
+- `deployment/flow/single_flow.py` — delega a `deployment.run_single_flow`.
+- Testes: `flow/tests/test_ledger_tick.py` (11) + `TestRunSingleFlow`/
+  `TestSingleFlowCronModule` reescritos para o modelo ledger-driven.
+
+Nota: as labels `flow:*` seguem aplicadas para auditoria/visão humana no GitHub,
+mas **não** dirigem mais o motor single-flow — o estado é o `RunLedger`.
+
 ---
 
 ## 10. Decisões fechadas
