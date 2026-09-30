@@ -110,11 +110,21 @@ def test_task_percorre_o_fluxo_inteiro_ate_done(ledger: SqliteRunLedger) -> None
         assert run.current_stage == current.value
 
         if current in _ACTIVE:
-            # Estágio ativo: o motor dispara e avança sozinho.
-            reader.next_real = current  # irrelevante, mas realista
+            # Estágio ativo agora leva DOIS ticks (Gap C):
+            #   tick 1 → dispara e PRENDE a sessão, sem avançar (fica no estágio)
+            #   tick 2 → sessão terminou (stage_running=False) → avança
+            reader.next_real = current  # irrelevante para estágio ativo
+            result1 = tick(ledger, disp, reader)
+            assert result1 == f"dispatched:{current.value}", (
+                f"esperava dispatch em {current.value}, veio {result1}"
+            )
+            mid = ledger.get(TASK)
+            assert mid is not None
+            assert mid.current_stage == current.value
+            assert mid.stage_session
             result = tick(ledger, disp, reader)
-            assert result == f"dispatched:{current.value}", (
-                f"esperava dispatch em {current.value}, veio {result}"
+            assert result == f"advanced:{current.value}->{nxt.value}", (
+                f"esperava advance {current.value}->{nxt.value}, veio {result}"
             )
         elif nxt in _TERMINAL:
             # Última espera (qa-waiting → done): o estado real terminal é

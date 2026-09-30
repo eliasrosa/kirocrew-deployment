@@ -75,3 +75,77 @@ def test_read_state_nao_le_labels_do_provider() -> None:
         result = reader.read_state(_REPO, _KEY)
     # Seguiu a evidência (TODO→DEVELOP_WAITING), NÃO a label (review-waiting).
     assert result is State.DEVELOP_WAITING
+
+
+# ---------------------------------------------------------------------------
+# Gap C: _single_flow_tick calcula stage_running via _issue_has_active_session
+# ---------------------------------------------------------------------------
+
+def test_single_flow_tick_passa_stage_running_quando_sessao_viva() -> None:
+    """Gap C: com stage_session preenchido e sessão viva, o tick recebe
+    stage_running=True e NÃO redispara (evita o enxame de sessões)."""
+    from flow.domain.run_ledger import Run, RunStatus
+
+    run_ativo = Run(
+        task_key="owner/repo#42", repo="owner/repo",
+        current_stage="flow:briefing", stage_session="flow:briefing:repo-42",
+        started_at="", last_transition="", attempts=0, status=RunStatus.RUNNING,
+    )
+    fake_ledger = mock.MagicMock()
+    fake_ledger.active.return_value = run_ativo
+
+    captured: dict = {}
+
+    def _fake_tick(ledger, dispatcher, reader, *, stage_running=False):
+        captured["stage_running"] = stage_running
+        return f"waiting:{run_ativo.current_stage}"
+
+    with (
+        mock.patch(f"{_MOD}._check_installed_version"),
+        mock.patch(f"{_MOD}._load_config", return_value={"issue_provider": "github"}),
+        mock.patch(f"{_MOD}._resolve_squad_id", return_value="kirocrew-flow"),
+        mock.patch(f"{_MOD}.provider_for", return_value=mock.MagicMock()),
+        mock.patch("flow.domain.run_ledger.SqliteRunLedger", return_value=fake_ledger),
+        mock.patch(f"{_MOD}._issue_has_active_session", return_value=True) as m_active,
+        mock.patch("flow.engine.ledger_tick.tick", side_effect=_fake_tick),
+    ):
+        from deployment.deployment import _single_flow_tick
+        result = _single_flow_tick(mock.MagicMock())
+
+    assert captured["stage_running"] is True   # sessão viva → não redispara
+    assert result.startswith("waiting:")
+    m_active.assert_called_once()
+
+
+def test_single_flow_tick_stage_running_false_quando_sem_stage_session() -> None:
+    """Sem stage_session no ledger, não há sessão a 'prender' → stage_running=False."""
+    from flow.domain.run_ledger import Run, RunStatus
+
+    run_sem_sessao = Run(
+        task_key="owner/repo#42", repo="owner/repo",
+        current_stage="flow:briefing", stage_session=None,
+        started_at="", last_transition="", attempts=0, status=RunStatus.RUNNING,
+    )
+    fake_ledger = mock.MagicMock()
+    fake_ledger.active.return_value = run_sem_sessao
+
+    captured: dict = {}
+
+    def _fake_tick(ledger, dispatcher, reader, *, stage_running=False):
+        captured["stage_running"] = stage_running
+        return f"dispatched:{run_sem_sessao.current_stage}"
+
+    with (
+        mock.patch(f"{_MOD}._check_installed_version"),
+        mock.patch(f"{_MOD}._load_config", return_value={"issue_provider": "github"}),
+        mock.patch(f"{_MOD}._resolve_squad_id", return_value="kirocrew-flow"),
+        mock.patch(f"{_MOD}.provider_for", return_value=mock.MagicMock()),
+        mock.patch("flow.domain.run_ledger.SqliteRunLedger", return_value=fake_ledger),
+        mock.patch(f"{_MOD}._issue_has_active_session", return_value=True) as m_active,
+        mock.patch("flow.engine.ledger_tick.tick", side_effect=_fake_tick),
+    ):
+        from deployment.deployment import _single_flow_tick
+        _single_flow_tick(mock.MagicMock())
+
+    assert captured["stage_running"] is False  # sem stage_session, nem checa
+    m_active.assert_not_called()

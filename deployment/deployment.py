@@ -4396,7 +4396,7 @@ class _LedgerDispatcher:
             merged["title"] = item.get("title", "")
         return merged
 
-    def dispatch_stage(self, repo: str, issue: dict, stage: State) -> bool:
+    def dispatch_stage(self, repo: str, issue: dict, stage: State) -> object:
         if stage not in (State.BRIEFING, State.PLANNING_SPECS):
             logger.info("single-flow: estágio %s não é ativo — sem disparo", stage.value)
             return False
@@ -4404,8 +4404,15 @@ class _LedgerDispatcher:
         if enriched is None:
             return False
         if stage is State.BRIEFING:
-            return _dispatch_briefing(self._ctx, repo, enriched, self._cfg)
-        return _dispatch_planning(self._ctx, repo, enriched, self._cfg)
+            ok = _dispatch_briefing(self._ctx, repo, enriched, self._cfg)
+        else:
+            ok = _dispatch_planning(self._ctx, repo, enriched, self._cfg)
+        if not ok:
+            return False
+        # Sucesso: devolve um marcador de sessão (slot) para o motor gravar como
+        # stage_session e não redisparar este estágio (Gap C).
+        number = issue.get("number") or issue.get("key")
+        return f"{stage.value}:{repo.split('/')[-1]}-{number}"
 
 
 def _resolve_squad_id(cfg: dict) -> str:
@@ -4449,11 +4456,43 @@ def _single_flow_tick(ctx: object) -> str:
     try:
         reader = _LedgerStateReader(provider)
         dispatcher = _LedgerDispatcher(ctx, cfg, provider)
-        result = tick(ledger, dispatcher, reader)
+
+        # Gap C: calcula se a sessão do estágio atual ainda está viva. Sem isso
+        # o tick passava stage_running=False sempre e redisparava a cada 1min,
+        # criando um enxame de sessões. Só checamos quando o ledger já registrou
+        # uma stage_session (senão não há sessão a "prender").
+        stage_running = False
+        active = ledger.active()
+        if active is not None and active.stage_session:
+            dev_root = cfg.get("dev_root") or os.path.expanduser(
+                "~/.kiro/crew/kirocrew-flow/worktrees"
+            )
+            number = _task_number_from_key(active.task_key)
+            if number is not None:
+                try:
+                    stage_running = _issue_has_active_session(
+                        active.repo, number, dev_root
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "single-flow: falha ao checar sessão ativa de %s (assume não-viva): %s",
+                        active.task_key, exc,
+                    )
+                    stage_running = False
+
+        result = tick(ledger, dispatcher, reader, stage_running=stage_running)
         logger.info("deployment[single-flow]: tick → %s", result)
         return result
     finally:
         ledger.close()
+
+
+def _task_number_from_key(task_key: str) -> int | None:
+    """Extrai o número da issue de um task_key ('owner/repo#42' → 42)."""
+    import re
+
+    m = re.search(r"[#/](\d+)$", task_key or "")
+    return int(m.group(1)) if m else None
 
 
 # ── Camada de entrada do single-flow (frente 8) ──────────────────────────────
