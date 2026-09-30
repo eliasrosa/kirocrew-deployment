@@ -4346,6 +4346,32 @@ class _LedgerDispatcher:
         return False
 
 
+def _resolve_squad_id(cfg: dict) -> str:
+    """Resolve o id canônico da squad para nomear o RunLedger.
+
+    O id real (ex: ``kirocrew-flow``) vive DENTRO do yaml apontado por
+    ``squad_config`` — a config raiz não tem a chave ``squad_id``. O modo
+    parallel resolve isso via ``load_squad(...).id``; aqui replicamos a mesma
+    ordem de resolução para que o single-flow abra o MESMO banco
+    (``run_ledger_kirocrew-flow.db``), e não o ``run_ledger_default.db``.
+
+    Ordem: (1) yaml de ``squad_config`` → ``squad.id``; (2) chave ``squad_id``
+    da config raiz; (3) ``"default"``.
+    """
+    from flow.config.squad import SquadConfigError, load_squad
+
+    squad_file = cfg.get("squad_config")
+    if squad_file and os.path.exists(squad_file):
+        try:
+            return load_squad(squad_file).id
+        except SquadConfigError as exc:
+            logger.warning(
+                "single-flow: squad_config inválido (%s) — caindo para squad_id da config",
+                exc,
+            )
+    return cfg.get("squad_id", "default")
+
+
 def _single_flow_tick(ctx: object) -> str:
     """Um ciclo do motor ledger-driven. Retorna o diagnóstico do tick."""
     from flow.domain.run_ledger import SqliteRunLedger
@@ -4353,7 +4379,7 @@ def _single_flow_tick(ctx: object) -> str:
 
     _check_installed_version(ctx)
     cfg = _load_config()
-    squad_id = cfg.get("squad_id", "default")
+    squad_id = _resolve_squad_id(cfg)
     issue_provider_name = cfg.get("issue_provider", "github")
 
     provider = provider_for(issue_provider_name)
@@ -4366,6 +4392,117 @@ def _single_flow_tick(ctx: object) -> str:
         return result
     finally:
         ledger.close()
+
+
+# ── Camada de entrada do single-flow (frente 8) ──────────────────────────────
+#
+# O motor (`_single_flow_tick`) só avança uma task que JÁ esteja no ledger. Sem
+# uma porta de entrada, `ledger.active()` é sempre None e o tick fica idle
+# eterno. `claim_single_flow` é essa porta: registra a task no ledger no estado
+# de entrada (flow:briefing), a partir daí o tick a empurra estágio a estágio.
+
+
+def _parse_claim_message(message: str) -> tuple[str, int]:
+    """Extrai ``(owner/repo, número)`` da mensagem de claim.
+
+    Formatos aceitos (o número é sempre o da issue):
+        "owner/repo#42"
+        "owner/repo 42"
+        "owner/repo/issues/42"
+        "https://github.com/owner/repo/issues/42"
+
+    Levanta ``ValueError`` quando não consegue extrair repo + número.
+    """
+    import re
+
+    text = (message or "").strip()
+    if not text:
+        raise ValueError("mensagem de claim vazia — esperado 'owner/repo#42'")
+
+    # URL completa do GitHub
+    m = re.match(r"https?://github\.com/([^/]+/[^/]+)/issues/(\d+)", text)
+    if m:
+        return m.group(1), int(m.group(2))
+
+    # owner/repo#42  |  owner/repo/issues/42
+    m = re.match(r"([^\s/]+/[^\s/#]+)(?:/issues)?#?/?(\d+)$", text)
+    if m:
+        return m.group(1), int(m.group(2))
+
+    # owner/repo 42  (separado por espaço)
+    m = re.match(r"([^\s/]+/[^\s]+)\s+#?(\d+)$", text)
+    if m:
+        return m.group(1), int(m.group(2))
+
+    raise ValueError(
+        f"não consegui extrair 'owner/repo' + número de {text!r} — "
+        "esperado 'owner/repo#42'"
+    )
+
+
+def claim_single_flow(ctx: object) -> str:
+    """Entrypoint de ENTRADA do single-flow: injeta uma task no RunLedger.
+
+    A task é lida de ``ctx.message`` no formato ``owner/repo#42`` e registrada
+    no ledger no estado de entrada (``flow:briefing``). É idempotente: reclamar
+    a mesma ``task_key`` já ativa retorna sem erro. Só uma task fica ativa por
+    vez (o ledger recusa uma segunda via ``claim`` retornando False).
+
+    O ``repo`` é gravado no formato canônico ``owner/repo`` — é exatamente o
+    ``project`` que ``provider.get_work_item(project, key)`` espera, então o
+    ``_LedgerStateReader`` lê o estado real da issue sem reprocessar o repo.
+
+    Registro (uma vez, quando o Elias for injetar uma task):
+        cron_trigger com message="owner/repo#42"
+    ou uma cron dedicada:
+        script="~/.kiro/crew/crons/deployment.py:claim_single_flow"
+    """
+    from flow.domain.run_ledger import SqliteRunLedger
+
+    message = str(getattr(ctx, "message", "") or "")
+    try:
+        repo, number = _parse_claim_message(message)
+    except ValueError as exc:
+        msg = f"single-flow[claim]: {exc}"
+        logger.error(msg)
+        _notify(ctx, msg)
+        return "error:bad-message"
+
+    task_key = f"{repo}#{number}"
+    entry_stage = State.BRIEFING.value
+
+    cfg = _load_config()
+    squad_id = _resolve_squad_id(cfg)
+    ledger = SqliteRunLedger(squad_id)
+    try:
+        claimed = ledger.claim(task_key, repo, entry_stage)
+    finally:
+        ledger.close()
+
+    if claimed:
+        msg = f"single-flow[claim]: {task_key} registrada em {entry_stage}"
+        logger.info(msg)
+        _notify(ctx, msg)
+        return f"claimed:{task_key}"
+
+    # claim retornou False: já há OUTRA task ativa (limite de 1 por vez)
+    msg = (
+        f"single-flow[claim]: {task_key} NÃO registrada — já há outra task "
+        "ativa no ledger (limite: 1 por vez)"
+    )
+    logger.warning(msg)
+    _notify(ctx, msg)
+    return f"rejected:{task_key}"
+
+
+def _notify(ctx: object, msg: str) -> None:
+    """Notifica via ctx.notify() quando disponível, silencioso caso contrário."""
+    if ctx is None:
+        return
+    try:
+        ctx.notify(msg)  # type: ignore[attr-defined]
+    except Exception as exc:
+        logger.debug("single-flow: falha ao notificar: %s", exc)
 
 
 # ── Stub de compatibilidade — re-exporta entrypoints de deployment/flow/ ─────
