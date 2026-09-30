@@ -35,10 +35,12 @@ echo "  ✅ deployment.py copiado"
 mkdir -p "$CRONS_DIR/deployment/flow"
 cp "$REPO_ROOT/deployment/flow/__init__.py" "$CRONS_DIR/deployment/__init__.py" 2>/dev/null || true
 cp "$REPO_ROOT/deployment/flow/__init__.py" "$CRONS_DIR/deployment/flow/__init__.py"
-for f in base develop_waiting review_waiting merge review_approved qa_approved merge_conflict rework qa_waiting qa_refused watch_issue; do
-    if [ -f "$REPO_ROOT/deployment/flow/${f}.py" ]; then
-        cp "$REPO_ROOT/deployment/flow/${f}.py" "$CRONS_DIR/deployment/flow/${f}.py"
-    fi
+# Copia TODOS os módulos .py de deployment/flow/ (glob em vez de lista fixa).
+# Lista hardcoded ficava desatualizada e omitia módulos novos — notavelmente
+# single_flow.py (entrypoint da cron flow-single, o modo recomendado), além de
+# briefing.py e planning_specs.py. Com o glob, qualquer módulo novo é copiado.
+for f in "$REPO_ROOT/deployment/flow/"*.py; do
+    cp "$f" "$CRONS_DIR/deployment/flow/$(basename "$f")"
 done
 echo "  ✅ deployment/flow/ copiado"
 
