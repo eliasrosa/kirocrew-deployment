@@ -4261,21 +4261,10 @@ def run_planning_review(ctx: object) -> None:
     _run_stage(ctx, _STAGE_PLANNING_REVIEW)
 
 
-# Ordem dos estágios no orquestrador single-flow. Do início do fluxo ao fim:
-# uma task por vez (garantido pelo RunLedger + max_concurrent=1) percorre estes
-# estágios. Cada _run_stage faz seu próprio scan zero-token e só age no estado
-# que lhe cabe, então varrer todos num tick é seguro e barato — o custo de LLM
-# só ocorre quando um estágio efetivamente dispara uma sessão.
-_SINGLE_FLOW_STAGES = (
-    _STAGE_BRIEFING,
-    _STAGE_PLANNING,
-    _STAGE_PLANNING_REVIEW,
-    _STAGE_DEV,
-    _STAGE_REVIEWER,
-    _STAGE_MERGE_REVIEW,
-    _STAGE_CONFLITO,
-    _STAGE_MERGE_QA,
-)
+# Ordem dos estágios single-flow (referência histórica). O motor ledger-driven
+# (frente 7) não varre estágios: lê o estágio atual da task no RunLedger e a
+# empurra um passo por tick. A sequência canônica vive em
+# flow/engine/ledger_tick.py (_NEXT_STATE).
 
 
 def run_single_flow(ctx: object) -> None:
@@ -4298,15 +4287,86 @@ def run_single_flow(ctx: object) -> None:
     Registro (uma vez):
         cron_add(name="flow-single",
                  script="~/.kiro/crew/crons/deployment.py:run_single_flow",
-                 every=30)
+                 every=60)
     """
-    for stage in _SINGLE_FLOW_STAGES:
+    if not bool(_load_config().get("single_flow", False)):
+        # Flag desligada: o motor ledger-driven não opera. Evita qualquer I/O.
+        logger.info("deployment[single-flow]: single_flow desligado — tick inócuo")
+        return
+    try:
+        _single_flow_tick(ctx)
+    except Exception as exc:  # resiliência do tick
+        logger.error("deployment[single-flow]: tick falhou: %s", exc)
+
+
+# ── Motor ledger-driven do single-flow (frente 7) ────────────────────────────
+#
+# O estado da task vive no RunLedger (SQLite local), NÃO nas labels do GitHub.
+# O tick lê a task ativa (1 query local), lê o estado real da issue (1 chamada
+# de rede) e a empurra estágio a estágio. Custo O(1) por tick — some o scan que
+# varria 16 estados × 8 estágios (~128 chamadas gh) do modelo anterior.
+
+
+class _LedgerStateReader:
+    """StateReader concreto: lê o State real da issue via provider.get_work_item."""
+
+    def __init__(self, provider: object) -> None:
+        self._provider = provider
+
+    def read_state(self, repo: str, task_key: str) -> State | None:
+        from flow.domain.state import EstadoAmbiguo, parse_state
         try:
-            _run_stage(ctx, stage)
-        except Exception as exc:
-            logger.error(
-                "deployment[single-flow]: estágio %s falhou: %s", stage, exc
+            item = self._provider.get_work_item(repo, task_key)  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "single-flow: get_work_item falhou para %s (%s): %s",
+                task_key, repo, exc,
             )
+            return None
+        try:
+            return parse_state(set(item.get("labels", [])))
+        except EstadoAmbiguo:
+            return None
+
+
+class _LedgerDispatcher:
+    """Dispatcher concreto: mapeia o State ativo para o _dispatch_* real."""
+
+    def __init__(self, ctx: object, cfg: dict) -> None:
+        self._ctx = ctx
+        self._cfg = cfg
+
+    def dispatch_stage(self, repo: str, issue: dict, stage: State) -> bool:
+        if stage is State.BRIEFING:
+            _dispatch_briefing(self._ctx, repo, issue, self._cfg)
+            return True
+        if stage is State.PLANNING_SPECS:
+            _dispatch_planning(self._ctx, repo, issue, self._cfg)
+            return True
+        logger.info("single-flow: estágio %s não é ativo — sem disparo", stage.value)
+        return False
+
+
+def _single_flow_tick(ctx: object) -> str:
+    """Um ciclo do motor ledger-driven. Retorna o diagnóstico do tick."""
+    from flow.domain.run_ledger import SqliteRunLedger
+    from flow.engine.ledger_tick import tick
+
+    _check_installed_version(ctx)
+    cfg = _load_config()
+    squad_id = cfg.get("squad_id", "default")
+    issue_provider_name = cfg.get("issue_provider", "github")
+
+    provider = provider_for(issue_provider_name)
+    ledger = SqliteRunLedger(squad_id)
+    try:
+        reader = _LedgerStateReader(provider)
+        dispatcher = _LedgerDispatcher(ctx, cfg)
+        result = tick(ledger, dispatcher, reader)
+        logger.info("deployment[single-flow]: tick → %s", result)
+        return result
+    finally:
+        ledger.close()
 
 
 # ── Stub de compatibilidade — re-exporta entrypoints de deployment/flow/ ─────

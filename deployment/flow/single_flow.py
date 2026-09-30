@@ -1,17 +1,13 @@
-"""KiroCrew Flow — cron ORQUESTRADORA única (single-flow).
+"""KiroCrew Flow — cron ORQUESTRADORA única (single-flow, ledger-driven).
 
-Uma cron só, zero-token, que a cada tick percorre todos os estágios do
-single-flow em sequência. Cada ``_run_stage`` faz o seu próprio scan
-determinístico do estado (labels da issue + PR + RunLedger) e só age no
-estágio que lhe cabe — o custo de LLM só ocorre quando um estágio
-efetivamente dispara uma sessão de trabalho.
+Uma cron só, zero-token no scan. O estado da task vive no RunLedger (SQLite
+local), NÃO nas labels do GitHub. A cada tick o motor lê a task ativa (1 query
+local), lê o estado real da issue (1 chamada de rede) e a empurra estágio a
+estágio — custo O(1) por tick, sem o scan que varria todos os estados.
 
-O RunLedger + ``max_concurrent=1`` garantem UMA task por vez percorrendo o
-fluxo; varrer todos os estágios num único tick é seguro e barato.
-
-Só produz ação quando ``single_flow`` está ligado na config; caso contrário
-cada estágio mantém o comportamento paralelo (NOTIFY_HUMAN) e nada é
-despachado.
+Delega a ``deployment.run_single_flow``, que monta o RunLedger + provider +
+adapters e chama ``flow.engine.ledger_tick.tick``. Só opera com
+``single_flow: true`` na config.
 
 Registro (uma vez):
     cron_add(name="flow-single",
@@ -24,64 +20,33 @@ from __future__ import annotations
 import logging
 
 try:
-    from .base import (
-        _STAGE_BRIEFING,
-        _STAGE_CONFLITO,
-        _STAGE_DEV,
-        _STAGE_MERGE_QA,
-        _STAGE_MERGE_REVIEW,
-        _STAGE_PLANNING,
-        _STAGE_PLANNING_REVIEW,
-        _STAGE_REVIEWER,
-        _run_stage,
-    )
+    from ..deployment import run_single_flow as _run_single_flow
 except ImportError:
     # O cron runner carrega este arquivo via exec() sem pacote pai — o import
-    # relativo falha. Carrega base.py por path absoluto como fallback.
+    # relativo falha. Carrega deployment.py por path absoluto como fallback.
     import importlib.util
     import os
 
-    _BASE_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "base.py")
-    _spec = importlib.util.spec_from_file_location("_kirocrew_flow_base", _BASE_PY)
-    _base = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
-    _spec.loader.exec_module(_base)  # type: ignore[union-attr]
-    _STAGE_BRIEFING = _base._STAGE_BRIEFING
-    _STAGE_CONFLITO = _base._STAGE_CONFLITO
-    _STAGE_DEV = _base._STAGE_DEV
-    _STAGE_MERGE_QA = _base._STAGE_MERGE_QA
-    _STAGE_MERGE_REVIEW = _base._STAGE_MERGE_REVIEW
-    _STAGE_PLANNING = _base._STAGE_PLANNING
-    _STAGE_PLANNING_REVIEW = _base._STAGE_PLANNING_REVIEW
-    _STAGE_REVIEWER = _base._STAGE_REVIEWER
-    _run_stage = _base._run_stage
+    _DEPLOY_PY = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "deployment.py",
+    )
+    _spec = importlib.util.spec_from_file_location("_kirocrew_flow_deploy", _DEPLOY_PY)
+    _mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
+    _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
+    _run_single_flow = _mod.run_single_flow
 
 
 logger = logging.getLogger(__name__)
 
 
-# Ordem do fluxo, do início ao fim. Espelha _SINGLE_FLOW_STAGES do monolítico.
-_SINGLE_FLOW_STAGES = (
-    _STAGE_BRIEFING,
-    _STAGE_PLANNING,
-    _STAGE_PLANNING_REVIEW,
-    _STAGE_DEV,
-    _STAGE_REVIEWER,
-    _STAGE_MERGE_REVIEW,
-    _STAGE_CONFLITO,
-    _STAGE_MERGE_QA,
-)
-
-
 def run(ctx: object) -> None:
-    """Entrypoint ÚNICO do modo single-flow.
+    """Entrypoint ÚNICO do modo single-flow (ledger-driven).
 
-    Percorre todos os estágios do single-flow em sequência num único tick.
-    Resiliente por estágio: um estágio que falhe não interrompe os demais.
+    Delega ao motor em ``deployment.run_single_flow``. Resiliente: uma exceção
+    do tick é logada e não derruba o cron.
     """
-    for stage in _SINGLE_FLOW_STAGES:
-        try:
-            _run_stage(ctx, stage)
-        except Exception as exc:  # resiliência por estágio
-            logger.error(
-                "deployment[single-flow]: estágio %s falhou: %s", stage, exc
-            )
+    try:
+        _run_single_flow(ctx)
+    except Exception as exc:  # resiliência do tick
+        logger.error("deployment[single-flow]: tick falhou: %s", exc)

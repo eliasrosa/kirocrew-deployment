@@ -25,11 +25,7 @@ if _REPO_ROOT not in sys.path:
 import pytest  # noqa: E402
 
 from deployment.deployment import (  # noqa: E402
-    _SINGLE_FLOW_STAGES,
-    _STAGE_BRIEFING,
     _STAGE_DEV,
-    _STAGE_PLANNING,
-    _STAGE_PLANNING_REVIEW,
     _STAGE_REVIEWER,
     _stage_model,
     run_conflito,
@@ -816,59 +812,48 @@ class TestDryRunPorEstagio:
 
 
 # ---------------------------------------------------------------------------
-# run_single_flow — orquestrador único (frente 5)
+# run_single_flow — motor ledger-driven (frente 7)
 # ---------------------------------------------------------------------------
 
 class TestRunSingleFlow:
-    """O orquestrador percorre todos os estágios single-flow por tick."""
+    """O entrypoint delega ao motor ledger-driven; respeita a flag single_flow."""
 
-    def test_percorre_todos_os_estagios_em_ordem(self) -> None:
-        """run_single_flow chama _run_stage para cada estágio, na ordem definida."""
+    def test_flag_desligada_nao_chama_tick(self) -> None:
+        """Com single_flow=false, o entrypoint não toca o motor (tick inócuo)."""
         ctx = _make_ctx()
-        chamados: list[str] = []
-
-        def _fake_run_stage(_ctx: object, stage: str) -> None:
-            chamados.append(stage)
-
         with mock.patch(
-            "deployment.deployment._run_stage", side_effect=_fake_run_stage
-        ):
+            "deployment.deployment._load_config", return_value={"single_flow": False}
+        ), mock.patch(
+            "deployment.deployment._single_flow_tick"
+        ) as mock_tick:
             run_single_flow(ctx)
+        mock_tick.assert_not_called()
 
-        assert chamados == list(_SINGLE_FLOW_STAGES)
-        assert _STAGE_BRIEFING in chamados
-        assert _STAGE_PLANNING in chamados
-        assert _STAGE_PLANNING_REVIEW in chamados
-        assert _STAGE_DEV in chamados
-        assert _STAGE_REVIEWER in chamados
-
-    def test_falha_de_um_estagio_nao_interrompe_os_demais(self) -> None:
-        """Uma exceção num estágio é logada e os estágios seguintes ainda rodam."""
+    def test_flag_ligada_chama_tick(self) -> None:
+        """Com single_flow=true, o entrypoint delega ao motor ledger-driven."""
         ctx = _make_ctx()
-        chamados: list[str] = []
-
-        def _fake_run_stage(_ctx: object, stage: str) -> None:
-            chamados.append(stage)
-            if stage == _STAGE_PLANNING:
-                raise RuntimeError("falha simulada no planning")
-
         with mock.patch(
-            "deployment.deployment._run_stage", side_effect=_fake_run_stage
-        ):
+            "deployment.deployment._load_config", return_value={"single_flow": True}
+        ), mock.patch(
+            "deployment.deployment._single_flow_tick", return_value="idle"
+        ) as mock_tick:
             run_single_flow(ctx)
+        mock_tick.assert_called_once_with(ctx)
 
-        assert chamados == list(_SINGLE_FLOW_STAGES)
-
-    def test_ordem_comeca_no_briefing(self) -> None:
-        """A ordem começa no briefing (entrada) e passa por dev."""
-        assert _SINGLE_FLOW_STAGES[0] == _STAGE_BRIEFING
-        assert _SINGLE_FLOW_STAGES[1] == _STAGE_PLANNING
-        assert _SINGLE_FLOW_STAGES[2] == _STAGE_PLANNING_REVIEW
-        assert _STAGE_DEV in _SINGLE_FLOW_STAGES
+    def test_tick_resiliente_a_excecao(self) -> None:
+        """Uma exceção no tick é logada e não propaga (cron não quebra)."""
+        ctx = _make_ctx()
+        with mock.patch(
+            "deployment.deployment._load_config", return_value={"single_flow": True}
+        ), mock.patch(
+            "deployment.deployment._single_flow_tick",
+            side_effect=RuntimeError("boom"),
+        ):
+            run_single_flow(ctx)  # não deve levantar
 
 
 # ===========================================================================
-# deployment/flow/single_flow.py — módulo de cron do manifest (frente 6)
+# deployment/flow/single_flow.py — módulo de cron do manifest (ledger-driven)
 # ===========================================================================
 
 
@@ -889,35 +874,19 @@ def _load_single_flow_module() -> Any:
 
 
 class TestSingleFlowCronModule:
-    """O módulo de cron single_flow.py delega a _run_stage para todos os estágios."""
+    """O módulo de cron single_flow.py delega a deployment.run_single_flow."""
 
-    def test_run_percorre_todos_os_estagios(self) -> None:
+    def test_run_delega_a_run_single_flow(self) -> None:
         module = _load_single_flow_module()
         ctx = _make_ctx()
-        chamados: list[str] = []
+        with mock.patch.object(module, "_run_single_flow") as mock_run:
+            module.run(ctx)
+        mock_run.assert_called_once_with(ctx)
 
+    def test_run_resiliente_a_falha(self) -> None:
+        module = _load_single_flow_module()
+        ctx = _make_ctx()
         with mock.patch.object(
-            module, "_run_stage", side_effect=lambda _c, s: chamados.append(s)
+            module, "_run_single_flow", side_effect=RuntimeError("boom")
         ):
-            module.run(ctx)
-
-        assert chamados == list(module._SINGLE_FLOW_STAGES)
-        # A ordem começa no briefing e inclui o gate planning_review.
-        assert chamados[0] == _STAGE_BRIEFING
-        assert _STAGE_PLANNING_REVIEW in chamados
-
-    def test_run_resiliente_a_falha_de_estagio(self) -> None:
-        module = _load_single_flow_module()
-        ctx = _make_ctx()
-        chamados: list[str] = []
-
-        def _fake(_c: object, s: str) -> None:
-            chamados.append(s)
-            if s == _STAGE_PLANNING:
-                raise RuntimeError("falha simulada")
-
-        with mock.patch.object(module, "_run_stage", side_effect=_fake):
-            module.run(ctx)
-
-        # Uma falha num estágio não interrompe os seguintes.
-        assert chamados == list(module._SINGLE_FLOW_STAGES)
+            module.run(ctx)  # não deve levantar
