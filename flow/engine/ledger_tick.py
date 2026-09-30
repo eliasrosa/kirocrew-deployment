@@ -51,7 +51,13 @@ _NEXT_STATE: dict[State, State] = {
     State.PLANNING_REVIEW: State.DEVELOP_WAITING,
     State.DEVELOP_WAITING: State.REVIEW_WAITING,
     State.REVIEW_WAITING:  State.QA_WAITING,
-    State.QA_WAITING:      State.DONE,
+    # Estados intermediários que o reader não emite, mas que podem aparecer no
+    # banco se alguém gravar manualmente ou via label externa. Sem entrada aqui
+    # o motor retorna waiting:<stage> eternamente (trava).
+    State.REVIEW_APPROVED: State.QA_WAITING,    # gate humano aprovou → vai para qa
+    State.QA_WAITING:      State.QA_APPROVED,   # aguarda QA aprovar
+    State.QA_TESTING:      State.QA_APPROVED,   # QA testando → mesmo destino
+    State.QA_APPROVED:     State.DONE,          # QA aprovou → concluído
 }
 
 #: Estados terminais — liberam o slot para a próxima task.

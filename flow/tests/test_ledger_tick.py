@@ -194,3 +194,64 @@ def test_estagio_desconhecido_no_ledger_nao_quebra(ledger: SqliteRunLedger) -> N
     ledger.claim("owner/repo#10", "owner/repo", "flow:estado-inexistente")
     result = tick(ledger, FakeDispatcher(), FakeReader())
     assert result.startswith("waiting:")
+
+
+# ---------------------------------------------------------------------------
+# item B — estados órfãos que travavam o motor (REVIEW_APPROVED, QA_TESTING,
+#           QA_APPROVED agora têm entrada em _NEXT_STATE)
+# ---------------------------------------------------------------------------
+
+def test_review_approved_avanca_para_qa_waiting(ledger: SqliteRunLedger) -> None:
+    """REVIEW_APPROVED: antes não estava em _NEXT_STATE → waiting eterno.
+    Avança quando o reader retorna QA_WAITING ou além (o sinal externo do QA)."""
+    ledger.claim("owner/repo#20", "owner/repo", State.REVIEW_APPROVED.value)
+    # Reader precisa retornar >= QA_WAITING para o avanço ocorrer
+    reader = FakeReader(state=State.QA_WAITING)
+    result = tick(ledger, FakeDispatcher(), reader)
+    assert result == f"advanced:{State.REVIEW_APPROVED.value}->{State.QA_WAITING.value}"
+
+
+def test_review_approved_aguarda_enquanto_sinal_nao_chegou(ledger: SqliteRunLedger) -> None:
+    """REVIEW_APPROVED sem sinal externo → waiting (não trava mais, só aguarda)."""
+    ledger.claim("owner/repo#20b", "owner/repo", State.REVIEW_APPROVED.value)
+    reader = FakeReader(state=State.REVIEW_APPROVED)  # ainda no mesmo estado
+    result = tick(ledger, FakeDispatcher(), reader)
+    # Não trava (tem _NEXT_STATE), aguarda o sinal externo chegar
+    assert result == f"waiting:{State.REVIEW_APPROVED.value}"
+
+
+def test_qa_testing_avanca_para_qa_approved(ledger: SqliteRunLedger) -> None:
+    """QA_TESTING: estava em _NEXT_STATE como None → waiting eterno ao gravar
+    manualmente. Agora avança para QA_APPROVED."""
+    ledger.claim("owner/repo#21", "owner/repo", State.QA_TESTING.value)
+    reader = FakeReader(state=State.QA_APPROVED)
+    result = tick(ledger, FakeDispatcher(), reader)
+    assert result == f"advanced:{State.QA_TESTING.value}->{State.QA_APPROVED.value}"
+
+
+def test_qa_approved_avanca_para_done(ledger: SqliteRunLedger) -> None:
+    """QA_APPROVED: antes não estava em _NEXT_STATE → waiting eterno.
+    Agora avança para DONE e libera o slot."""
+    ledger.claim("owner/repo#22", "owner/repo", State.QA_APPROVED.value)
+    reader = FakeReader(state=State.DONE)
+    result = tick(ledger, FakeDispatcher(), reader)
+    # DONE é terminal → released
+    assert result == f"released:{RunStatus.DONE.value}"
+    assert ledger.active() is None
+
+
+def test_estado_orfao_nao_trava_mais(ledger: SqliteRunLedger) -> None:
+    """Confirma que QA_WAITING não trava mais com reader retornando QA_APPROVED.
+    DONE no reader libera diretamente (é terminal — não passa pelo _NEXT_STATE).
+    O caminho QA_WAITING→QA_APPROVED só ocorre quando o reader retorna QA_APPROVED."""
+    ledger.claim("owner/repo#23", "owner/repo", State.QA_WAITING.value)
+    # Reader retorna QA_APPROVED (sinal: QA aprovou, ainda não DONE)
+    reader = FakeReader(state=State.QA_APPROVED)
+    result = tick(ledger, FakeDispatcher(), reader)
+    # QA_APPROVED >= QA_APPROVED → avança de QA_WAITING para QA_APPROVED
+    assert result == f"advanced:{State.QA_WAITING.value}->{State.QA_APPROVED.value}"
+    # Tick seguinte: ledger em QA_APPROVED, reader retorna DONE (terminal) → released
+    reader2 = FakeReader(state=State.DONE)
+    result2 = tick(ledger, FakeDispatcher(), reader2)
+    assert result2 == f"released:{RunStatus.DONE.value}"
+    assert ledger.active() is None
