@@ -4586,22 +4586,35 @@ def _task_number_from_key(task_key: str) -> int | None:
 # de entrada (flow:briefing), a partir daí o tick a empurra estágio a estágio.
 
 
-def _parse_claim_message(message: str) -> tuple[str, int]:
-    """Extrai ``(owner/repo, número)`` da mensagem de claim.
+def _parse_claim_message(message: str) -> tuple[str, str | int]:
+    """Extrai ``(projeto/repo, chave_ou_número)`` da mensagem de claim.
 
-    Formatos aceitos (o número é sempre o da issue):
+    Formatos aceitos:
+
+    GitHub:
         "owner/repo#42"
         "owner/repo 42"
         "owner/repo/issues/42"
         "https://github.com/owner/repo/issues/42"
 
-    Levanta ``ValueError`` quando não consegue extrair repo + número.
+    Jira:
+        "VGAT-1009"          → ("VGAT", "VGAT-1009")
+        "PROJ-42"            → ("PROJ", "PROJ-42")
+
+    Levanta ``ValueError`` quando não consegue extrair projeto + chave.
     """
     import re
 
     text = (message or "").strip()
     if not text:
-        raise ValueError("mensagem de claim vazia — esperado 'owner/repo#42'")
+        raise ValueError("mensagem de claim vazia — esperado 'owner/repo#42' ou 'VGAT-1009'")
+
+    # Jira key: PROJETO-NUMERO (ex: VGAT-1009, VSUS-42)
+    m = re.match(r"^([A-Z][A-Z0-9]+)-(\d+)$", text)
+    if m:
+        project = m.group(1)
+        key = text  # mantém a chave completa (ex: "VGAT-1009")
+        return project, key
 
     # URL completa do GitHub
     m = re.match(r"https?://github\.com/([^/]+/[^/]+)/issues/(\d+)", text)
@@ -4619,40 +4632,51 @@ def _parse_claim_message(message: str) -> tuple[str, int]:
         return m.group(1), int(m.group(2))
 
     raise ValueError(
-        f"não consegui extrair 'owner/repo' + número de {text!r} — "
-        "esperado 'owner/repo#42'"
+        f"não consegui extrair projeto + chave de {text!r} — "
+        "esperado 'owner/repo#42' (GitHub) ou 'VGAT-1009' (Jira)"
     )
 
 
 def claim_single_flow(ctx: object) -> str:
     """Entrypoint de ENTRADA do single-flow: injeta uma task no RunLedger.
 
-    A task é lida de ``ctx.message`` no formato ``owner/repo#42`` e registrada
-    no ledger no estado de entrada (``flow:briefing``). É idempotente: reclamar
-    a mesma ``task_key`` já ativa retorna sem erro. Só uma task fica ativa por
-    vez (o ledger recusa uma segunda via ``claim`` retornando False).
+    A task é lida de ``ctx.message`` e registrada no ledger no estado de entrada
+    (``flow:briefing``). É idempotente: reclamar a mesma ``task_key`` já ativa
+    retorna sem erro. Só uma task fica ativa por vez.
 
-    O ``repo`` é gravado no formato canônico ``owner/repo`` — é exatamente o
-    ``project`` que ``provider.get_work_item(project, key)`` espera, então o
-    ``_LedgerStateReader`` lê o estado real da issue sem reprocessar o repo.
+    Formatos aceitos em ``ctx.message``:
 
-    Registro (uma vez, quando o Elias for injetar uma task):
-        cron_trigger com message="owner/repo#42"
-    ou uma cron dedicada:
-        script="~/.kiro/crew/crons/deployment.py:claim_single_flow"
+    GitHub:
+        "owner/repo#42"          → task_key="owner/repo#42", repo="owner/repo"
+        "https://github.com/owner/repo/issues/42"
+
+    Jira:
+        "VGAT-1009"              → task_key="VGAT-1009", repo="VGAT"
+
+    O ``repo`` gravado no ledger é o que ``provider.get_work_item(repo, key)``
+    espera: para GitHub é "owner/repo", para Jira é o projeto ("VGAT").
     """
     from flow.domain.run_ledger import SqliteRunLedger
 
     message = str(getattr(ctx, "message", "") or "")
     try:
-        repo, number = _parse_claim_message(message)
+        project_or_repo, key_or_number = _parse_claim_message(message)
     except ValueError as exc:
         msg = f"single-flow[claim]: {exc}"
         logger.error(msg)
         _notify(ctx, msg)
         return "error:bad-message"
 
-    task_key = f"{repo}#{number}"
+    # Para Jira: key_or_number é string (ex: "VGAT-1009"), repo é o projeto
+    # Para GitHub: key_or_number é int (ex: 42), task_key = "owner/repo#42"
+    if isinstance(key_or_number, str):
+        # Jira: task_key = a própria chave Jira ("VGAT-1009"), repo = projeto
+        task_key = key_or_number
+        repo = project_or_repo
+    else:
+        task_key = f"{project_or_repo}#{key_or_number}"
+        repo = project_or_repo
+
     entry_stage = State.BRIEFING.value
 
     cfg = _load_config()
