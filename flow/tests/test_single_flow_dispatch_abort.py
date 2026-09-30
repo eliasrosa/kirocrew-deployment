@@ -34,8 +34,23 @@ _ISSUE = {"number": 292, "key": "owner/repo#292"}
 _REPO = "owner/repo"
 
 
-def _dispatcher() -> _LedgerDispatcher:
-    return _LedgerDispatcher(ctx=mock.MagicMock(), cfg={})
+class _FakeProvider:
+    """Provider fake: get_work_item devolve o title, como o github_client real."""
+
+    def __init__(self, item: dict | None = None, raises: bool = False) -> None:
+        self._item = item if item is not None else {"key": "owner/repo#292", "title": "docs: single-flow", "labels": ["crewflow:todo"]}
+        self._raises = raises
+        self.calls: list[tuple[str, str]] = []
+
+    def get_work_item(self, project: str, key: str) -> dict:
+        self.calls.append((project, key))
+        if self._raises:
+            raise RuntimeError("gh falhou")
+        return dict(self._item)
+
+
+def _dispatcher(provider: _FakeProvider | None = None) -> _LedgerDispatcher:
+    return _LedgerDispatcher(ctx=mock.MagicMock(), cfg={}, provider=provider or _FakeProvider())
 
 
 @pytest.mark.parametrize("stage", [State.BRIEFING, State.PLANNING_SPECS])
@@ -78,3 +93,45 @@ def test_sucesso_post_ok_retorna_true(stage: State) -> None:
 def test_estagio_nao_ativo_retorna_false() -> None:
     # develop/review/qa não têm dispatcher no single-flow → sempre False.
     assert _dispatcher().dispatch_stage(_REPO, _ISSUE, State.DEVELOP_WAITING) is False
+
+
+# ── Gap B: o dispatcher enriquece o issue com title via get_work_item ────────
+#
+# O motor (ledger_tick) monta o issue só com {number, key} — sem title. O
+# dispatch montava o session_title com issue['title'] e estourava KeyError, o
+# que criava o lock e abortava sem NUNCA subir a sessão sidebar. O fix busca o
+# work_item e injeta o title antes de despachar.
+
+
+@pytest.mark.parametrize("stage", [State.BRIEFING, State.PLANNING_SPECS])
+def test_gapb_enriquece_issue_com_title_antes_do_dispatch(stage: State) -> None:
+    prov = _FakeProvider({"key": "owner/repo#292", "title": "docs: single-flow", "labels": []})
+    captured: dict = {}
+
+    def _fake_dispatch(_ctx, _repo, issue, _cfg):
+        captured.update(issue)
+        return True
+
+    target = "_dispatch_briefing" if stage is State.BRIEFING else "_dispatch_planning"
+    with mock.patch(f"{_MOD}.{target}", side_effect=_fake_dispatch):
+        # o issue do motor NÃO tem title
+        assert _dispatcher(prov).dispatch_stage(_REPO, {"number": 292, "key": "owner/repo#292"}, stage) is True
+
+    # o dispatch recebeu o issue JÁ com title (Gap B fechado)
+    assert captured.get("title") == "docs: single-flow"
+    # e number/key do motor foram preservados
+    assert captured.get("number") == 292
+    assert captured.get("key") == "owner/repo#292"
+    # get_work_item foi chamado 1x com o repo e a key
+    assert prov.calls == [(_REPO, "owner/repo#292")]
+
+
+@pytest.mark.parametrize("stage", [State.BRIEFING, State.PLANNING_SPECS])
+def test_gapb_get_work_item_falho_aborta_sem_avancar(stage: State) -> None:
+    prov = _FakeProvider(raises=True)
+    target = "_dispatch_briefing" if stage is State.BRIEFING else "_dispatch_planning"
+    with mock.patch(f"{_MOD}.{target}") as m:
+        # get_work_item lança -> enrich retorna None -> dispatch aborta (False)
+        assert _dispatcher(prov).dispatch_stage(_REPO, _ISSUE, stage) is False
+        # o _dispatch_* NÃO foi chamado (abortou antes)
+        m.assert_not_called()
