@@ -58,26 +58,12 @@ Execute UMA vez, do início ao fim, e PARE:
 {{example_approved}}
    Se houver pedidos de mudança:
 {{example_changes}}
-9. POSTE O RESULTADO COMPLETO DO REVIEW NA ISSUE #{{issue_number}} também:
-   - Cole o mesmo comentário completo (mesmo corpo do passo 7) na issue:
-     gh issue comment {{issue_number}} --repo {{repo}} --body "<mesmo corpo completo>"
-   O resultado COMPLETO deve aparecer nos DOIS lugares — PR e issue.
-   NÃO poste só uma referência curta: o resultado completo vai nos dois.
-10. Registre o resultado no state_comment DA ISSUE com ReviewerResult:
-   - Se APROVADO (CI verde + zero comentários + sem blockers): `approved: true`, `comments: []`
-   - Se tem pedidos de mudança: `approved: false`, `comments: ["<mudança 1>", ...]`
-   - Inclua o motivo de CI vermelho como primeiro item em `comments` se aplicável
-   Use `upsert_state_comment` para atualizar o bloco <!-- KIRO-FLOW-STATE --> NA ISSUE.
-   O ReviewerResult DEVE incluir o headRefOid lido no passo 2 como campo `sha`.
-   Use o SHA obtido via `gh pr view {{pr_number}} --repo {{repo}} --json headRefOid`
-   no passo 2 — não {{head_sha}} hardcoded, pois a PR pode ter avançado entre o
-   dispatch e a execução.
-   IMPORTANTE: o ReviewerResult PERMANECE na issue — é o que o scan lê pra decidir MERGE_PR.
-11. Se aprovado (zero comentários + CI verde): troque as labels da issue:
-    `gh issue edit {{issue_number}} --repo {{repo}} --add-label "flow:review-approved" --remove-label "flow:review-waiting,flow:review-running"`
-12. Se tem comentários ou CI vermelho: troque as labels da issue (gate humano):
-    `gh issue edit {{issue_number}} --repo {{repo}} --add-label "flow:review-refused" --remove-label "flow:review-waiting,flow:review-running"`
-13. ENCERRE.
+   Este é o ÚNICO registro do review — fica no PR, como registro da ação. O SHA
+   revisado (headRefOid lido no passo 3) DEVE aparecer no corpo, para rastreio.
+9. ENCERRE. **NÃO troque nenhuma label de estado e NÃO escreva comentário de
+   estado na issue.** O estado da esteira é 100% local (ledger SQLite): o motor
+   lê a evidência do PR (review APPROVED vs pedidos de mudança) e avança o estado
+   sozinho. Seu único registro é o comentário de review NO PR (passo 8).
 
 ### Regras críticas
 
@@ -87,6 +73,8 @@ Execute UMA vez, do início ao fim, e PARE:
   O reviewer só lê e comenta — correções são responsabilidade do dev/rework, na
   branch `feat/issue-{{issue_number}}` existente. Se você se pegar criando um
   `git checkout -b` ou um `gh pr create`, pare imediatamente: é o bug #136.
+- **NÃO mexa em labels de estado (`flow:*`) nem escreva comentário de estado na
+  issue.** O review vai NO PR (registro); o estado é do motor (ledger local).
 - Seja objetivo — aponte problemas concretos, não estilo pessoal.
 - CI vermelho sempre bloqueia — mesmo que o código esteja correto.
-- Resultado completo vai em DOIS lugares: PR (passo 7) e issue (passo 8).
+- O resultado do review vai em UM lugar: o comentário no PR (passo 8).

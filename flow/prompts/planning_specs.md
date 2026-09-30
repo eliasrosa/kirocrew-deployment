@@ -30,16 +30,12 @@ Execute UMA vez, do início ao fim, e PARE:
    ```
    Se a issue estiver CLOSED, encerre silenciosamente.
 
-2. SINALIZE O INÍCIO (após confirmar que a issue está OPEN):
-   `gh issue comment {{issue_number}} --repo {{repo}} --body "🟠 kiro-planning montando a especificação (requirements + design + tasks)."`
-   **Nota:** a label `flow:planning-specs` já está aplicada. Não troque a label neste passo.
-
-3. CONTEXTO — releia o material da task e as decisões do briefing:
+2. CONTEXTO — releia o material da task e as decisões do briefing:
    - `.kiro/steering/*.md`, `README.md`, `docs/` se existirem
    - A issue pai e seus comentários (inclui os números das sub-tasks): `gh issue view {{issue_number}} --repo {{repo}} --comments`
    - A **Sub-task 1 · Especificação** (localize o número no comentário do briefing).
 
-4. MONTE A SPEC padrão Kiro — as **três seções numa única sub-task** (a Sub-task 1):
+3. MONTE A SPEC padrão Kiro — as **três seções numa única sub-task** (a Sub-task 1):
    - **Requirements** — o que precisa ser feito, critérios de aceite, casos de borda.
    - **Design** — como será feito: arquitetura, camadas, contratos, decisões técnicas.
    - **Tasks** — a decomposição em passos executáveis para a implementação.
@@ -48,20 +44,18 @@ Execute UMA vez, do início ao fim, e PARE:
    Siga as convenções dos steerings do repo. Seja completo mas objetivo.
    **Estimativa (pontos/horas) é MANUAL** — não sugira; o humano estima.
 
-5. ESCOPO — se durante a spec surgir uma decisão de design que só o TL/PM pode tomar,
+4. ESCOPO — se durante a spec surgir uma decisão de design que só o TL/PM pode tomar,
    registre-a explicitamente como pergunta na Sub-task 1 e na issue pai. Não invente
    a decisão. É legítimo pedir a revisão com pontos em aberto sinalizados.
 
-6. PEÇA A REVISÃO — poste um comentário estruturado na issue pai indicando que a
+5. PEÇA A REVISÃO — poste um comentário estruturado na issue pai indicando que a
    spec está pronta para revisão do TL/PM, apontando a Sub-task 1:
    `gh issue comment {{issue_number}} --repo {{repo}} --body "✅ Especificação pronta para revisão do TL/PM na Sub-task 1 (#<N-subtask1>). Aprovação: fechar a Sub-task 1 marca o aceite."`
 
-7. TRANSIÇÃO — mova a task para o gate humano de revisão, atomicamente:
-   `gh issue edit {{issue_number}} --repo {{repo}} --add-label "flow:planning-review" --remove-label "flow:planning-specs"`
+6. Ao terminar: {{notify_step}}
 
-8. Ao terminar: {{notify_step}}
-
-   ENCERRE.
+   ENCERRE. O avanço para o gate de revisão é decidido pelo motor (ledger local)
+   com base na evidência — você NÃO troca label de estado.
 
 ### Regras críticas
 
@@ -70,6 +64,8 @@ Execute UMA vez, do início ao fim, e PARE:
 - O aceite da spec é do TL/PM (fechar a Sub-task 1). Você NÃO fecha a sub-task nem
   aprova a própria spec.
 - NÃO implemente código. NÃO abra PR. NÃO mergeie.
-- Se bloquear, marque `flow:blocked`, avise, e pare.
+- **NÃO mexa em labels de estado (`flow:*`) nem escreva comentário de estado.**
+  O estado da esteira é 100% local (ledger SQLite) — o motor controla as transições.
+- Se precisar bloquear, comente o motivo na issue e pare.
 
 {{prompt_extra}}
