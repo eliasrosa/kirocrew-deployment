@@ -101,6 +101,8 @@ def register_routes(ctx: object) -> list:
         AppRoute("GET", "/health", handle_health),
         AppRoute("GET", "/issues", handle_issues),
         AppRoute("POST", "/dispatch", handle_dispatch),
+        AppRoute("POST", "/claim", handle_claim),
+        AppRoute("POST", "/advance", handle_advance),
         AppRoute("POST", "/qa-fail", handle_qa_fail),
         AppRoute("POST", "/qa-approve", handle_qa_approve),
         AppRoute("POST", "/gate/{token}/decide", handle_gate_decide),
@@ -109,9 +111,196 @@ def register_routes(ctx: object) -> list:
 
 
 async def handle_health(request: web.Request, ctx: object = None) -> web.Response:
-    from backend.version import get_version
+    try:
+        from backend.version import get_version
+    except ImportError:
+        # Fallback para quando o módulo roda no namespace isolado do gateway
+        import importlib.util as _ilu
+        _vpath = Path(__file__).parent / "version.py"
+        _vspec = _ilu.spec_from_file_location("_kf_version", str(_vpath))
+        _vmod = _ilu.module_from_spec(_vspec)  # type: ignore[arg-type]
+        _vspec.loader.exec_module(_vmod)  # type: ignore[union-attr]
+        get_version = _vmod.get_version
 
     return web.json_response({"ok": True, "app": "kirocrew-flow", "version": get_version()})
+
+
+async def handle_claim(request: web.Request, ctx: object = None) -> web.Response:
+    """Registra uma task no ledger do single-flow (sem chamar provider externo).
+
+    Body JSON: {"task_key": "VGAT-1009"} ou {"task_key": "owner/repo#42"}
+    Registra a task no estágio de entrada (flow:briefing) se ainda não estiver ativa.
+    Retorna {"ok": true, "claimed": true|false, "task_key": "...", "stage": "..."}.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "body JSON inválido"}, status=400)
+
+    task_key = (body.get("task_key") or "").strip()
+    if not task_key:
+        return web.json_response(
+            {"ok": False, "error": "campo 'task_key' é obrigatório"},
+            status=400,
+        )
+
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _do_claim, task_key)
+        return web.json_response(result)
+    except Exception as exc:
+        logger.exception("handle_claim: erro inesperado: %s", exc)
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+def _do_claim(task_key: str) -> dict:
+    """Registra task_key no ledger sem chamar provider externo."""
+    # O gateway carrega o módulo via namespace isolado sem adicionar app_dir ao
+    # sys.path. Precisamos garantir que tanto o app instalado quanto o repo
+    # estejam no path para que `flow` e `deployment` sejam importáveis.
+    app_root = Path(__file__).parent.parent
+    _installed_root = os.path.expanduser("~/.kiro/crew/apps/kirocrew-flow")
+    for _p in (_installed_root, str(app_root)):
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+
+    import importlib.util
+    import re
+
+    from flow.domain.run_ledger import SqliteRunLedger
+
+    # Carrega deployment.py instalado (mesmo padrão do _force_dispatch)
+    _crons_dir = os.path.expanduser("~/.kiro/crew/crons")
+    _deploy_py = os.path.join(_crons_dir, "deployment.py")
+    _spec = importlib.util.spec_from_file_location("_kirocrew_flow_deploy_claim", _deploy_py)
+    _mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
+    _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
+    _load_config = _mod._load_config
+    _resolve_squad_id = _mod._resolve_squad_id
+
+    cfg = _load_config()
+    squad_id = _resolve_squad_id(cfg)
+
+    # Deriva o repo do task_key (VGAT-1009 → repo="VGAT"; owner/repo#42 → repo="owner/repo")
+    m_jira = re.match(r"^([A-Z][A-Z0-9]+)-(\d+)$", task_key)
+    if m_jira:
+        repo = m_jira.group(1)
+    else:
+        m_gh = re.match(r"([^#]+)#\d+$", task_key)
+        repo = m_gh.group(1) if m_gh else task_key
+
+    entry_stage = "flow:briefing"
+    ledger = SqliteRunLedger(squad_id)
+    try:
+        claimed = ledger.claim(task_key, repo, entry_stage)
+        active = ledger.active()
+        current_stage = active.current_stage if active else entry_stage
+    finally:
+        ledger.close()
+
+    return {
+        "ok": True,
+        "claimed": claimed,
+        "task_key": task_key,
+        "repo": repo,
+        "stage": current_stage,
+        "note": "já estava ativa" if not claimed else "registrada em flow:briefing",
+    }
+
+
+async def handle_advance(request: web.Request, ctx: object = None) -> web.Response:
+    """Avança manualmente o estágio de uma task no ledger (sem checar provider externo).
+
+    Body JSON: {"task_key": "VGAT-1009"}
+    Força a transição para o próximo estágio no _NEXT_STATE do motor.
+    Se o estágio resultante for ativo (briefing/planning-specs), dispara o tick.
+    Retorna {"ok": true, "from": "...", "to": "...", "dispatched": true|false}.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "body JSON inválido"}, status=400)
+
+    task_key = (body.get("task_key") or "").strip()
+    if not task_key:
+        return web.json_response(
+            {"ok": False, "error": "campo 'task_key' é obrigatório"},
+            status=400,
+        )
+
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _do_advance, task_key)
+        return web.json_response(result)
+    except Exception as exc:
+        logger.exception("handle_advance: erro inesperado: %s", exc)
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+def _do_advance(task_key: str) -> dict:
+    """Força o próximo estágio no ledger e dispara tick se for estágio ativo."""
+    app_root = Path(__file__).parent.parent
+    _installed_root = os.path.expanduser("~/.kiro/crew/apps/kirocrew-flow")
+    for _p in (_installed_root, str(app_root)):
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+
+    import importlib.util
+
+    from flow.domain.run_ledger import SqliteRunLedger
+    from flow.engine.ledger_tick import _ACTIVE_STAGES, _NEXT_STATE, State
+
+    # Carrega deployment.py instalado (mesmo padrão do _force_dispatch)
+    _crons_dir = os.path.expanduser("~/.kiro/crew/crons")
+    _deploy_py = os.path.join(_crons_dir, "deployment.py")
+    _spec = importlib.util.spec_from_file_location("_kirocrew_flow_deploy_advance", _deploy_py)
+    _mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
+    _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
+    _load_config = _mod._load_config
+    _resolve_squad_id = _mod._resolve_squad_id
+    run_single_flow = _mod.run_single_flow
+
+    cfg = _load_config()
+    squad_id = _resolve_squad_id(cfg)
+    ledger = SqliteRunLedger(squad_id)
+    try:
+        active = ledger.active()
+        if active is None or active.task_key != task_key:
+            return {"ok": False, "error": f"task {task_key!r} não está ativa no ledger"}
+
+        current = State(active.current_stage)
+        nxt = _NEXT_STATE.get(current)
+        if nxt is None:
+            return {
+                "ok": False,
+                "error": f"estágio {current.value!r} não tem próximo (terminal ou desconhecido)",
+            }
+
+        ledger.advance(task_key, nxt.value, stage_session=None)
+        from_stage = current.value
+        to_stage = nxt.value
+    finally:
+        ledger.close()
+
+    # Se o novo estágio é ativo (briefing/planning-specs), dispara tick imediato
+    dispatched = False
+    if nxt in _ACTIVE_STAGES:
+        try:
+            from backend.ctx import BackendCronCtx
+            ctx_cron = BackendCronCtx(message=task_key)
+            run_single_flow(ctx_cron)
+            dispatched = True
+        except Exception as exc:
+            logger.warning("_do_advance: run_single_flow falhou: %s", exc)
+
+    return {
+        "ok": True,
+        "task_key": task_key,
+        "from": from_stage,
+        "to": to_stage,
+        "dispatched": dispatched,
+        "note": "tick disparado" if dispatched else "estágio avançado (sem dispatch automático neste estágio)",
+    }
 
 
 def _extract_issue_number(raw: dict) -> int | str:
