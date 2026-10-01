@@ -19,6 +19,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
 from backend.ctx import BackendCronCtx  # noqa: E402
+from backend.engine.db import apply_migrations  # noqa: E402
 from backend.version import get_version  # noqa: E402
 from deployment.deployment import (  # noqa: E402
     _STAGE_CONFLITO,
@@ -55,6 +56,7 @@ async def _run_stage_loop(stage: str, interval: int) -> None:
 
 
 async def start_background_loops(app: web.Application) -> None:
+    apply_migrations()
     app["tasks"] = [
         asyncio.create_task(
             _run_stage_loop(
