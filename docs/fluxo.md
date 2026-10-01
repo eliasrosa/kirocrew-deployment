@@ -1,124 +1,144 @@
-# KiroCrew Flow — Diagrama de sequência
+# KiroCrew Flow — Sequência (single-flow, ledger-driven)
 
-## Protocolo cron ↔ agente via labels de issue
+## Visão geral
 
-O mecanismo central do sistema é o **canal de comunicação assíncrono via labels de
-issue**. Cron Python e agente LLM nunca se chamam diretamente — toda a troca de
-estado acontece por meio das labels `flow:*` aplicadas na issue.
+O motor é **ledger-driven**: o estado de cada task vive num SQLite local
+(`run_ledger`), não nas labels da issue. A cron `flow-single` (60s) executa um
+tick O(1) — 1 query SQLite + 1 chamada de rede.
 
 ```
-┌───────────────────────────────────────────────────────────────────────────┐
-│  Cron Python (zero token)          Issue (labels)       Agente one-shot   │
-│  deployment.py                     GitHub / Jira        (gasta token)      │
-└───────────────────────────────────────────────────────────────────────────┘
-
-     scan_candidates()
-          │
-          ▼ detecta flow:develop-waiting
-     executor.decide()
-          │ → DISPATCH_DEV
-          ▼
-     set_labels()  ──────────► [ flow:develop-running ]
-          │                              │
-     _dispatch() ─────────────────────► │ inicia sessão one-shot
-                                        │
-                                        ├─ implementa
-                                        ├─ abre PR
-                                        ├─ posta KIRO-FLOW-STATE comment
-                                        │
-                                        ▼
-                          [ flow:review-waiting ]  ◄── agente aplica label
-                                                        antes de encerrar
-
-     scan_candidates()  ◄──── cron detecta mudança de label
-          │
-          ▼ detecta flow:review-waiting
-     DISPATCH_REVIEWER
-          │
-     set_labels()  ──────────► [ flow:review-running ]
-          │
-     _dispatch() ─────────────────────► sessão one-shot (reviewer)
-                                        │
-                                        ├─ lê PR e comentários
-                                        ├─ posta review comment
-                                        │
-                            aprovado:   ▼
-                          [ flow:review-approved ]  ◄── agente aplica label
-                         (remove flow:review-running,
-                                 flow:review-waiting)
-
-     scan_candidates()  ◄──── cron detecta flow:review-approved
-          │
-          ▼ MERGE_PR (se auto_merge_on_approve)
-     merge squash  ──────────► [ flow:qa-waiting ] → … → [ flow:done ]
+Cron flow-single (60s, zero token)
+  │
+  ├─ deployment.run_single_flow(ctx)
+  │       └─ ledger.active()          ← 1 query SQLite
+  │           sem task ativa?
+  │               └─ claim_single_flow() ← reclamar próxima issue
+  │
+  ├─ ledger.active() → task VGAT-123, estado=BRIEFING
+  │   provider.get_work_item(issue_key) ← 1 chamada de rede (estado real)
+  │   ledger_tick.tick(ledger, work_item, dispatcher)
+  │       └─ estágio ATIVO → dispatch_stage(BRIEFING)
+  │                           ─────────────────────► sessão one-shot aberta
+  │                                                   Agente: monta contexto
+  │                                                   WORKFLOW_EXIT: {done}
+  │       └─ ledger avança: BRIEFING → PLANNING_SPECS
+  │
+  └─ … (ticks seguintes)
 ```
 
-### Ponto-chave: comunicação exclusivamente via labels
+## Jornada completa de uma task
 
-Nenhuma das partes chama a outra diretamente:
+### 1. Claim (reclamação da issue)
 
-- O **cron** lê labels → decide → aplica label de lock → dispara sessão.
-- O **agente** implementa → aplica label de resultado → posta comentário → encerra.
-- O **cron** detecta a label de resultado → faz a próxima transição.
+`claim_single_flow()` busca a próxima issue no provider (Jira ou GitHub) com o
+critério configurado no squad config e cria o `RunLedger`:
 
-Isso torna o sistema tolerante a falhas e auditável: o estado da issue em qualquer
-momento é suficiente para diagnosticar onde o fluxo parou.
+```python
+ledger = RunLedger.create(
+    issue_key="VGAT-123",
+    state=State.BRIEFING,
+    squad_id="voomp-squad-gw",
+)
+```
 
----
+A partir daqui o estado vive no SQLite — a issue do Jira/GitHub é lida apenas
+como sinal externo (existe PR? review aprovado?).
 
-## Diagrama Mermaid — sequência completa (feature flow)
+### 2. BRIEFING
+
+- Motor: estágio ativo → `dispatch_stage(BRIEFING)`.
+- Sessão one-shot abre, agente lê o contexto da issue, monta objetivo e critérios.
+- Agente publica `WORKFLOW_EXIT: {"exit_status": "done"}` na última mensagem.
+- Motor lê o JSONL da sessão → avança: `BRIEFING → PLANNING_SPECS`.
+
+### 3. PLANNING_SPECS
+
+- Motor: estágio ativo → `dispatch_stage(PLANNING_SPECS)`.
+- Sessão one-shot: agente escreve spec detalhada, sub-tasks e critérios de aceite.
+- Agente publica `WORKFLOW_EXIT: {"exit_status": "done"}`.
+- Motor avança: `PLANNING_SPECS → PLANNING_REVIEW`.
+
+### 4. PLANNING_REVIEW (gate humano)
+
+- Motor: aguarda sinal externo de aprovação da spec pelo TL/PM.
+- Nenhuma sessão é disparada — o motor fica em `waiting`.
+- Humano aprova → motor avança: `PLANNING_REVIEW → DEVELOP_WAITING`.
+
+### 5. DEVELOP_WAITING
+
+- Motor: aguarda PR aberto.
+- Dev pega a task, abre branch e implementa (fora do motor).
+- PR detectado → motor avança: `DEVELOP_WAITING → REVIEW_WAITING`.
+
+### 6. REVIEW_WAITING
+
+- Motor: aguarda review aprovado.
+- Review aprovado no PR → motor avança: `REVIEW_WAITING → QA_WAITING`.
+- Review reprovado → motor transiciona para `REVIEW_REFUSED` (terminal, gate humano).
+
+### 7. QA_WAITING
+
+- Motor: aguarda QA.
+- QA aprova → motor avança: `QA_WAITING → DONE`.
+- QA reprova → motor transiciona para `QA_REFUSED` (terminal, gate humano).
+
+### 8. DONE
+
+- `ledger.release()` — slot liberado para a próxima task.
+- Labels `flow:done` aplicadas na issue.
+- Issue fechada pelo agente ou pelo merge do PR (dependendo da config).
+
+## Diagrama Mermaid
 
 ```mermaid
 sequenceDiagram
-    participant C as Cron (zero token)
-    participant I as Issue (labels)
-    participant A as Agente one-shot
+    participant C as Cron flow-single (zero token)
+    participant L as RunLedger (SQLite)
+    participant P as Provider (Jira/GitHub)
+    participant A as Agente one-shot (gasta token)
 
-    Note over I: flow:develop-waiting
-    C->>I: scan detecta develop-waiting
-    C->>I: aplica flow:develop-running (lock atômico)
-    C->>A: dispara sessão one-shot (develop_waiting.md)
+    C->>L: ledger.active() → nada
+    C->>P: claim_single_flow() → VGAT-123
+    C->>L: RunLedger.create(BRIEFING)
 
-    activate A
-    A->>A: implementa + abre PR
-    A->>I: aplica flow:review-waiting
-    A->>I: remove flow:develop-running
-    A->>I: posta KIRO-FLOW-STATE comment
-    deactivate A
-
-    Note over I: flow:review-waiting
-    C->>I: scan detecta review-waiting
-    C->>I: aplica flow:review-running (lock anti-loop)
-    C->>A: dispara sessão one-shot (review_waiting.md)
-
-    activate A
-    A->>A: lê PR, posta code review
-    alt aprovado
-        A->>I: aplica flow:review-approved
-        A->>I: remove flow:review-waiting, flow:review-running
-    else reprovado
-        A->>I: aplica flow:review-refused
-        A->>I: remove flow:review-waiting, flow:review-running
-        Note over I: gate humano — fluxo para
+    loop a cada tick (60s)
+        C->>L: ledger.active() → VGAT-123
+        C->>P: get_work_item(VGAT-123)
+        Note over C: ledger_tick.tick()
+        alt estágio ATIVO (BRIEFING / PLANNING_SPECS)
+            C->>A: dispatch_stage(estado)
+            A-->>L: WORKFLOW_EXIT → motor avança estado
+        else estágio ESPERA (DEVELOP / REVIEW / QA)
+            P-->>C: sinal externo (PR aberto, review aprovado)
+            C->>L: ledger.advance(próximo_estado)
+        else estado TERMINAL (DONE / REFUSED)
+            C->>L: ledger.release()
+        end
     end
-    deactivate A
-
-    Note over I: flow:review-approved
-    C->>I: scan detecta review-approved
-    C->>A: merge squash (se auto_merge_on_approve)
-    C->>I: aplica flow:qa-waiting
 ```
 
----
+## Protocolo WORKFLOW_EXIT
 
-## Fluxos disponíveis
+O agente one-shot sinaliza o resultado publicando na última mensagem do turno:
 
-Os quatro templates da Fase 1 têm variações nessa sequência. Os diagramas de cada
-fluxo ficam em [`docs/diagramas/`](diagramas/README.md).
+```
+WORKFLOW_EXIT: {"exit_status": "done"}
+```
 
-| Template | Arquivo fonte Mermaid |
-|---|---|
-| Feature (Versão C) — oficial | [`resources/mermaid/fluxo-feature-versao-c.mmd`](../resources/mermaid/fluxo-feature-versao-c.mmd) |
-| Bug | [`resources/mermaid/fluxo-bug.mmd`](../resources/mermaid/fluxo-bug.mmd) |
-| Hotfix | [`resources/mermaid/fluxo-hotfix.mmd`](../resources/mermaid/fluxo-hotfix.mmd) |
-| Débito técnico | [`resources/mermaid/fluxo-debito-tecnico.mmd`](../resources/mermaid/fluxo-debito-tecnico.mmd) |
+O motor lê o arquivo `.jsonl` da sessão de trás para frente, extrai o último
+`WORKFLOW_EXIT` e mapeia o `exit_status` para o próximo estado conforme o YAML do
+workflow (quando o engine de workflow por nós tipados estiver ativo) ou a tabela
+`_NEXT_STATE` do `ledger_tick.py`.
+
+## Comparação com o modelo legado (label-driven)
+
+| Aspecto | Legado (até set/2026) | Atual (ledger-driven) |
+|---|---|---|
+| Estado canônico | Labels `flow:*` na issue | SQLite (`run_ledger.state`) |
+| Custo do tick | O(n): scan de todas as issues | O(1): 1 query SQLite |
+| Crons | 8 crons por estágio + 1 monolítico | 1 cron (`flow-single`) |
+| Comunicação cron↔agente | Labels na issue + `KIRO-FLOW-STATE` comment | `WORKFLOW_EXIT` no JSONL da sessão |
+| Estado de sessão | Lock files + worktree check | `session_key` (tab_id) no ledger |
+
+O código legado foi removido na PR #319 (out/2026). Labels `flow:*` continuam
+sendo aplicadas como espelho de visibilidade, mas não são mais a fonte de verdade.
