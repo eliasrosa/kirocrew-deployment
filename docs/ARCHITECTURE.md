@@ -223,6 +223,122 @@ crewflow:p1 / crewflow:p2 / crewflow:p3
 > `KIRO-FLOW-STATE` comment foi substituído pelo ledger SQLite. O código legado
 > foi removido na PR #319 (out/2026).
 
+## Engine de workflow por nós tipados (PR #316)
+
+Além do motor `ledger_tick` (que orquestra o single-flow linear), o projeto tem
+um **engine de workflow por nós tipados** baseado em YAML — inspirado no AWS Step
+Functions — para fluxos mais complexos. Vive em `backend/engine/`.
+
+```
+backend/
+├── engine/
+│   ├── tick.py       ← lógica do tick: _tick_open_session, _tick_gate, _tick_script…
+│   ├── db.py         ← CRUD SQLite: workflow_runs, workflow_node_states, workflow_gate_tokens
+│   └── loader.py     ← carrega e valida o YAML de definição do workflow
+├── migrations/
+│   ├── 0001.create-workflow-runs.sql
+│   ├── 0002.create-workflow-node-states.sql
+│   ├── 0003.add-error-kind.sql          ← error_kind: failed|timed_out|error
+│   └── 0004.create-workflow-gate-tokens.sql
+└── routes.py         ← GET/POST /gate/{token} e /gate/{token}/decide
+```
+
+### Tipos de nó (`NODE_TYPES`)
+
+| Tipo | Campos obrigatórios | O que faz |
+|---|---|---|
+| `trigger` | `triggers`, `next` | Ponto de entrada — cron ou manual |
+| `action/script` | `command`, `next` | Executa shell, captura `exit_code` + output JSON |
+| `action/open_session` | `instruction_path`, `on_complete` | Abre sessão Kiro Crew one-shot; aguarda `WORKFLOW_EXIT` |
+| `action/gate` | `prompt`, `on_complete` | Pausa o workflow e aguarda decisão humana via UI |
+| `end` | — | Terminal de sucesso (transiciona `workflow_runs.status → completed`) |
+| `fail` | — | Terminal de falha |
+
+### Schema YAML de workflow
+
+```yaml
+id: voomp-dev-flow
+tick_interval_secs: 60
+start: idle_wait
+
+nodes:
+  idle_wait:
+    type: trigger
+    triggers: ["cron:60", "manual"]
+    next: check_dispatchable
+
+  check_dispatchable:
+    type: action/script
+    command: "python3 scripts/check_dispatchable.py"
+    next:
+      on_complete:
+        - condition: "output.dispatchable == true"
+          goto: stage_briefing
+        default: idle_wait
+
+  stage_briefing:
+    type: action/open_session
+    instruction_path: "prompts/briefing.md"
+    context:
+      issue_key: "$nodes.check_dispatchable.output.issue_key"
+    on_complete:
+      - condition: "exit_status == 'done'"
+        goto: stage_planning_specs
+      default: workflow_fail
+
+  wait_planning_review:
+    type: action/gate
+    prompt: "Spec da issue {issue_key} pronta. Aprovar para avançar para dev?"
+    options: ["approve", "reject"]
+    on_complete:
+      - condition: "decision == 'approve'"
+        goto: wait_develop
+      default: workflow_fail
+
+  workflow_done:
+    type: end
+
+  workflow_fail:
+    type: fail
+```
+
+### Protocolo WORKFLOW_EXIT (nós open_session)
+
+Igual ao `ledger_tick`: o agente publica na última mensagem:
+
+```
+WORKFLOW_EXIT: {"exit_status": "done", "pr_url": "..."}
+```
+
+O motor lê o JSONL da sessão pelo `tab_id` gravado em `workflow_node_states.session_key`.
+
+### Protocolo de gate (nós action/gate)
+
+1. Motor cria `workflow_gate_tokens` com `token`, `run_id`, `node_id`, `prompt`, `options`, `expires_at`.
+2. UI chama `GET /api/apps/kirocrew-flow/gate/{token}` para renderizar o card de aprovação.
+3. Humano decide → `POST /api/apps/kirocrew-flow/gate/{token}/decide` com `{"decision": "approve"}`.
+4. Motor detecta a decisão no próximo tick e avança conforme `on_complete`.
+
+### Diferenciação de erros (`error_kind`)
+
+| Valor | Quando |
+|---|---|
+| `failed` | Agente declarou `exit_status=failed` no WORKFLOW_EXIT |
+| `timed_out` | Sessão encerrou sem declaração dentro do TTL |
+| `error` | Exception não tratada no tick |
+
+### Workflow da squad Gateway
+
+`workflows/voomp-dev-flow.yaml` — 24 nós mapeando todos os stages da esteira atual
+(briefing → planning → develop → review → QA → done) para o schema YAML.
+Os 6 scripts helper em `deployment/flow/scripts/` são os `command:` referenciados
+pelo YAML.
+
+> **Status:** o engine existe e está testado (22 testes em `test_backend_gate.py` +
+> testes de loader/tick). A integração com o `single_flow.py` ainda não está ativa —
+> o motor `ledger_tick` continua sendo o entrypoint do cron. O engine de nós tipados
+> entrará em uso quando o backend asyncio (`server.py`) for integrado ao cron.
+
 ## Workspace isolado por task
 
 Cada dispatch cria um **worktree efêmero** dedicado:

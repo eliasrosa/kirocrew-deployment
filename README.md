@@ -367,6 +367,27 @@ um `Dispatcher` fake.
 | **Fase 2** — editor read-only no dashboard | 🔲 Planejada |
 | **Fase 3** — canvas editável estilo n8n | 🔲 Futura |
 
+### Engine de workflow por nós tipados (PR #316)
+
+O projeto inclui um **engine de workflow declarativo** baseado em YAML — fluxos
+definidos como grafos de nós tipados, inspirado no AWS Step Functions.
+
+**Tipos de nó disponíveis:**
+
+| Tipo | O que faz |
+|---|---|
+| `trigger` | Ponto de entrada (cron ou manual) |
+| `action/script` | Executa shell; captura `exit_code` + output JSON |
+| `action/open_session` | Abre sessão Kiro Crew one-shot; aguarda `WORKFLOW_EXIT` |
+| `action/gate` | Pausa e aguarda decisão humana via UI (aprovação, reprovação) |
+| `end` | Terminal de sucesso |
+| `fail` | Terminal de falha |
+
+O workflow da squad Gateway (`workflows/voomp-dev-flow.yaml`) já mapeia os 24 nós
+do fluxo completo. A integração com o cron `flow-single` é o próximo passo.
+
+Ver [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#engine-de-workflow-por-nós-tipados-pr-316) para o schema YAML e o protocolo de gate.
+
 Ver [`docs/ROADMAP.md`](docs/ROADMAP.md) para detalhes.
 
 ## Smoke test do fluxo completo ✅
