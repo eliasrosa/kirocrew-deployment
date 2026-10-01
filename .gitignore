@@ -30,3 +30,4 @@ deployment/deployment.config.yaml
 .playwright-cli/
 .venv-playwright/
 /tmp/.kirocrew-flow-session-token
+.agents/
