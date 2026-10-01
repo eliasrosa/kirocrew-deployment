@@ -172,6 +172,16 @@ routing:
   - default: feature-flow
 ```
 
+> **Vários squads via `squads_dir` (#311):** no app instalado, em vez de apontar
+> `squad_config` para um único arquivo, use `squads_dir` no `deployment.config.yaml`
+> para um DIRETÓRIO de squads (ex: `~/.kiro/crew/crons/squads/`) — um YAML por
+> squad/projeto, todos carregados automaticamente. `squad_config` (arquivo único)
+> segue suportado como fallback. Detalhes e fluxo de onboarding em `config.example.yaml`.
+
+> **`issue_provider` por repo (#311):** cada entrada de `repos:` aceita
+> `issue_provider: github | jira` para sobrescrever o default da squad (override
+> por-repo > default da squad). Azure DevOps é SCM-only — nunca é issue_provider.
+
 > **Suporte a Azure DevOps (#266):** URLs `dev.azure.com/.../_git/<repo>` são detectadas
 > automaticamente — o motor instancia `AzureDevOpsTransport` para operações de SCM
 > (abertura de PR, verificação de CI, merge). Requer `AZURE_DEVOPS_PAT` em `.env`.

@@ -49,8 +49,9 @@ class WorkflowParams:
 class RepoConfig:
     """Configuração específica por repositório.
 
-    Permite sobrepor flags globais (auto_dispatch, auto_merge) para um repo
-    individual. Campos ``None`` significam "usar o valor global como fallback".
+    Permite sobrepor flags globais (auto_dispatch, auto_merge) e o
+    ``issue_provider`` para um repo individual. Campos ``None`` significam
+    "usar o valor global/raiz como fallback".
 
     Exemplo no squad YAML::
 
@@ -58,11 +59,13 @@ class RepoConfig:
           - name: org/api-gateway2
             auto_dispatch: true
             auto_merge: false   # merge manual neste repo
+            issue_provider: github  # override: este repo usa GitHub Issues
     """
 
     name: str
     auto_dispatch: bool | None = None  # None = fallback ao global
     auto_merge: bool | None = None     # None = fallback ao global
+    issue_provider: str | None = None  # None = herda o issue_provider raiz da squad
 
 
 # Além do bloco ``repos_config:`` (issue #245), os flags por repo também podem
@@ -192,6 +195,18 @@ class SquadConfig:
         Prioridade: config por repo > global armazenado.
         """
         return self.auto_merge_for(repo_url, self.global_auto_merge)
+
+    def issue_provider_for(self, repo: str) -> str:
+        """Retorna o issue_provider efetivo para um repo (issue #311).
+
+        Prioridade: config por repo > default da squad. Quando o repo tem um
+        override ``issue_provider`` na sua RepoConfig, ele vence; caso
+        contrário herda o ``issue_provider`` raiz da squad.
+        """
+        rc = self.get_repo_config(repo)
+        if rc is not None and rc.issue_provider is not None:
+            return rc.issue_provider
+        return self.issue_provider
 
 
 # ---------------------------------------------------------------------------
@@ -389,12 +404,18 @@ def _normalize_repos(
             auto_merge: bool | None = None
             if "auto_merge" in entry:
                 auto_merge = bool(entry["auto_merge"])
-            if auto_dispatch is not None or auto_merge is not None:
+            issue_provider = _parse_repo_issue_provider(entry, source)
+            if (
+                auto_dispatch is not None
+                or auto_merge is not None
+                or issue_provider is not None
+            ):
                 inline.append(
                     RepoConfig(
                         name=identifier,
                         auto_dispatch=auto_dispatch,
                         auto_merge=auto_merge,
+                        issue_provider=issue_provider,
                     )
                 )
         else:
@@ -458,8 +479,35 @@ def _parse_repo_configs(raw_list: list) -> list[RepoConfig]:
         auto_merge: bool | None = None
         if "auto_merge" in entry:
             auto_merge = bool(entry["auto_merge"])
-        configs.append(RepoConfig(name=name.strip(), auto_dispatch=auto_dispatch, auto_merge=auto_merge))
+        issue_provider = _parse_repo_issue_provider(entry, "repos_config")
+        configs.append(
+            RepoConfig(
+                name=name.strip(),
+                auto_dispatch=auto_dispatch,
+                auto_merge=auto_merge,
+                issue_provider=issue_provider,
+            )
+        )
     return configs
+
+
+def _parse_repo_issue_provider(entry: dict, source: str) -> str | None:
+    """Parseia e valida o ``issue_provider`` de uma entrada de repo (issue #311).
+
+    Retorna ``None`` quando ausente (o repo herda o provider raiz da squad).
+    Quando presente, valida que é ``'github'`` ou ``'jira'`` — mesmos providers
+    aceitos na raiz (Azure DevOps é apenas SCM, nunca issue provider) — e lança
+    SquadConfigError com mensagem pt-BR caso contrário.
+    """
+    if "issue_provider" not in entry:
+        return None
+    provider = entry["issue_provider"]
+    if not isinstance(provider, str) or provider not in ("github", "jira"):
+        raise SquadConfigError(
+            f"{source}: issue_provider por repo deve ser 'github' ou 'jira', "
+            f"não {provider!r}"
+        )
+    return provider
 
 
 def _require(raw: dict, key: str, source: str) -> None:
