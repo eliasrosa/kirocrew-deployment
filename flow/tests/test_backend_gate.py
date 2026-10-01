@@ -16,11 +16,9 @@ import sqlite3
 import sys
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
-
-import pytest
 
 _REPO_ROOT = str(Path(__file__).parent.parent.parent)
 if _REPO_ROOT not in sys.path:
@@ -35,7 +33,6 @@ from backend.routes import (  # noqa: E402
     handle_gate_decide,
     handle_gate_get,
 )
-
 
 # ---------------------------------------------------------------------------
 # DB in-memory: schema + fixture
@@ -81,7 +78,7 @@ def _insert_token(
 ) -> None:
     if options is None:
         options = ["approve", "reject"]
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expires_at = (now + expires_delta).isoformat()
     decided_at = now.isoformat() if decision else None
     conn.execute(
@@ -93,33 +90,6 @@ def _insert_token(
          decision, decided_at, expires_at, now.isoformat()),
     )
     conn.commit()
-
-
-@contextmanager
-def _patch_conn(conn: sqlite3.Connection):
-    """Substitui backend.engine.db._conn() pelo conn in-memory fornecido."""
-    # _gate_get e _gate_decide importam `db` localmente dentro da função.
-    # Patchamos o módulo inteiro com um stub que só expõe _conn e decide_gate_token.
-    stub = mock.MagicMock()
-    stub._conn.return_value.__enter__ = lambda s: conn
-    stub._conn.return_value.__exit__ = mock.MagicMock(return_value=False)
-
-    # decide_gate_token usa a mesma conn -- delegar ao SQL real
-    def _decide(token: str, decision: str) -> bool:
-        cur = conn.execute(
-            "UPDATE workflow_gate_tokens SET decision=?, decided_at=? "
-            "WHERE token=? AND decision IS NULL",
-            (decision, datetime.now(timezone.utc).isoformat(), token),
-        )
-        conn.commit()
-        return cur.rowcount > 0
-
-    stub.decide_gate_token.side_effect = _decide
-
-    with mock.patch.dict("sys.modules", {"backend.engine.db": stub}):
-        # Também patchamos o import dentro de _gate_get/_gate_decide
-        with mock.patch("backend.routes._gate_get.__globals__", create=True):
-            yield stub
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +146,7 @@ def _with_db(conn: sqlite3.Connection):
         cur = conn.execute(
             "UPDATE workflow_gate_tokens SET decision=?, decided_at=? "
             "WHERE token=? AND decision IS NULL",
-            (decision, datetime.now(timezone.utc).isoformat(), token),
+            (decision, datetime.now(UTC).isoformat(), token),
         )
         conn.commit()
         return cur.rowcount > 0
