@@ -405,22 +405,52 @@ def _do_dispatch_dev(task_key: str) -> dict:
     ctx_cron._secret = _secret  # type: ignore[attr-defined]
 
     # Busca o issue enriquecido via provider (Jira neste caso)
-    dispatcher = _mod._LedgerDispatcher(ctx_cron, cfg, _mod.provider_for(cfg.get("issue_provider", "github")))
-    issue_stub = {"number": task_key, "key": task_key}
-    enriched = dispatcher._enrich_issue(active.repo if hasattr(active, "repo") else "VGAT", issue_stub)
-    if enriched is None:
-        return {"ok": False, "error": "não foi possível enriquecer a issue (provider falhou)"}
+    _mod._load_provider_env(cfg.get("issue_provider", "github"))
+    provider = _mod.provider_for(cfg.get("issue_provider", "github"))
+    repo = "VGAT"
+    try:
+        item = provider.get_work_item(repo, task_key)
+    except Exception as exc:
+        logger.warning("_do_dispatch_dev: get_work_item falhou para %s: %s", task_key, exc)
+        return {"ok": False, "error": f"não foi possível enriquecer a issue: {exc}"}
 
-    # Despacha via _dispatch_spec_stage com o template develop_waiting
-    ok = _dispatch_spec_stage(
-        ctx_cron,
-        enriched.get("repo", "VGAT"),
-        enriched,
-        cfg,
-        stage_template="develop_waiting",
-        fallback="Desenvolva a task conforme a spec.",
-        slot_prefix="dev",
-    )
+    # Para Jira (VGAT-1009) o number precisa ser só o inteiro (1009)
+    # para que _try_acquire_dispatch_lock monte o lock correto
+    import re as _re2
+    _m = _re2.search(r"-(\d+)$", task_key)
+    issue_number: int | str = int(_m.group(1)) if _m else task_key
+
+    enriched = {
+        "number": issue_number,
+        "key": task_key,
+        "title": item.get("title", ""),
+        "repo": repo,
+        **item,
+    }
+
+    # Despacha via _dispatch_prompt (monta dev_root/worktree_path/base_branch/vault_step)
+    # + _post_agent_session para abrir a sessão de dev
+    _dispatch_prompt = _mod._dispatch_prompt
+    _post_agent_session = _mod._post_agent_session
+    _try_acquire_dispatch_lock = _mod._try_acquire_dispatch_lock
+    _is_issue_closed = _mod._is_issue_closed
+
+    repo = enriched.get("repo", "VGAT")
+
+    if _is_issue_closed(repo, enriched["number"]):
+        return {"ok": False, "error": f"issue {task_key} está CLOSED"}
+
+    acquired, _lpath = _try_acquire_dispatch_lock(repo, enriched["number"])
+    if not acquired:
+        return {"ok": False, "error": "lock já existe — dispatch em andamento?"}
+
+    try:
+        message = _dispatch_prompt(repo, enriched, cfg)
+    except Exception as exc:
+        return {"ok": False, "error": f"erro ao renderizar template: {exc}"}
+
+    slot = f"dev-VGAT-{task_key.split('-')[-1]}"
+    ok = _post_agent_session(ctx_cron, message, slot=slot, cfg=cfg)
 
     if not ok:
         return {"ok": False, "error": "dispatch abortado (issue closed, lock existente ou template inválido)"}
