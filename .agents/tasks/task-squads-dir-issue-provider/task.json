@@ -1,7 +1,0 @@
-{
-  "task_id": "task-squads-dir-issue-provider",
-  "task_description": "Issue #311 (eliasrosa/kirocrew-flow): support squads_dir (a directory of squad yamls) in deployment.config with squad_config kept as fallback; document Azure DevOps as SCM-only (issue providers are github|jira) in squads/example.yaml; document the dev onboarding flow. Plus the issue-comment requirement: per-repo issue_provider override (RepoConfig.issue_provider, _parse_squad parsing, SquadConfig.issue_provider_for(repo), and engine wiring in _single_flow_tick/_LedgerStateReader/_LedgerDispatcher to use squad.issue_provider_for(repo)).",
-  "status": "in_progress",
-  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003"],
-  "blocked_reason": null
-}
