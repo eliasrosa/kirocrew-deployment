@@ -103,6 +103,7 @@ def register_routes(ctx: object) -> list:
         AppRoute("POST", "/dispatch", handle_dispatch),
         AppRoute("POST", "/claim", handle_claim),
         AppRoute("POST", "/advance", handle_advance),
+        AppRoute("POST", "/dispatch-dev", handle_dispatch_dev),
         AppRoute("POST", "/qa-fail", handle_qa_fail),
         AppRoute("POST", "/qa-approve", handle_qa_approve),
         AppRoute("POST", "/gate/{token}/decide", handle_gate_decide),
@@ -309,6 +310,130 @@ def _do_advance(task_key: str) -> dict:
         "dispatched": dispatched,
         "note": "tick disparado" if dispatched else "estágio avançado (sem dispatch automático neste estágio)",
     }
+
+
+async def handle_dispatch_dev(request: web.Request, ctx: object = None) -> web.Response:
+    """Força o dispatch de sessão de desenvolvimento para a task ativa no ledger.
+
+    Permite testar o fluxo de dev sem PR externo: bypassa a espera por evidência
+    de branch/PR e dispara a sessão diretamente a partir do develop-waiting.
+
+    Body JSON: {"task_key": "VGAT-1009"}
+    Retorna {"ok": true, "dispatched": true, "slot": "..."}.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "body JSON inválido"}, status=400)
+
+    task_key = (body.get("task_key") or "").strip()
+    if not task_key:
+        return web.json_response(
+            {"ok": False, "error": "campo 'task_key' é obrigatório"},
+            status=400,
+        )
+
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _do_dispatch_dev, task_key)
+        return web.json_response(result)
+    except Exception as exc:
+        logger.exception("handle_dispatch_dev: erro inesperado: %s", exc)
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+def _do_dispatch_dev(task_key: str) -> dict:
+    """Força dispatch de sessão de dev para a task ativa, sem esperar PR externo."""
+    app_root = Path(__file__).parent.parent
+    _installed_root = os.path.expanduser("~/.kiro/crew/apps/kirocrew-flow")
+    for _p in (_installed_root, str(app_root)):
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+
+    import importlib.util
+
+    from flow.domain.run_ledger import SqliteRunLedger
+    from flow.engine.ledger_tick import State
+
+    # Carrega deployment.py instalado
+    _crons_dir = os.path.expanduser("~/.kiro/crew/crons")
+    _deploy_py = os.path.join(_crons_dir, "deployment.py")
+    _spec = importlib.util.spec_from_file_location("_kirocrew_flow_deploy_devdisp", _deploy_py)
+    _mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
+    _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
+
+    _load_config = _mod._load_config
+    _resolve_squad_id = _mod._resolve_squad_id
+    _dispatch_spec_stage = _mod._dispatch_spec_stage
+    _enrich_issue = None  # resolvido abaixo via dispatcher
+
+    cfg = _load_config()
+    squad_id = _resolve_squad_id(cfg)
+
+    ledger = SqliteRunLedger(squad_id)
+    try:
+        active = ledger.active()
+        if active is None or active.task_key != task_key:
+            return {"ok": False, "error": f"task {task_key!r} não está ativa no ledger"}
+        current_stage = active.current_stage
+    finally:
+        ledger.close()
+
+    # Monta o ctx sintético com port e secret corretos
+    import glob as _glob, re as _re
+    try:
+        from backend.ctx import BackendCronCtx
+    except ImportError:
+        import importlib.util as _ilu2
+        _cpath = Path(__file__).parent / "ctx.py"
+        _cs = _ilu2.spec_from_file_location("_kf_ctx2", str(_cpath))
+        _cm = _ilu2.module_from_spec(_cs)  # type: ignore[arg-type]
+        _cs.loader.exec_module(_cm)  # type: ignore[union-attr]
+        BackendCronCtx = _cm.BackendCronCtx
+
+    port = 5476
+    _socks = _glob.glob(os.path.expanduser("~/.kiro/crew/dashboard-*.sock"))
+    if _socks:
+        _m = _re.search(r"dashboard-(\d+)\.sock", _socks[0])
+        if _m:
+            port = int(_m.group(1))
+    _secret_f = os.path.expanduser(f"~/.kiro/crew/run/gateway-{port}.secret")
+    _secret = open(_secret_f).read().strip() if os.path.exists(_secret_f) else ""
+
+    ctx_cron = BackendCronCtx(message=task_key, gateway_port=port)
+    ctx_cron._port = port    # type: ignore[attr-defined]
+    ctx_cron._secret = _secret  # type: ignore[attr-defined]
+
+    # Busca o issue enriquecido via provider (Jira neste caso)
+    dispatcher = _mod._LedgerDispatcher(ctx_cron, cfg, _mod.provider_for(cfg.get("issue_provider", "github")))
+    issue_stub = {"number": task_key, "key": task_key}
+    enriched = dispatcher._enrich_issue(active.repo if hasattr(active, "repo") else "VGAT", issue_stub)
+    if enriched is None:
+        return {"ok": False, "error": "não foi possível enriquecer a issue (provider falhou)"}
+
+    # Despacha via _dispatch_spec_stage com o template develop_waiting
+    ok = _dispatch_spec_stage(
+        ctx_cron,
+        enriched.get("repo", "VGAT"),
+        enriched,
+        cfg,
+        stage_template="develop_waiting",
+        fallback="Desenvolva a task conforme a spec.",
+        slot_prefix="dev",
+    )
+
+    if not ok:
+        return {"ok": False, "error": "dispatch abortado (issue closed, lock existente ou template inválido)"}
+
+    # Avança o ledger para develop-running
+    ledger2 = SqliteRunLedger(squad_id)
+    try:
+        slot = f"dev-VGAT-{task_key.split('-')[-1]}"
+        ledger2.advance(task_key, "flow:develop-waiting", stage_session=slot)
+    finally:
+        ledger2.close()
+
+    return {"ok": True, "dispatched": True, "slot": slot, "from": current_stage}
 
 
 def _extract_issue_number(raw: dict) -> int | str:
