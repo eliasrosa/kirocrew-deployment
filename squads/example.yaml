@@ -12,7 +12,7 @@ issue_provider: jira
 
 # Jira: chave do projeto
 # GitHub: owner/repo
-project: VGAT
+project: YOUR-PROJECT
 
 # Repositórios conhecidos pela squad.
 # Dupla função:
@@ -21,8 +21,8 @@ project: VGAT
 #      Typo falha alto: [api-gatewy2] não casa → recusa em vez de despachar errado
 # Forma simples (string) — herda todos os flags globais:
 #   repos:
-#     - org/api-gateway2
-#     - org/api-subscription2
+#     - org/api-gateway
+#     - org/api-backend
 #
 # Forma inline com flags por repo (issue #264) — cada entrada é um mapa com
 # url (obrigatório) e, opcionalmente, auto_dispatch / auto_merge. Omitir um
@@ -41,15 +41,15 @@ project: VGAT
 # Lembrete: Azure DevOps é SCM-only — nunca aceita issue_provider.
 # Exemplo (default da squad = jira):
 #   repos:
-#     - url: https://github.com/eliasrosa/kirocrew-flow
+#     - url: https://github.com/your-org/your-repo
 #       issue_provider: github   # override: este repo usa GitHub Issues
-#     - url: https://dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/_git/api-subscription2
+#     - url: https://dev.azure.com/your-org/your-project/_git/your-repo
 #       # sem issue_provider → herda jira do raiz (Azure DevOps entra só como SCM)
 repos:
-  - url: https://github.com/org/api-gateway2
+  - url: https://github.com/your-org/api-gateway
     auto_dispatch: true
     auto_merge: false   # merge manual em PRD, mesmo com auto_merge_on_approve global
-  - url: https://dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/_git/api-subscription2
+  - url: https://dev.azure.com/your-org/your-project/_git/api-backend
     auto_dispatch: true
     auto_merge: true
 
@@ -81,10 +81,10 @@ workflow_params:
 # herdar o valor global. Precedência: se o mesmo repo aparecer aqui E inline
 # em `repos:`, a entrada inline de `repos:` vence.
 # repos_config:
-#   - name: org/api-gateway2
+#   - name: org/api-gateway
 #     auto_dispatch: true
 #     auto_merge: false   # merge manual neste repo, mesmo com auto_merge_on_approve: true global
-#   - name: org/api-subscription2
+#   - name: org/api-backend
 #     auto_dispatch: true
 #     auto_merge: true
 

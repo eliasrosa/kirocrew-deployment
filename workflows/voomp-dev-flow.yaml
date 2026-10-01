@@ -37,7 +37,7 @@ nodes:
   check_dispatchable:
     type: action/script
     # Lê a task ativa do RunLedger + estado real da issue (1 query + 1 chamada)
-    # Retorna JSON: {"dispatchable": bool, "state": "flow:...", "issue_key": "VGAT-XXX",
+    # Retorna JSON: {"dispatchable": bool, "state": "flow:...", "issue_key": "ISSUE-XXX",
     #                "repo": "...", "blocked": bool, "conflict": bool}
     command: "python3 ~/.kiro/crew/crons/deployment/flow/scripts/check_dispatchable.py"
     capture_output: true
