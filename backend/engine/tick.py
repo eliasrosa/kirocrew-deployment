@@ -313,7 +313,7 @@ def _dispatch_open_session(
         "X-Internal-Secret": secret,
     }
 
-    # Step 1: criar o slot
+    # Step 1: criar o slot e capturar o tab_id da resposta
     slot_body = json.dumps({"name": slot, "agent": agent, "memory_mode": "temporary"}).encode()
     slot_req = _urllib.Request(
         f"{base_url}/api/chat/slots",
@@ -321,13 +321,26 @@ def _dispatch_open_session(
         headers=headers,
         method="POST",
     )
+    tab_id: str | None = None
     try:
         with _urllib.urlopen(slot_req, timeout=10) as resp:
-            resp.read(1)
+            slot_resp = json.loads(resp.read())
+            tab_id = slot_resp.get("tab_id") or slot_resp.get("key")
     except _urllib.HTTPError as exc:
         if exc.code != 409:
             return None  # falha real
-        # 409 = slot já existe (tick anterior criou mas não gravou o session_key)
+        # 409 = slot já existe; tenta recuperar o tab_id via GET
+        try:
+            get_req = _urllib.Request(
+                f"{base_url}/api/chat/slots/{slot}",
+                headers={k: v for k, v in headers.items() if k != "Content-Type"},
+                method="GET",
+            )
+            with _urllib.urlopen(get_req, timeout=5) as resp:
+                slot_data = json.loads(resp.read())
+                tab_id = slot_data.get("tab_id") or slot_data.get("key")
+        except Exception:
+            pass
     except Exception:
         return None
 
@@ -347,11 +360,11 @@ def _dispatch_open_session(
         _delete_slot(base_url, headers, slot)
         return None
 
-    # O session_key que o gateway cria para esta sessão é derivado do slot name
-    # Padrão: "dashboard_chat-{slot_name}-{timestamp}" -- não temos o timestamp aqui.
-    # Usamos o slot como chave de lookup: ao verificar fechamento, procuramos o
-    # arquivo JSONL cujo metadata.slot == slot.
-    return slot  # armazena o slot como chave de busca no filesystem
+    # O gateway nomeia os JSONLs como dashboard_chat-{N}-{ts}.jsonl, sem incluir
+    # o slot name. O tab_id que vem na resposta do POST /slots é o único campo
+    # que aparece no metadata do JSONL — _session_is_closed busca por ele.
+    # Fallback: se tab_id não veio (gateway antigo), usa o slot como chave de busca.
+    return f"tab:{tab_id}" if tab_id else slot
 
 
 def _render_instruction(
@@ -551,37 +564,34 @@ def _resolve_path(path: str, context: dict[str, Any]) -> Any:
 def _session_is_closed(session_key: str) -> tuple[bool, float | None]:
     """Verifica se a sessão encerrou lendo o header JSONL.
 
-    Aceita dois formatos de session_key:
-      1. Nome exato do arquivo JSONL (ex: "dashboard_chat-42-1790808147")
-      2. Slot name (ex: "engine-abc12345-stage_briefing") -- faz glob para achar o JSONL
+    Formatos de session_key aceitos:
+      - "tab:{tab_id}" (ex: "tab:8956f33a7823") -- busca pelo campo tab_id no metadata
+      - "dashboard_chat-42-1790808147" -- arquivo exato (legado)
+
+    O gateway nomeia os JSONLs como dashboard_chat-{N}-{ts}.jsonl; o tab_id
+    é o único identificador estável que aparece no metadata.
     """
-    # Tenta arquivo exato primeiro
+    if session_key.startswith("tab:"):
+        return _find_by_tab_id(session_key[4:])
+
+    # Arquivo exato (legado / fallback)
     jsonl = SESSIONS_DIR / f"{session_key}.jsonl"
     if not jsonl.exists():
-        # Busca por slot: o gateway nomeia o arquivo com base no slot name
-        matches = list(SESSIONS_DIR.glob(f"*{session_key}*.jsonl"))
-        if not matches:
-            return False, None
-        jsonl = matches[0]
+        return False, None
 
-    try:
-        first = jsonl.open().readline()
-        meta = json.loads(first)
-    except (json.JSONDecodeError, OSError):
-        return False, None
-    if meta.get("_type") != "metadata":
-        return False, None
-    return meta.get("closed", False), meta.get("closed_at")
+    return _read_closed_from_jsonl(jsonl)
 
 
 def _extract_exit_status(session_key: str) -> tuple[str, dict[str, Any]]:
     """Lê WORKFLOW_EXIT da última mensagem do agente no JSONL da sessão."""
-    jsonl = SESSIONS_DIR / f"{session_key}.jsonl"
-    if not jsonl.exists():
-        matches = list(SESSIONS_DIR.glob(f"*{session_key}*.jsonl"))
-        if not matches:
+    if session_key.startswith("tab:"):
+        _, jsonl = _find_by_tab_id(session_key[4:], return_path=True)  # type: ignore[call-overload]
+        if jsonl is None:
             return "failed", {}
-        jsonl = matches[0]
+    else:
+        jsonl = SESSIONS_DIR / f"{session_key}.jsonl"
+        if not jsonl.exists():
+            return "failed", {}
 
     try:
         lines = jsonl.read_text().splitlines()
@@ -602,6 +612,50 @@ def _extract_exit_status(session_key: str) -> tuple[str, dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
     return "failed", {}
+
+
+def _find_by_tab_id(
+    tab_id: str,
+    return_path: bool = False,
+) -> tuple[bool, float | None] | tuple[None, Path | None]:
+    """Busca um JSONL pelo tab_id no metadata.
+
+    Quando return_path=False: retorna (closed, closed_at) para _session_is_closed.
+    Quando return_path=True:  retorna (None, Path) para _extract_exit_status.
+
+    Varre os JSONLs mais recentes primeiro (ordem de modificação decrescente).
+    Sessões temporárias do engine têm poucos dias -- limita o scan a arquivos
+    recentes para evitar varrer centenas de histórico antigo.
+    """
+    # Varre mais recentes primeiro; limita a 200 arquivos para não travar
+    jsonl_files = sorted(SESSIONS_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for jsonl in jsonl_files[:200]:
+        try:
+            first = jsonl.open().readline()
+            meta = json.loads(first)
+        except (json.JSONDecodeError, OSError):
+            continue
+        if meta.get("tab_id") == tab_id:
+            if return_path:
+                return None, jsonl
+            closed = meta.get("closed", False)
+            closed_at = meta.get("closed_at")
+            return closed, closed_at
+
+    if return_path:
+        return None, None
+    return False, None
+
+
+def _read_closed_from_jsonl(jsonl: Path) -> tuple[bool, float | None]:
+    try:
+        first = jsonl.open().readline()
+        meta = json.loads(first)
+    except (json.JSONDecodeError, OSError):
+        return False, None
+    if meta.get("_type") != "metadata":
+        return False, None
+    return meta.get("closed", False), meta.get("closed_at")
 
 
 # ── Helpers de tempo ──────────────────────────────────────────────────────
