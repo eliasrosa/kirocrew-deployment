@@ -203,6 +203,7 @@ class TestGateGet:
         _insert_token(conn, token, options=["yes", "no", "skip"])
         with _with_db(conn):
             result = _gate_get(token)
+        assert result is not None
         assert result["options"] == ["yes", "no", "skip"]
         assert "options_json" not in result
 
