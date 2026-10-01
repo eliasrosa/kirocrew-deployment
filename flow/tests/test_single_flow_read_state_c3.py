@@ -236,3 +236,85 @@ def test_single_flow_tick_develop_usa_issue_has_active_session() -> None:
     assert captured["stage_running"] is True   # _issue_has_active_session retornou True
     m_active.assert_called_once()              # foi chamado para develop-stage
     m_slot.assert_not_called()                 # _spec_slot_is_running NÃO chamado
+
+
+# ---------------------------------------------------------------------------
+# issue #311 — provider POR REPO em _LedgerStateReader / _LedgerDispatcher
+# ---------------------------------------------------------------------------
+
+def _squad_root_jira_override_github(repo_id: str):
+    """SquadConfig com issue_provider raiz=jira e override github para repo_id."""
+    from flow.config.squad import RepoConfig, SquadConfig
+
+    return SquadConfig(
+        id="voomp-squad-gw",
+        name="Voomp Squad",
+        issue_provider="jira",
+        projects=[repo_id, "kdop/proj/gw2"],
+        repos=frozenset([repo_id, "kdop/proj/gw2"]),
+        workflow_template="versao-c",
+        repo_configs=[RepoConfig(name=repo_id, issue_provider="github")],
+    )
+
+
+def test_read_state_resolve_provider_por_repo() -> None:
+    """read_state usa squad.issue_provider_for(repo): github p/ repo override,
+    jira p/ repo sem override. Provamos observando qual provider é passado a
+    _collect_implicit_state via provider_for."""
+    squad = _squad_root_jira_override_github(_REPO)
+    default_provider = mock.MagicMock(name="default")
+    gh_provider = mock.MagicMock(name="github")
+    jira_provider = mock.MagicMock(name="jira")
+
+    def _provider_for(name: str):
+        return gh_provider if name == "github" else jira_provider
+
+    reader = _LedgerStateReader(default_provider, squad=squad)
+
+    with (
+        mock.patch(f"{_MOD}.provider_for", side_effect=_provider_for),
+        mock.patch(
+            f"{_MOD}._collect_implicit_state", return_value=ImplicitState.TODO
+        ) as m_collect,
+    ):
+        # repo COM override → provider github
+        reader.read_state(_REPO, _KEY)
+        assert m_collect.call_args.args[1] is gh_provider
+        # repo SEM override → herda jira do raiz
+        reader.read_state("kdop/proj/gw2", "kdop/proj/gw2#7")
+        assert m_collect.call_args.args[1] is jira_provider
+
+
+def test_read_state_sem_squad_usa_provider_default() -> None:
+    """Sem squad, read_state usa o provider default (comportamento anterior)."""
+    default_provider = mock.MagicMock(name="default")
+    reader = _LedgerStateReader(default_provider)  # squad=None
+    with mock.patch(
+        f"{_MOD}._collect_implicit_state", return_value=ImplicitState.TODO
+    ) as m_collect:
+        reader.read_state(_REPO, _KEY)
+    assert m_collect.call_args.args[1] is default_provider
+
+
+def test_dispatcher_enrich_resolve_provider_por_repo() -> None:
+    """_LedgerDispatcher._enrich_issue usa o provider por repo (github override)."""
+    from deployment.deployment import _LedgerDispatcher
+
+    squad = _squad_root_jira_override_github(_REPO)
+    default_provider = mock.MagicMock(name="default")
+    gh_provider = mock.MagicMock(name="github")
+    gh_provider.get_work_item.return_value = {"title": "T", "number": 42}
+    jira_provider = mock.MagicMock(name="jira")
+
+    def _provider_for(name: str):
+        return gh_provider if name == "github" else jira_provider
+
+    dispatcher = _LedgerDispatcher(
+        mock.MagicMock(), {"issue_provider": "jira"}, default_provider, squad=squad
+    )
+    with mock.patch(f"{_MOD}.provider_for", side_effect=_provider_for):
+        enriched = dispatcher._enrich_issue(_REPO, {"number": 42, "key": _KEY})
+    # provider github (override do repo) foi usado para buscar o work_item
+    gh_provider.get_work_item.assert_called_once()
+    jira_provider.get_work_item.assert_not_called()
+    assert enriched is not None and enriched["title"] == "T"

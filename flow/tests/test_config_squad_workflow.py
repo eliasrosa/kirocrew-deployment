@@ -1167,3 +1167,154 @@ repos:
         finally:
             import os
             os.unlink(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# issue_provider por repo (override por-repo) — issue #311
+# ---------------------------------------------------------------------------
+
+class TestRepoIssueProvider:
+    """Testes para o override de issue_provider por repo e issue_provider_for."""
+
+    _GH = "https://github.com/eliasrosa/kirocrew-flow"
+    _GH_ID = "eliasrosa/kirocrew-flow"
+    _AZ = (
+        "https://dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/_git/"
+        "voomp-creators-api-gateway2"
+    )
+
+    def test_inline_repo_parseia_issue_provider(self) -> None:
+        """`repos:` inline com issue_provider vira RepoConfig.issue_provider."""
+        raw = {
+            "id": "voomp-squad-gw",
+            "issue_provider": "jira",
+            "repos": [
+                {"url": self._GH, "issue_provider": "github"},
+                {"url": self._AZ},  # herda jira do raiz
+            ],
+        }
+        sc = _parse_squad(raw)
+        rc_gh = sc.get_repo_config(self._GH)
+        assert rc_gh is not None
+        assert rc_gh.issue_provider == "github"
+        rc_az = sc.get_repo_config(self._AZ)
+        # AZ não tem override → não gerou RepoConfig inline
+        assert rc_az is None
+
+    def test_issue_provider_for_override_e_default(self) -> None:
+        """issue_provider_for: override no repo > default da squad."""
+        raw = {
+            "id": "voomp-squad-gw",
+            "issue_provider": "jira",
+            "repos": [
+                {"url": self._GH, "issue_provider": "github"},
+                {"url": self._AZ},
+            ],
+        }
+        sc = _parse_squad(raw)
+        # repo com override → github
+        assert sc.issue_provider_for(self._GH) == "github"
+        assert sc.issue_provider_for(self._GH_ID) == "github"
+        # repo sem override → herda jira do raiz
+        assert sc.issue_provider_for(self._AZ) == "jira"
+        # repo totalmente desconhecido → default da squad
+        assert sc.issue_provider_for("org/desconhecido") == "jira"
+
+    def test_issue_provider_invalido_inline_lanca_erro(self) -> None:
+        """issue_provider inválido em `repos:` inline levanta SquadConfigError."""
+        raw = {
+            "id": "x",
+            "issue_provider": "jira",
+            "repos": [{"url": self._GH, "issue_provider": "gitlab"}],
+        }
+        with pytest.raises(SquadConfigError, match=r"github.*jira"):
+            _parse_squad(raw)
+
+    def test_issue_provider_invalido_azure_lanca_erro(self) -> None:
+        """Azure é apenas SCM — nunca issue_provider (issue #311)."""
+        raw = {
+            "id": "x",
+            "issue_provider": "jira",
+            "repos": [{"url": self._GH, "issue_provider": "azure"}],
+        }
+        with pytest.raises(SquadConfigError, match=r"github.*jira"):
+            _parse_squad(raw)
+
+    def test_repos_config_legacy_parseia_issue_provider(self) -> None:
+        """A forma legada repos_config: também parseia issue_provider."""
+        raw = {
+            "id": "voomp-squad-gw",
+            "issue_provider": "jira",
+            "repos": [self._GH_ID, "kdop/proj/gw2"],
+            "repos_config": [
+                {"name": self._GH_ID, "issue_provider": "github"},
+                {"name": "kdop/proj/gw2"},  # sem override
+            ],
+        }
+        sc = _parse_squad(raw)
+        rc = sc.get_repo_config(self._GH_ID)
+        assert rc is not None
+        assert rc.issue_provider == "github"
+        assert sc.issue_provider_for(self._GH_ID) == "github"
+        assert sc.issue_provider_for("kdop/proj/gw2") == "jira"
+
+    def test_repos_config_legacy_issue_provider_invalido_lanca_erro(self) -> None:
+        """repos_config: com issue_provider inválido levanta SquadConfigError."""
+        raw = {
+            "id": "x",
+            "issue_provider": "jira",
+            "repos": ["org/repo"],
+            "repos_config": [{"name": "org/repo", "issue_provider": "gitlab"}],
+        }
+        with pytest.raises(SquadConfigError, match=r"github.*jira"):
+            _parse_squad(raw)
+
+    def test_issue_provider_via_mini_yaml_fallback(self, _no_pyyaml: None) -> None:
+        """O fallback _mini_yaml (sem PyYAML) parseia issue_provider por repo."""
+        yaml_content = (
+            "id: voomp-squad-gw\n"
+            "issue_provider: jira\n"
+            "repos:\n"
+            "  - url: https://github.com/eliasrosa/kirocrew-flow\n"
+            "    issue_provider: github\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False
+        ) as f:
+            f.write(yaml_content)
+            tmp_path = f.name
+        try:
+            # Prova que o import de yaml realmente falha (fallback ativo).
+            with pytest.raises(ImportError):
+                import yaml  # type: ignore[import-untyped]  # noqa: F401
+            sc = load_squad(tmp_path)
+            assert sc.issue_provider == "jira"
+            assert sc.issue_provider_for(self._GH_ID) == "github"
+            assert sc.issue_provider_for("org/outro") == "jira"
+        finally:
+            import os
+            os.unlink(tmp_path)
+
+    def test_mini_yaml_direto_parseia_issue_provider(self) -> None:
+        """Chama _mini_yaml diretamente e valida o campo issue_provider por repo."""
+        yaml_content = (
+            "id: voomp-squad-gw\n"
+            "issue_provider: jira\n"
+            "repos:\n"
+            "  - url: https://github.com/eliasrosa/kirocrew-flow\n"
+            "    issue_provider: github\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False
+        ) as f:
+            f.write(yaml_content)
+            tmp_path = f.name
+        try:
+            raw = _mini_yaml(Path(tmp_path))
+            assert raw["issue_provider"] == "jira"
+            assert raw["repos"][0]["issue_provider"] == "github"
+            sc = _parse_squad(raw)
+            assert sc.issue_provider_for(self._GH_ID) == "github"
+        finally:
+            import os
+            os.unlink(tmp_path)

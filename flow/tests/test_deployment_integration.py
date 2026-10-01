@@ -22,7 +22,12 @@ import tempfile  # noqa: E402
 
 import pytest  # noqa: E402
 
-from deployment.deployment import _load_config, _scan_result_to_issue, run  # noqa: E402
+from deployment.deployment import (  # noqa: E402
+    _load_config,
+    _load_single_flow_squad,
+    _scan_result_to_issue,
+    run,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -232,6 +237,112 @@ class TestRunIntegration:
             run(ctx)
 
         ctx.notify.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# issue #311 — squads_dir no deployment config (via _load_single_flow_squad)
+# ---------------------------------------------------------------------------
+
+class TestSquadsDirLoader:
+    """squads_dir (diretório) > squad_config (arquivo) > inline."""
+
+    _SQUAD_YAML = (
+        "id: voomp-squad-gw\n"
+        "name: Voomp Squad GW\n"
+        "issue_provider: jira\n"
+        "repos:\n"
+        "  - url: https://github.com/eliasrosa/kirocrew-flow\n"
+        "    issue_provider: github\n"
+    )
+
+    def _write_squad(self, tmp_path: Path, filename: str, text: str) -> None:
+        (tmp_path / filename).write_text(text)
+
+    def test_squads_dir_carrega_squad(self, tmp_path: Path) -> None:
+        """squads_dir com um squad yaml carrega essa squad."""
+        self._write_squad(tmp_path, "voomp.yaml", self._SQUAD_YAML)
+        cfg = {
+            "repos": ["eliasrosa/kirocrew-flow"],
+            "issue_provider": "github",
+            "squads_dir": str(tmp_path),
+        }
+        squad = _load_single_flow_squad(cfg)
+        assert squad is not None
+        assert squad.id == "voomp-squad-gw"
+        assert squad.issue_provider == "jira"
+        # o override por repo veio junto
+        assert squad.issue_provider_for("eliasrosa/kirocrew-flow") == "github"
+
+    def test_squads_dir_seleciona_por_repos(self, tmp_path: Path) -> None:
+        """Com vários squads, seleciona o que casa com cfg['repos']."""
+        self._write_squad(
+            tmp_path,
+            "outra.yaml",
+            "id: outra-squad\nissue_provider: github\nrepos:\n  - org/nada-a-ver\n",
+        )
+        self._write_squad(tmp_path, "voomp.yaml", self._SQUAD_YAML)
+        cfg = {
+            "repos": ["eliasrosa/kirocrew-flow"],
+            "issue_provider": "github",
+            "squads_dir": str(tmp_path),
+        }
+        squad = _load_single_flow_squad(cfg)
+        assert squad is not None
+        assert squad.id == "voomp-squad-gw"
+
+    def test_squads_dir_inexistente_levanta_runtimeerror(self) -> None:
+        """squads_dir apontando para diretório inexistente falha (RuntimeError)."""
+        cfg = {
+            "repos": ["owner/repo"],
+            "issue_provider": "github",
+            "squads_dir": "/tmp/nao-existe-squads-dir-xyz",
+        }
+        with pytest.raises(RuntimeError, match="squads_dir"):
+            _load_single_flow_squad(cfg)
+
+    def test_squad_config_continua_funcionando(self, tmp_path: Path) -> None:
+        """squad_config (arquivo único) segue funcionando como fallback."""
+        squad_file = tmp_path / "single.yaml"
+        squad_file.write_text(self._SQUAD_YAML)
+        cfg = {
+            "repos": ["eliasrosa/kirocrew-flow"],
+            "issue_provider": "github",
+            "squad_config": str(squad_file),
+        }
+        squad = _load_single_flow_squad(cfg)
+        assert squad is not None
+        assert squad.id == "voomp-squad-gw"
+
+    def test_squads_dir_precede_squad_config(self, tmp_path: Path) -> None:
+        """squads_dir preferido sobre squad_config quando ambos setados."""
+        dir_path = tmp_path / "squads"
+        dir_path.mkdir()
+        self._write_squad(dir_path, "voomp.yaml", self._SQUAD_YAML)
+        other = tmp_path / "single.yaml"
+        other.write_text(
+            "id: fallback-squad\nissue_provider: github\nrepos:\n  - owner/repo\n"
+        )
+        cfg = {
+            "repos": ["eliasrosa/kirocrew-flow"],
+            "issue_provider": "github",
+            "squads_dir": str(dir_path),
+            "squad_config": str(other),
+        }
+        squad = _load_single_flow_squad(cfg)
+        assert squad is not None
+        assert squad.id == "voomp-squad-gw"  # veio do squads_dir, não do squad_config
+
+    def test_sem_squad_config_nem_squads_dir_constroi_inline(self) -> None:
+        """Sem squads_dir/squad_config, constrói inline a partir da config."""
+        cfg = {
+            "repos": ["owner/repo"],
+            "issue_provider": "github",
+            "squad_id": "inline-squad",
+        }
+        squad = _load_single_flow_squad(cfg)
+        assert squad is not None
+        assert squad.id == "inline-squad"
+        assert squad.issue_provider == "github"
 
 
 # ---------------------------------------------------------------------------
