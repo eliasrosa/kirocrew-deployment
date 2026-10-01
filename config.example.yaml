@@ -47,7 +47,7 @@ auto_dispatch: false
 # O diretório de squads é do app instalado, e não versionado dentro do repo da squad.
 
 # Identificador da squad (usado no nome do cache SQLite)
-# squad_id: cogna-gateway
+# squad_id: my-squad
 
 # Parâmetros do template (configuráveis por squad)
 workflow_params:
@@ -80,7 +80,7 @@ one_per_repo: true       # no máx 1 sessão ativa por repo
 #   Convenções desta squad:
 #   - Use sempre `make test` em vez de `pytest` direto.
 #   - Commits em pt-BR com prefixo convencional.
-#   - Steering em /home/elias/dev/cogna/.kiro/steering/ tem regras adicionais.
+#   - Steering em ~/.kiro/steering/ tem regras adicionais.
 
 # Modo dry-run: inspeciona o que o motor faria sem executar nenhuma ação.
 # Útil para validar a configuração da squad antes de ativar o dispatch.
