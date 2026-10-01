@@ -8,9 +8,9 @@ Uso típico
 
     config = ScmRepoConfig(
         scm="azure_devops",
-        azure_org="https://dev.azure.com/kdop",
-        azure_project="PlataformaCogna-MKTP-MVP",
-        azure_repo="voomp-creators-api-gateway2",
+        azure_org="https://dev.azure.com/your-org",
+        azure_project="YourProject",
+        azure_repo="your-repo",
     )
     factory = ScmTransportFactory(config)
     factory.create_pull_request(branch="feat/123", title="...", body="...")
@@ -20,11 +20,11 @@ Esquema no squad YAML
 ::
 
     repos:
-      - name: kdop/api-gateway2
+      - name: your-org/your-repo
         scm: azure_devops
-        azure_org: https://dev.azure.com/kdop
-        azure_project: PlataformaCogna-MKTP-MVP
-        azure_repo: voomp-creators-api-gateway2
+        azure_org: https://dev.azure.com/your-org
+        azure_project: YourProject
+        azure_repo: your-repo
 
     # Para GitHub (default se scm omitido):
       - name: org/frontend
@@ -286,15 +286,15 @@ def scm_config_from_repo_entry(entry: dict) -> ScmRepoConfig:
 
         # Azure DevOps — campos explícitos (recomendado)
         repos:
-          - name: kdop/api-gateway2
+          - name: your-org/your-repo
             scm: azure_devops
-            azure_org: https://dev.azure.com/kdop
-            azure_project: PlataformaCogna-MKTP-MVP
-            azure_repo: voomp-creators-api-gateway2
+            azure_org: https://dev.azure.com/your-org
+            azure_project: YourProject
+            azure_repo: your-repo
 
         # Azure DevOps — detecção automática pelo prefixo de URL
         # ``scm`` é inferido quando ``name`` começa com ``dev.azure.com``
-          - name: dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/voomp-creators-api-gateway2
+          - name: dev.azure.com/your-org/YourProject/your-repo
           # equivale a scm=azure_devops com os campos derivados da URL
 
           - name: org/frontend      # scm omitido → github

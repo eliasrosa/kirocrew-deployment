@@ -24,16 +24,16 @@ from flow.ports.issue_provider import (
 # ---------------------------------------------------------------------------
 
 ADO_COORDS = dict(
-    org="https://dev.azure.com/kdop",
-    project="PlataformaCogna-MKTP-MVP",
-    repo="voomp-creators-api-gateway2",
+    org="https://dev.azure.com/your-org",
+    project="YourProject",
+    repo="your-repo",
 )
 
 ADO_CONFIG = ScmRepoConfig(
     scm="azure_devops",
-    azure_org="https://dev.azure.com/kdop",
-    azure_project="PlataformaCogna-MKTP-MVP",
-    azure_repo="voomp-creators-api-gateway2",
+    azure_org="https://dev.azure.com/your-org",
+    azure_project="YourProject",
+    azure_repo="your-repo",
 )
 
 GH_CONFIG = ScmRepoConfig(
@@ -466,23 +466,23 @@ class TestScmConfigFromRepoEntry:
 
     def test_azure_devops_completo(self) -> None:
         entry = {
-            "name": "kdop/api-gateway2",
+            "name": "your-org/your-repo",
             "scm": "azure_devops",
-            "azure_org": "https://dev.azure.com/kdop",
-            "azure_project": "PlataformaCogna-MKTP-MVP",
-            "azure_repo": "voomp-creators-api-gateway2",
+            "azure_org": "https://dev.azure.com/your-org",
+            "azure_project": "YourProject",
+            "azure_repo": "your-repo",
         }
         config = scm_config_from_repo_entry(entry)
         assert config.scm == "azure_devops"
-        assert config.azure_org == "https://dev.azure.com/kdop"
-        assert config.azure_project == "PlataformaCogna-MKTP-MVP"
-        assert config.azure_repo == "voomp-creators-api-gateway2"
+        assert config.azure_org == "https://dev.azure.com/your-org"
+        assert config.azure_project == "YourProject"
+        assert config.azure_repo == "your-repo"
 
     def test_factory_construida_com_config_ado(self) -> None:
         entry = {
-            "name": "kdop/api-gateway2",
+            "name": "your-org/your-repo",
             "scm": "azure_devops",
-            "azure_org": "https://dev.azure.com/kdop",
+            "azure_org": "https://dev.azure.com/your-org",
             "azure_project": "Proj",
             "azure_repo": "repo-x",
         }
@@ -504,11 +504,11 @@ class TestScmConfigFromRepoEntry:
 class TestInferScmFromName:
     def test_url_dev_azure_com_retorna_azure_devops(self) -> None:
         from flow.adapters.scm.factory import _infer_scm_from_name
-        assert _infer_scm_from_name("dev.azure.com/kdop/Proj/repo") == "azure_devops"
+        assert _infer_scm_from_name("dev.azure.com/your-org/Proj/repo") == "azure_devops"
 
     def test_url_https_dev_azure_com_retorna_azure_devops(self) -> None:
         from flow.adapters.scm.factory import _infer_scm_from_name
-        assert _infer_scm_from_name("https://dev.azure.com/kdop/Proj/repo") == "azure_devops"
+        assert _infer_scm_from_name("https://dev.azure.com/your-org/Proj/repo") == "azure_devops"
 
     def test_github_org_repo_retorna_github(self) -> None:
         from flow.adapters.scm.factory import _infer_scm_from_name
@@ -524,27 +524,27 @@ class TestInferScmFromName:
         # "shtpdev.azure.com/..." passassem pela sanitização. removeprefix()
         # remove apenas a substring exata como prefixo.
         from flow.adapters.scm.factory import _infer_scm_from_name
-        assert _infer_scm_from_name("shtpdev.azure.com/kdop/Proj/repo") == "github"
+        assert _infer_scm_from_name("shtpdev.azure.com/your-org/Proj/repo") == "github"
 
 
 class TestParseAzureDevOpsUrl:
     def test_url_sem_schema(self) -> None:
         from flow.adapters.scm.factory import _parse_azure_devops_url
-        result = _parse_azure_devops_url("dev.azure.com/kdop/PlataformaCogna/api-gateway2")
-        assert result["org"] == "https://dev.azure.com/kdop"
-        assert result["project"] == "PlataformaCogna"
+        result = _parse_azure_devops_url("dev.azure.com/your-org/YourProject/api-gateway2")
+        assert result["org"] == "https://dev.azure.com/your-org"
+        assert result["project"] == "YourProject"
         assert result["repo"] == "api-gateway2"
 
     def test_url_com_https(self) -> None:
         from flow.adapters.scm.factory import _parse_azure_devops_url
-        result = _parse_azure_devops_url("https://dev.azure.com/kdop/PlataformaCogna/api-gateway2")
-        assert result["org"] == "https://dev.azure.com/kdop"
-        assert result["project"] == "PlataformaCogna"
+        result = _parse_azure_devops_url("https://dev.azure.com/your-org/YourProject/api-gateway2")
+        assert result["org"] == "https://dev.azure.com/your-org"
+        assert result["project"] == "YourProject"
         assert result["repo"] == "api-gateway2"
 
     def test_url_sem_suficientes_partes_retorna_vazio(self) -> None:
         from flow.adapters.scm.factory import _parse_azure_devops_url
-        result = _parse_azure_devops_url("dev.azure.com/kdop")
+        result = _parse_azure_devops_url("dev.azure.com/your-org")
         assert result == {}
 
     def test_url_github_retorna_vazio(self) -> None:
@@ -556,26 +556,26 @@ class TestParseAzureDevOpsUrl:
 class TestScmConfigFromRepoEntryAutoDetect:
     def test_url_azure_sem_scm_detecta_automaticamente(self) -> None:
         entry = {
-            "name": "dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/voomp-creators-api-gateway2",
+            "name": "dev.azure.com/your-org/YourProject/your-repo",
         }
         config = scm_config_from_repo_entry(entry)
         assert config.scm == "azure_devops"
-        assert config.azure_org == "https://dev.azure.com/kdop"
-        assert config.azure_project == "PlataformaCogna-MKTP-MVP"
-        assert config.azure_repo == "voomp-creators-api-gateway2"
+        assert config.azure_org == "https://dev.azure.com/your-org"
+        assert config.azure_project == "YourProject"
+        assert config.azure_repo == "your-repo"
 
     def test_url_https_azure_sem_scm_detecta_automaticamente(self) -> None:
         entry = {
-            "name": "https://dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/voomp-creators-api-gateway2",
+            "name": "https://dev.azure.com/your-org/YourProject/your-repo",
         }
         config = scm_config_from_repo_entry(entry)
         assert config.scm == "azure_devops"
-        assert config.azure_org == "https://dev.azure.com/kdop"
+        assert config.azure_org == "https://dev.azure.com/your-org"
 
     def test_campos_explicitos_sobrepõem_url_derivada(self) -> None:
         """Campos azure_* explícitos no YAML sobrepõem os derivados da URL."""
         entry = {
-            "name": "dev.azure.com/kdop/Proj/repo",
+            "name": "dev.azure.com/your-org/Proj/repo",
             "azure_project": "OutroProj",
             "azure_repo": "outro-repo",
         }
@@ -587,15 +587,15 @@ class TestScmConfigFromRepoEntryAutoDetect:
     def test_scm_explicito_azure_devops_prevalece(self) -> None:
         """scm explícito ainda funciona sem URL."""
         entry = {
-            "name": "kdop/api-gateway2",
+            "name": "your-org/your-repo",
             "scm": "azure_devops",
-            "azure_org": "https://dev.azure.com/kdop",
-            "azure_project": "PlataformaCogna-MKTP-MVP",
-            "azure_repo": "voomp-creators-api-gateway2",
+            "azure_org": "https://dev.azure.com/your-org",
+            "azure_project": "YourProject",
+            "azure_repo": "your-repo",
         }
         config = scm_config_from_repo_entry(entry)
         assert config.scm == "azure_devops"
-        assert config.azure_org == "https://dev.azure.com/kdop"
+        assert config.azure_org == "https://dev.azure.com/your-org"
 
     def test_github_sem_scm_permanece_github(self) -> None:
         entry = {"name": "org/api-gateway2"}
@@ -605,7 +605,7 @@ class TestScmConfigFromRepoEntryAutoDetect:
 
     def test_factory_construida_com_url_auto_detectada(self) -> None:
         entry = {
-            "name": "dev.azure.com/kdop/PlataformaCogna-MKTP-MVP/voomp-creators-api-gateway2",
+            "name": "dev.azure.com/your-org/YourProject/your-repo",
         }
         config = scm_config_from_repo_entry(entry)
         factory = ScmTransportFactory(config)

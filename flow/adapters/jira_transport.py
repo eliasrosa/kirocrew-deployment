@@ -106,7 +106,7 @@ def _get_config() -> tuple[str, dict[str, str]]:
     """Retorna (base_url, headers) a partir de variáveis de ambiente.
 
     Variáveis esperadas:
-      JIRA_BASE_URL   — ex: "https://cogna.atlassian.net"
+      JIRA_BASE_URL   — ex: "https://your-org.atlassian.net"
       JIRA_API_TOKEN  — token de API Jira (email:token em base64, ou só token Cloud)
       JIRA_EMAIL      — email do usuário (necessário para Cloud)
     """

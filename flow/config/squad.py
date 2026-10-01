@@ -76,7 +76,7 @@ class RepoConfig:
 #       - url: https://github.com/eliasrosa/kirocrew-flow
 #         auto_dispatch: true
 #         auto_merge: true
-#       - url: https://dev.azure.com/kdop/.../voomp-creators-api-gateway2
+#       - url: https://dev.azure.com/your-org/.../your-repo
 #         auto_dispatch: true
 #         auto_merge: false   # merge manual em PRD
 #

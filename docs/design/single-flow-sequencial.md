@@ -44,7 +44,7 @@ pegar a próxima, com um **ledger local** como fonte de verdade do "onde está".
   adapters GitHub/Jira da esteira de `develop-waiting` em diante.
 - Modo paralelo atual — continua default.
 
-### Fora do hexagonal (específico Cogna, não vira contrato do port)
+### Fora do hexagonal (específico da squad, não vira contrato do port)
 - Estimativa (pontos/horas), regra de entrada em sprint. É convenção interna da
   squad, tratada na camada de squad/prompt — **não** no core genérico.
 
@@ -86,7 +86,7 @@ TASK (issue pai)
  │     Conteúdo: requirements + design + tasks (padrão Kiro, 3 seções numa sub-task só)
  │     Cobre os estados: briefing → planning-specs → planning-review
  │     Aceite: TL/PM aprovam → Sub-task 1 marcada como aceita
- │     (Cogna: carrega estimativa/pontos/horas próprios — fora do hexagonal)
+ │     (squad: carrega estimativa/pontos/horas próprios — fora do hexagonal)
  │
  └── Sub-task 2 · "Implementação"
        Cobre: develop-waiting em diante (a esteira que já roda hoje)

@@ -36,7 +36,7 @@ def _raw_issue(
         fields["parent"] = {"key": parent_key}
     return {
         "key": key,
-        "self": f"https://cogna.atlassian.net/rest/api/2/issue/{key}",
+        "self": f"https://your-org.atlassian.net/rest/api/2/issue/{key}",
         "fields": fields,
     }
 

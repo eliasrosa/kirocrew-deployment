@@ -39,7 +39,7 @@ para todo o time em qualquer ferramenta.
    e `flow:blocked` (via auditoria no comentário de estado) para que a frequência
    seja mensurável.
 
-5. **Template por squad.** A Cogna usa a Versão C (review antes do QA). Outra
+5. **Template por squad.** Uma squad pode usar a Versão C (review antes do QA). Outra
    squad pode usar Versão A (review depois do QA). O motor executa qualquer grafo
    válido — só muda o template.
 

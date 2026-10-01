@@ -37,7 +37,7 @@ critério configurado no squad config e cria o `RunLedger`:
 ledger = RunLedger.create(
     issue_key="VGAT-123",
     state=State.BRIEFING,
-    squad_id="voomp-squad-gw",
+    squad_id="my-squad",
 )
 ```
 

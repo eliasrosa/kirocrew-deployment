@@ -247,7 +247,7 @@ def _squad_root_jira_override_github(repo_id: str):
     from flow.config.squad import RepoConfig, SquadConfig
 
     return SquadConfig(
-        id="voomp-squad-gw",
+        id="my-squad",
         name="Voomp Squad",
         issue_provider="jira",
         projects=[repo_id, "kdop/proj/gw2"],

@@ -63,7 +63,7 @@ O motor atual é **single-flow, ledger-driven** — uma cron única, custo O(1) 
 estado guardado em SQLite local (não mais nas labels do GitHub).
 
 ```
-squads/voomp-squad-gw.yaml
+squads/my-squad.yaml
     → run_single_flow(ctx)
         → ledger.active()          ← 1 query SQLite (nada de gh issue list)
         → provider.get_work_item() ← 1 chamada de rede (estado real da issue)
@@ -163,7 +163,7 @@ repos:
   - url: https://github.com/org/api-gateway2
     auto_dispatch: true
     auto_merge: false      # merge manual neste repo
-  - url: https://dev.azure.com/kdop/Projeto/_git/api-subscription2
+  - url: https://dev.azure.com/your-org/YourProject/_git/your-backend-repo
     auto_dispatch: true
     auto_merge: true       # merge automático após approve
 
@@ -383,7 +383,7 @@ definidos como grafos de nós tipados, inspirado no AWS Step Functions.
 | `end` | Terminal de sucesso |
 | `fail` | Terminal de falha |
 
-O workflow da squad Gateway (`workflows/voomp-dev-flow.yaml`) já mapeia os 24 nós
+O workflow de exemplo (`workflows/voomp-dev-flow.yaml`) já mapeia os 24 nós
 do fluxo completo. A integração com o cron `flow-single` é o próximo passo.
 
 Ver [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#engine-de-workflow-por-nós-tipados-pr-316) para o schema YAML e o protocolo de gate.

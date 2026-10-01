@@ -14,11 +14,11 @@ Configuração por repo (squad YAML)
 ::
 
     repos:
-      - name: kdop/api-gateway2
+      - name: your-org/your-repo
         scm: azure_devops
-        azure_org: https://dev.azure.com/kdop
-        azure_project: PlataformaCogna-MKTP-MVP
-        azure_repo: voomp-creators-api-gateway2
+        azure_org: https://dev.azure.com/your-org
+        azure_project: YourProject
+        azure_repo: your-repo
 
 Tratamento de erros
 -------------------
