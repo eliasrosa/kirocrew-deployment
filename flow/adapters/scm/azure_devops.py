@@ -14,7 +14,7 @@ Configuração por repo (squad YAML)
 ::
 
     repos:
-      - name: kdop/api-gateway2
+      - name: your-org/your-repo
         scm: azure_devops
         azure_org: https://dev.azure.com/your-org
         azure_project: YourProject

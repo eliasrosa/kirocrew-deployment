@@ -54,8 +54,8 @@ def normalize_item(raw: dict) -> dict:
     self_url: str = raw.get("self", "")
     if self_url:
         # Converte API URL para URL de interface do usuário
-        # https://your-org.atlassian.net/rest/api/2/issue/VGAT-123
-        # → https://your-org.atlassian.net/browse/VGAT-123
+        # https://your-org.atlassian.net/rest/api/2/issue/PROJ-123
+        # → https://your-org.atlassian.net/browse/PROJ-123
         url = self_url.split("/rest/")[0] + f"/browse/{key}" if "/rest/" in self_url else self_url
     else:
         url = ""

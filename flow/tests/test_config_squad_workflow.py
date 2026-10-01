@@ -881,7 +881,7 @@ class TestRepoInlineConfig:
     # Identificadores normalizados esperados (NÃO a url crua) — o scanner e o
     # provider do GitHub consomem `owner/repo`, não uma https URL (issue #264).
     _GH_ID = "eliasrosa/kirocrew-flow"
-    _AZ_ID = "kdop/YourProject/your-repo"
+    _AZ_ID = "your-org/YourProject/your-repo"
 
     def test_projects_e_repos_derivados_do_url(self) -> None:
         """projects/repos derivam do 'url' NORMALIZADO das entradas dict.
@@ -1150,7 +1150,7 @@ repos:
             )
             # projects derivam do url NORMALIZADO (owner/repo, não a url crua)
             assert "eliasrosa/kirocrew-flow" in sc.projects
-            assert "kdop/YourProject/your-repo" in sc.projects
+            assert "your-org/YourProject/your-repo" in sc.projects
             assert gh not in sc.projects
             assert az not in sc.projects
             # resolução por repo com fallback global (aceita url OU owner/repo)
@@ -1160,7 +1160,7 @@ repos:
             assert sc.auto_merge(az) is False
             # resolve igual quando passamos o identificador normalizado
             assert sc.auto_merge("eliasrosa/kirocrew-flow") is True
-            assert sc.auto_merge("kdop/YourProject/your-repo") is False
+            assert sc.auto_merge("your-org/YourProject/your-repo") is False
             # repo desconhecido cai no global armazenado
             assert sc.auto_dispatch("org/desconhecido") is False
             assert sc.auto_merge("org/desconhecido") is False
@@ -1245,10 +1245,10 @@ class TestRepoIssueProvider:
         raw = {
             "id": "my-squad",
             "issue_provider": "jira",
-            "repos": [self._GH_ID, "kdop/proj/gw2"],
+            "repos": [self._GH_ID, "your-org/proj/gw2"],
             "repos_config": [
                 {"name": self._GH_ID, "issue_provider": "github"},
-                {"name": "kdop/proj/gw2"},  # sem override
+                {"name": "your-org/proj/gw2"},  # sem override
             ],
         }
         sc = _parse_squad(raw)
@@ -1256,7 +1256,7 @@ class TestRepoIssueProvider:
         assert rc is not None
         assert rc.issue_provider == "github"
         assert sc.issue_provider_for(self._GH_ID) == "github"
-        assert sc.issue_provider_for("kdop/proj/gw2") == "jira"
+        assert sc.issue_provider_for("your-org/proj/gw2") == "jira"
 
     def test_repos_config_legacy_issue_provider_invalido_lanca_erro(self) -> None:
         """repos_config: com issue_provider inválido levanta SquadConfigError."""

@@ -466,7 +466,7 @@ class TestScmConfigFromRepoEntry:
 
     def test_azure_devops_completo(self) -> None:
         entry = {
-            "name": "kdop/api-gateway2",
+            "name": "your-org/your-repo",
             "scm": "azure_devops",
             "azure_org": "https://dev.azure.com/your-org",
             "azure_project": "YourProject",
@@ -480,7 +480,7 @@ class TestScmConfigFromRepoEntry:
 
     def test_factory_construida_com_config_ado(self) -> None:
         entry = {
-            "name": "kdop/api-gateway2",
+            "name": "your-org/your-repo",
             "scm": "azure_devops",
             "azure_org": "https://dev.azure.com/your-org",
             "azure_project": "Proj",
@@ -587,7 +587,7 @@ class TestScmConfigFromRepoEntryAutoDetect:
     def test_scm_explicito_azure_devops_prevalece(self) -> None:
         """scm explícito ainda funciona sem URL."""
         entry = {
-            "name": "kdop/api-gateway2",
+            "name": "your-org/your-repo",
             "scm": "azure_devops",
             "azure_org": "https://dev.azure.com/your-org",
             "azure_project": "YourProject",

@@ -20,7 +20,7 @@ Esquema no squad YAML
 ::
 
     repos:
-      - name: kdop/api-gateway2
+      - name: your-org/your-repo
         scm: azure_devops
         azure_org: https://dev.azure.com/your-org
         azure_project: YourProject
@@ -286,7 +286,7 @@ def scm_config_from_repo_entry(entry: dict) -> ScmRepoConfig:
 
         # Azure DevOps — campos explícitos (recomendado)
         repos:
-          - name: kdop/api-gateway2
+          - name: your-org/your-repo
             scm: azure_devops
             azure_org: https://dev.azure.com/your-org
             azure_project: YourProject

@@ -274,10 +274,10 @@ Cada repo pode sobrepor os flags globais de dispatch e merge:
 
 ```yaml
 repos:
-  - url: https://github.com/org/api-gateway2
+  - url: https://github.com/org/your-repo
     auto_dispatch: true
     auto_merge: false      # merge manual neste repo
-  - url: https://dev.azure.com/your-org/Proj/_git/api-sub
+  - url: https://dev.azure.com/your-org/YourProject/_git/your-repo
     auto_dispatch: true
     auto_merge: true       # merge automático após approve
 ```
