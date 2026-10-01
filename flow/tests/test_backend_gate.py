@@ -293,14 +293,14 @@ class TestHandleGateGet:
         req.match_info = {"token": ""}
         conn = _make_db(check_same_thread=False)
         with _with_db(conn):
-            resp = asyncio.run(handle_gate_get(req))
+            resp = asyncio.get_event_loop().run_until_complete(handle_gate_get(req))
         assert _status(resp) == 400
 
     def test_token_nao_encontrado_retorna_404(self):
         req = _make_request(token="tok-x")
         conn = _make_db(check_same_thread=False)
         with _with_db(conn):
-            resp = asyncio.run(handle_gate_get(req))
+            resp = asyncio.get_event_loop().run_until_complete(handle_gate_get(req))
         assert _status(resp) == 404
 
     def test_token_encontrado_retorna_200(self):
@@ -309,7 +309,7 @@ class TestHandleGateGet:
         _insert_token(conn, token, prompt="Publicar em PRD?")
         req = _make_request(token=token)
         with _with_db(conn):
-            resp = asyncio.run(handle_gate_get(req))
+            resp = asyncio.get_event_loop().run_until_complete(handle_gate_get(req))
         assert _status(resp) == 200
         data = _body(resp)
         assert data["token"] == token
@@ -328,14 +328,14 @@ class TestHandleGateDecide:
         req.match_info = {"token": ""}
         conn = _make_db(check_same_thread=False)
         with _with_db(conn):
-            resp = asyncio.run(handle_gate_decide(req))
+            resp = asyncio.get_event_loop().run_until_complete(handle_gate_decide(req))
         assert _status(resp) == 400
 
     def test_body_json_invalido_retorna_400(self):
         req = _make_request(token="tok-x", bad_json=True)
         conn = _make_db(check_same_thread=False)
         with _with_db(conn):
-            resp = asyncio.run(handle_gate_decide(req))
+            resp = asyncio.get_event_loop().run_until_complete(handle_gate_decide(req))
         assert _status(resp) == 400
 
     def test_decision_ausente_retorna_400(self):
@@ -344,7 +344,7 @@ class TestHandleGateDecide:
         _insert_token(conn, token)
         req = _make_request(token=token, body={})
         with _with_db(conn):
-            resp = asyncio.run(handle_gate_decide(req))
+            resp = asyncio.get_event_loop().run_until_complete(handle_gate_decide(req))
         assert _status(resp) == 400
 
     def test_decisao_valida_retorna_200(self):
@@ -353,7 +353,7 @@ class TestHandleGateDecide:
         _insert_token(conn, token)
         req = _make_request(token=token, body={"decision": "approve"})
         with _with_db(conn):
-            resp = asyncio.run(handle_gate_decide(req))
+            resp = asyncio.get_event_loop().run_until_complete(handle_gate_decide(req))
         assert _status(resp) == 200
         data = _body(resp)
         assert data["ok"] is True
@@ -365,7 +365,7 @@ class TestHandleGateDecide:
         _insert_token(conn, token, expires_delta=timedelta(seconds=-1))
         req = _make_request(token=token, body={"decision": "approve"})
         with _with_db(conn):
-            resp = asyncio.run(handle_gate_decide(req))
+            resp = asyncio.get_event_loop().run_until_complete(handle_gate_decide(req))
         assert _status(resp) == 409
         assert _body(resp)["error"] == "token_expired"
 
@@ -375,7 +375,7 @@ class TestHandleGateDecide:
         _insert_token(conn, token, decision="approve")
         req = _make_request(token=token, body={"decision": "approve"})
         with _with_db(conn):
-            resp = asyncio.run(handle_gate_decide(req))
+            resp = asyncio.get_event_loop().run_until_complete(handle_gate_decide(req))
         assert _status(resp) == 200
         assert _body(resp)["idempotent"] is True
 
@@ -385,7 +385,7 @@ class TestHandleGateDecide:
         _insert_token(conn, token, decision="approve")
         req = _make_request(token=token, body={"decision": "reject"})
         with _with_db(conn):
-            resp = asyncio.run(handle_gate_decide(req))
+            resp = asyncio.get_event_loop().run_until_complete(handle_gate_decide(req))
         assert _status(resp) == 409
         assert _body(resp)["error"] == "already_decided"
 
@@ -395,6 +395,6 @@ class TestHandleGateDecide:
         _insert_token(conn, token, options=["approve", "reject"])
         req = _make_request(token=token, body={"decision": "maybe"})
         with _with_db(conn):
-            resp = asyncio.run(handle_gate_decide(req))
+            resp = asyncio.get_event_loop().run_until_complete(handle_gate_decide(req))
         assert _status(resp) == 409
         assert _body(resp)["error"] == "invalid_option"
