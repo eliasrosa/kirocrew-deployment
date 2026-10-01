@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import sys
 
-
 # Mapeamento state → nó YAML (deve estar sincronizado com voomp-dev-flow.yaml)
 _STATE_TO_NODE: dict[str, str] = {
     "flow:briefing":        "briefing",

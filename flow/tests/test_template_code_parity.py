@@ -104,9 +104,7 @@ class _ParityCase(NamedTuple):
 
 _STAGES: list[_ParityCase] = [
     _ParityCase("develop_waiting", "_dispatch_prompt"),
-    _ParityCase("review_waiting", "_reviewer_prompt"),
-    _ParityCase("rework", "_rework_prompt"),
-    _ParityCase("merge_conflict", "_conflict_prompt"),
+    # review_waiting, rework e merge_conflict foram removidos no cleanup #304
 ]
 
 

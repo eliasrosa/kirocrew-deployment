@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +42,7 @@ def _conn() -> sqlite3.Connection:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ── workflow_runs ──────────────────────────────────────────────────────────
@@ -198,7 +198,7 @@ def create_gate_token(
     options: list[str],
     ttl_secs: int,
 ) -> None:
-    expires = (datetime.now(timezone.utc) + timedelta(seconds=ttl_secs)).isoformat()
+    expires = (datetime.now(UTC) + timedelta(seconds=ttl_secs)).isoformat()
     with _conn() as conn:
         conn.execute(
             """
