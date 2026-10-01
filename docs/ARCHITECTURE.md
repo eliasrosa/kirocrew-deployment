@@ -9,33 +9,161 @@
 | Testes | pytest + pytest-cov |
 | Linting | ruff |
 | Type check | mypy |
-| Cache do scan | SQLite (stdlib) |
+| Estado do motor | SQLite (stdlib) via yoyo-migrations |
 | YAML | PyYAML com fallback para parser interno |
 
 Sem FastAPI, Flask, Starlette ou Pydantic — o projeto segue a stack do próprio
 Kiro Crew, validada lendo o código instalado.
 
+## Visão geral do motor
+
+O motor atual é **single-flow, ledger-driven** (frentes 6–8, set/2026). Uma cron
+única (`flow-single`, 60s) processa a task ativa em O(1) por tick: 1 query SQLite
++ 1 chamada de rede.
+
+```
+deployment/
+├── deployment.py          ← driving adapter (run_single_flow + claim_single_flow)
+└── flow/
+    └── single_flow.py     ← entrypoint do cron
+
+flow/
+├── engine/
+│   ├── ledger_tick.py     ← motor puro: tick(), máquina de estados
+│   └── run_ledger.py      ← RunLedger (SQLite), RunStatus, State
+├── domain/                ← NÚCLEO: sem I/O, testável sem mock
+├── ports/                 ← contratos (Protocol)
+├── adapters/              ← GitHub, Jira, SCM (AzureDevOps)
+├── scan/                  ← LedgerStateReader (lê estado real da issue)
+└── config/                ← squad config + workflow templates
+```
+
 ## Padrão arquitetural: hexagonal (ports & adapters)
 
-O motivo prático: a regra de negócio mais importante do fluxo (`can_leave_spec`)
-fica testável **sem nenhuma infraestrutura** — nenhuma rede, nenhum banco, nenhum
-mock de provider.
+O domínio (`flow/domain/`) não tem I/O — é testável sem mock de rede ou banco.
 
 ```
 flow/
 ├── domain/    ← NÚCLEO: sem I/O, testável sem mock
 ├── ports/     ← contratos (Protocol)
-├── adapters/  ← GitHub e Jira
-├── scan/      ← zero-token polling
-├── executor/  ← decisões por template
-├── audit/     ← comentário de auditoria
+├── adapters/  ← GitHub, Jira, SCM
+├── engine/    ← motor ledger-driven + RunLedger
+├── scan/      ← LedgerStateReader (zero-token)
+├── executor/  ← regras de transição por template (ainda em uso em alguns fluxos)
+├── audit/     ← histórico de auditoria
 └── config/    ← squad config + workflow templates
 ```
 
-## Regra de isolamento do domínio
-
 `test_domain_boundary.py` verifica por AST que nenhum arquivo em `flow/domain/`
 importa infraestrutura. Se quebrar, pare tudo e conserte primeiro.
+
+## Motor: ledger_tick
+
+O motor vive em `flow/engine/ledger_tick.py`. É **síncrono e puro** — sem I/O de
+rede. Recebe um `RunLedger`, um `WorkItem` (estado real da issue) e um
+`Dispatcher` (Protocol), e decide o que fazer:
+
+```python
+def tick(
+    ledger: RunLedger,
+    work_item: WorkItem,
+    dispatcher: Dispatcher,
+) -> TickResult:
+    ...
+```
+
+### Máquina de estados (single-flow)
+
+```
+BRIEFING → PLANNING_SPECS → PLANNING_REVIEW → DEVELOP_WAITING
+         → REVIEW_WAITING → QA_WAITING → DONE
+
+Terminais: DONE, REVIEW_REFUSED, QA_REFUSED
+```
+
+**Estágios ativos** (`_ACTIVE_STAGES`): `BRIEFING`, `PLANNING_SPECS` — o motor
+dispara a sessão e avança.
+
+**Estágios de espera**: `DEVELOP_WAITING`, `REVIEW_WAITING`, `QA_WAITING` — o
+motor observa o sinal externo (PR aberto, review aprovado, QA ok) e avança quando
+o sinal chega.
+
+### Protocolo WORKFLOW_EXIT
+
+O agente one-shot sinaliza o resultado ao encerrar publicando uma tag na última
+mensagem do turno:
+
+```
+WORKFLOW_EXIT: {"exit_status": "done", "pr_url": "..."}
+```
+
+O motor lê o arquivo JSONL da sessão de trás para frente, extrai o último
+`WORKFLOW_EXIT` e avança o ledger conforme o mapeamento de transições do nó.
+
+### RunLedger (SQLite)
+
+O estado da task ativa vive no `RunLedger` — banco SQLite local em
+`~/.kiro/crew/crons/deployment/data/flow.db`. Esquema gerenciado por
+`yoyo-migrations` (`deployment/migrations/`).
+
+| Tabela | O que guarda |
+|---|---|
+| `run_ledger` | Run ativa: `issue_key`, `state`, `session_key`, `squad_id`, `status` |
+| `run_ledger_history` | Histórico de transições com timestamp |
+
+**Não há mais estado nas labels do GitHub/Jira.** As labels `flow:*` continuam
+sendo aplicadas (para visibilidade), mas o estado canônico é o SQLite.
+
+### Dispatcher (Protocol)
+
+```python
+@runtime_checkable
+class Dispatcher(Protocol):
+    def dispatch_stage(self, stage: State, issue_key: str, ...) -> str:
+        """Dispara a sessão one-shot e retorna o session_key."""
+        ...
+```
+
+`deployment.py` implementa o `Dispatcher` real. Os testes usam um `FakeDispatcher`.
+
+## Resolução de squad_id e project
+
+`claim_single_flow()` resolve o `squad_id` a partir do squad config
+(`~/.kiro/crew/crons/squads/<squad>.yaml`). O `squad_id` é gravado no
+`RunLedger` e usado pelo motor para:
+
+1. Encontrar os repos corretos (SCM: ADO ou GitHub).
+2. Renderizar o template de instrução da sessão.
+3. Identificar o `issue_provider` (Jira ou GitHub).
+
+## Dispatch de sessão
+
+O dispatch faz dois POST ao gateway local do Kiro Crew:
+
+**Step 1 — criar slot:**
+```
+POST /api/chat/slots
+X-Internal-Secret: <secret>
+{"slot": "engine-<run_id>-<node_id>", "mode": "one_shot"}
+```
+
+**Step 2 — injetar instrução:**
+```
+POST /api/chat
+X-Internal-Secret: <secret>
+X-Session-Key: dashboard:<slot>
+{"message": "<instrução renderizada>"}
+```
+
+O secret é lido de `~/.kiro/crew/run/gateway-{port}.secret` (atualizado a cada
+restart), com fallback para `~/.kiro/crew/.local_secret`.
+
+O `tab_id` retornado pelo Step 1 é gravado como `session_key` no ledger. A
+detecção de encerramento da sessão (`_session_is_closed`) varre os arquivos
+`.jsonl` do gateway pelo `tab_id` (o nome do arquivo não contém o slot name).
+
+**Fix slots órfãos:** quando o Step 2 falha após o Step 1 ter criado o slot, o
+dispatch deleta o slot automaticamente para evitar sessões fantasmas no sidebar.
 
 ## Adapters são módulos, não classes
 
@@ -44,10 +172,9 @@ _PROVIDERS = {"github": github_client, "jira": jira_client}
 provider_for("jira")  # → o módulo jira_client
 ```
 
-Um módulo não pode ser verificado estaticamente contra um `Protocol`. O gate que
-garante conformidade é `test_provider_parity.py` — compara GitHub (referência)
-contra Jira, com um auto-guard que falha se um terceiro adapter entrar no dispatch
-sem ser registrado no teste.
+O gate de conformidade é `test_provider_parity.py` — compara GitHub (referência)
+contra Jira. Um terceiro adapter que entre no dispatch sem registro no teste
+falha o CI.
 
 Cada adapter tem três camadas:
 
@@ -57,298 +184,175 @@ Cada adapter tem três camadas:
 | `*_normalization.py` | payload do provedor → contrato canônico |
 | `*_client.py` | orquestração; satisfaz `IssueProvider` |
 
-O `github_client` expõe funções extras não presentes na porta:
-- `get_pr_checks(project, pr_number)` — retorna os checks (CI) de um PR
-- `upsert_pr_review_comment(...)` — cria ou atualiza comentário de review no PR
+O `github_client` expõe funções extras (GitHub-only):
+- `get_pr_checks(project, pr_number)` — checks de CI
+- `upsert_pr_review_comment(...)` — cria/atualiza comentário de review
 - `merge_pull_request(...)` — merge squash via API
-
-Essas funções são GitHub-only e não fazem parte da porta `IssueProvider`.
 
 ## Identidade: projeto + issue key
 
 A chave primária de um item de trabalho é **projeto + issue key** (`VGAT-123`).
 O repo é derivado do título (`[repo] Descrição`), não da identidade.
 
-O Jira é projeto-cêntrico por natureza. O GitHub é repo-cêntrico, mas a porta
-normaliza para projeto para que o domínio seja agnóstico de provedor.
+## Labels: visibilidade, não estado canônico
 
-## Fluxo de uma issue pelo sistema
+As labels `flow:*` **ainda são aplicadas** para visibilidade no board do GitHub/Jira,
+mas o estado canônico é o SQLite (`run_ledger.state`). Uma label desatualizada
+não corrompe o motor — o próximo tick lê o ledger, não a label.
 
-```
-squads/my-squad.yaml
-    → SquadConfig.resolve_workflow(labels)  → "hotfix-flow"
-    → scan_candidates(config, provider, conn)  → [ScanResult]
-    → executor.decide(result, state_comment)   → ExecutorDecision
-    → provider.set_labels() + upsert_state_comment() + _dispatch()
-```
-
-O `deployment.py` é o **driving adapter** que executa esse loop como cron de
-script do Kiro Crew (zero token no polling).
-
-## Workspace isolado por task (Fase 2)
-
-Cada dispatch cria um **worktree efêmero** dedicado, garantindo que múltiplas
-tasks rodem em paralelo sem pisar uma na outra.
-
-### Convenção de caminhos
-
-```
-<dev_root>/<repo-short>/          ← clone-base (nunca tocado diretamente)
-<dev_root>/.esteira-worktrees/
-    <repo-short>-<issue_number>/  ← worktree efêmero (criado no dispatch, removido no fim)
-```
-
-A função `_worktree_path(dev_root, repo, issue_number)` é a **fonte única de
-verdade** do caminho: usada pelo `deployment.py` na limpeza pré-dispatch e pelo
-prompt enviado à sessão one-shot. Os dois lados sempre falam do mesmo diretório.
-
-### Fluxo pré-dispatch
-
-```
-scan_candidates()
-    → executor.decide()
-    → _resource_headroom_ok()        ← posture critical suspende dispatch
-    → _clean_stale_worktree()        ← remove worktree órfão de sessão anterior
-    → _issue_has_active_session()    ← mecanismo primário: worktree + PR + backstop
-    → _is_dead_session()             ← detecta sessão morta pelo timeout longo
-    → _dispatch()                    ← prompt inclui git worktree add no caminho canônico
-```
-
-### Cap de concorrência e detecção de sessão morta
-
-A concorrência é decidida pelo **estado da issue**, não por lock de tempo:
-
-- **Cap primário:** contagem de issues em `flow:develop-running` no scan atual — não locks de arquivo.
-- **Backstop anti-duplo-dispatch:** lock de arquivo (2min) — protege o intervalo entre dispatch e o label chegar na API.
-- **`_issue_has_active_session()`:** verifica worktree ativo, PR aberto na branch, e backstop lock — retorna `True` se qualquer sinal indicar sessão viva.
-- **Detector de sessão morta (`_is_dead_session()`):** issue em running há >40min sem PR, sem worktree, sem backstop lock → sessão morta confirmada.
-- **Recuperação fail-closed (`_recover_dead_session()`):** remove `flow:develop-running`, notifica TL, espera redespacho no próximo ciclo. Nunca redespacha sozinho em caso de ambiguidade.
-- O headroom de recursos é verificado via `resource_status` do Kiro Crew antes de cada dispatch — posture `critical` adia sem bloquear o ciclo.
-
-| Campo config | Função | Default |
-|---|---|---|
-| `max_concurrent_tasks` | Cap global de tasks em paralelo | `2` |
-| `one_per_repo` | Reservado (não mais usado como guard primário) | `true` |
-
-## Identificação e labels
-
-O prefixo `flow:` é o namespace canônico de estado. O prefixo `crewflow:` é mantido
-para metadado (tipo de fluxo, prioridade e `crewflow:blocked` por compatibilidade).
-Confluence rejeita `:` — fora de escopo.
-
-Estados (1 por vez, namespace `flow:*`):
+Estados (namespace `flow:*`, aplicados como espelho do ledger):
 ```
 flow:briefing → flow:planning-specs → flow:planning-review → flow:develop-waiting
-  → flow:develop-running → flow:review-waiting → flow:review-approved
-  → flow:qa-waiting → flow:qa-testing → flow:qa-approved → flow:done
+  → flow:review-waiting → flow:qa-waiting → flow:done
 ```
 
-> Labels de estado legadas (`crewflow:spec`, `crewflow:todo`, `crewflow:dev`, etc.)
-> foram deprecadas — use `setup-flow-labels.sh` para novos repos.
-
-Modificadores de estado (0..N, namespace `flow:*`):
+Modificadores (ainda usados pelo motor para decisões):
 ```
-flow:blocked         # para tudo (prioridade sobre o estado)
-flow:merge-conflict  # PR com conflito — cron resolve via rebase
-flow:review-running        # lock anti-loop de code review (interno)
+flow:blocked         # para o fluxo
+flow:merge-conflict  # PR com conflito de merge
 ```
 
 Metadado (tipo e prioridade, namespace `crewflow:*`):
 ```
 crewflow:feature / crewflow:bug / crewflow:hotfix / crewflow:debt
 crewflow:p1 / crewflow:p2 / crewflow:p3
-crewflow:blocked   # alias de flow:blocked, mantido por compatibilidade
 ```
 
-## Protocolo cron ↔ agente
+> **Legado:** antes da frente 6, o estado canônico vivia nas labels (modelo
+> label-driven). O mecanismo de `scan_candidates()` + `executor.decide()` +
+> `KIRO-FLOW-STATE` comment foi substituído pelo ledger SQLite. O código legado
+> foi removido na PR #319 (out/2026).
 
-O motor é composto por **duas camadas distintas** que nunca se chamam
-diretamente. Toda a coordenação acontece **exclusivamente via labels na issue**,
-complementadas pelo comentário `KIRO-FLOW-STATE`.
+## Engine de workflow por nós tipados (PR #316)
 
-### Camada 1: Cron Python (zero-token), orquestrador de estado
+Além do motor `ledger_tick` (que orquestra o single-flow linear), o projeto tem
+um **engine de workflow por nós tipados** baseado em YAML — inspirado no AWS Step
+Functions — para fluxos mais complexos. Vive em `backend/engine/`.
 
-- Lê as labels `flow:*` da issue.
-- Decide a transição de estado (`executor.decide()`, Python puro, sem I/O).
-- Aplica a label de lock **atomicamente antes de despachar** (ex.: `flow:develop-running`,
-  `flow:review-running`).
-- Dispara a sessão one-shot do agente.
-- No ciclo seguinte, detecta a label de resultado e faz a próxima transição.
-
-O `deployment.py` é o driving adapter dessa camada e roda como cron de script do
-Kiro Crew, sem gastar token no polling.
-
-### Camada 2: Agente one-shot (gasta token), executor de trabalho
-
-- Implementa, revisa ou resolve conflito de merge.
-- Aplica a label de resultado ao terminar (ex.: `flow:review-waiting` ao abrir o PR,
-  `flow:review-approved`/`flow:review-refused` após o review).
-- Posta o comentário `KIRO-FLOW-STATE`.
-
-A sessão recebe a issue já com a label de lock aplicada pelo cron (ver
-`flow/prompts/develop_waiting.md`): o agente não troca a label de lock, apenas
-aplica a label de resultado no fim.
-
-### Regra de comunicação
-
-Nenhuma das camadas chama a outra diretamente. O cron não fica esperando o agente,
-e o agente não invoca o cron: a comunicação é **exclusivamente via labels na issue**
-mais o comentário `KIRO-FLOW-STATE`. O cron detecta a label de resultado no próximo
-ciclo zero-token e avança o estado.
-
-```mermaid
-sequenceDiagram
-    participant Cron as Cron Python (zero-token)
-    participant Issue as Issue (labels)
-    participant Agente as Agente one-shot (gasta token)
-
-    Cron->>Issue: lê labels flow:*
-    Note over Cron: executor.decide() escolhe a transição
-    Cron->>Issue: aplica lock label atomicamente (ex.: flow:develop-running)
-    Cron->>Agente: dispara sessão one-shot
-    Note over Agente: implementa / revisa / resolve conflito
-    Agente->>Issue: aplica label de resultado (ex.: flow:review-waiting)
-    Agente->>Issue: posta comentário KIRO-FLOW-STATE
-    Note over Cron: próximo ciclo zero-token
-    Cron->>Issue: detecta label de resultado
-    Note over Cron: faz a próxima transição
+```
+backend/
+├── engine/
+│   ├── tick.py       ← lógica do tick: _tick_open_session, _tick_gate, _tick_script…
+│   ├── db.py         ← CRUD SQLite: workflow_runs, workflow_node_states, workflow_gate_tokens
+│   └── loader.py     ← carrega e valida o YAML de definição do workflow
+├── migrations/
+│   ├── 0001.create-workflow-runs.sql
+│   ├── 0002.create-workflow-node-states.sql
+│   ├── 0003.add-error-kind.sql          ← error_kind: failed|timed_out|error
+│   └── 0004.create-workflow-gate-tokens.sql
+└── routes.py         ← GET/POST /gate/{token} e /gate/{token}/decide
 ```
 
-### Responsável por cada label
+### Tipos de nó (`NODE_TYPES`)
 
-Quem aplica cada label no protocolo: o cron aplica locks e transições
-automatizadas; o agente aplica as labels de resultado do trabalho que executou.
-
-| Label | Responsável | Significado |
+| Tipo | Campos obrigatórios | O que faz |
 |---|---|---|
-| `flow:develop-waiting` | cron (detecta) | Gatilho único: o cron detecta e dispara a sessão de dev. |
-| `flow:develop-running` | cron (aplica) | Lock de dev, aplicado atomicamente antes de despachar. |
-| `flow:review-waiting` | agente (aplica) | Resultado do dev: PR aberto, aguardando reviewer. |
-| `flow:review-running` | cron/reviewer (aplica) | Lock anti-loop de code review (uma análise por SHA). |
-| `flow:review-approved` | agente (aplica) | Resultado do review: reviewer aprovou. |
-| `flow:review-refused` | agente (aplica) | Resultado do review: reprovado (gate humano, sem redispatch). |
-| `flow:merge-conflict` | cron (aplica) | `MARK_CONFLITO`: PR com conflito de merge ou base desatualizada. |
-| `flow:blocked` | agente ou humano (aplica) | Parada: escopo vago, bypass sem justificativa ou decisão manual. |
-| `flow:done` | cron (aplica) | Transição final após merge. |
+| `trigger` | `triggers`, `next` | Ponto de entrada — cron ou manual |
+| `action/script` | `command`, `next` | Executa shell, captura `exit_code` + output JSON |
+| `action/open_session` | `instruction_path`, `on_complete` | Abre sessão Kiro Crew one-shot; aguarda `WORKFLOW_EXIT` |
+| `action/gate` | `prompt`, `on_complete` | Pausa o workflow e aguarda decisão humana via UI |
+| `end` | — | Terminal de sucesso (transiciona `workflow_runs.status → completed`) |
+| `fail` | — | Terminal de falha |
 
-## O comentário de estado
+### Schema YAML de workflow
 
-```markdown
-<!-- KIRO-FLOW-STATE -->
-## 🤖 KiroCrew Flow — Estado
+```yaml
+id: voomp-dev-flow
+tick_interval_secs: 60
+start: idle_wait
 
-**Workflow:** feature (v1)
-**Nó atual:** review
-**Status:** running
-**Repo:** api-gateway2
+nodes:
+  idle_wait:
+    type: trigger
+    triggers: ["cron:60", "manual"]
+    next: check_dispatchable
 
-### Histórico
-| Quando | De → Para | Quem |
-|--------|-----------|------|
-| 2026-09-15 00:02 | start → dev | system |
+  check_dispatchable:
+    type: action/script
+    command: "python3 scripts/check_dispatchable.py"
+    next:
+      on_complete:
+        - condition: "output.dispatchable == true"
+          goto: stage_briefing
+        default: idle_wait
 
-### Exceções
-| Exceção | Justificativa | Quem | Quando |
-|---------|---------------|------|--------|
-| `hml-bypass` | Checkout fora do ar | @elias | 2026-09-15 |
-<!-- /KIRO-FLOW-STATE -->
+  stage_briefing:
+    type: action/open_session
+    instruction_path: "prompts/briefing.md"
+    context:
+      issue_key: "$nodes.check_dispatchable.output.issue_key"
+    on_complete:
+      - condition: "exit_status == 'done'"
+        goto: stage_planning_specs
+      default: workflow_fail
+
+  wait_planning_review:
+    type: action/gate
+    prompt: "Spec da issue {issue_key} pronta. Aprovar para avançar para dev?"
+    options: ["approve", "reject"]
+    on_complete:
+      - condition: "decision == 'approve'"
+        goto: wait_develop
+      default: workflow_fail
+
+  workflow_done:
+    type: end
+
+  workflow_fail:
+    type: fail
 ```
 
-O comentário não é só registro — é **fonte de pré-condições de merge**. O executor
-bloqueia o merge com `hml-bypass` se a seção de Exceções não tiver
-justificativa preenchida.
+### Protocolo WORKFLOW_EXIT (nós open_session)
 
-## Protocolo cron ↔ agente
-
-O mecanismo de comunicação do sistema é **exclusivamente via labels de issue**. Cron
-Python e agente LLM nunca se chamam diretamente — toda a troca de estado acontece
-pelas labels `flow:*` aplicadas na issue.
-
-### Duas camadas com responsabilidades distintas
-
-| Camada | Execução | Responsabilidade |
-|---|---|---|
-| **Cron Python** | zero token | Lê labels → decide → aplica lock label → dispara sessão |
-| **Agente one-shot** | gasta token | Implementa/revisa → aplica label de resultado → posta comentário |
-
-### Diagrama do protocolo
+Igual ao `ledger_tick`: o agente publica na última mensagem:
 
 ```
-Cron Python (zero token)          Issue (labels)       Agente one-shot
-deployment.py                     GitHub / Jira        (gasta token)
-
-scan_candidates()
-     │
-     ▼ detecta flow:develop-waiting
-executor.decide()
-     │ → DISPATCH_DEV
-     ▼
-set_labels()  ──────────► [ flow:develop-running ]
-     │                              │
-_dispatch() ─────────────────────► │ inicia sessão one-shot
-                                   │
-                                   ├─ implementa
-                                   ├─ abre PR
-                                   ├─ posta KIRO-FLOW-STATE comment
-                                   │
-                                   ▼
-                     [ flow:review-waiting ]  ◄── agente aplica label
-                                                   antes de encerrar
-
-scan_candidates()  ◄──── cron detecta mudança de label
-     │ detecta flow:review-waiting
-     ▼
-DISPATCH_REVIEWER → set_labels() → [ flow:review-running ]
-     │
-_dispatch() ─────────────────────► sessão one-shot (reviewer)
-                                   │
-                       aprovado:   ▼
-                     [ flow:review-approved ]  ◄── agente aplica label
+WORKFLOW_EXIT: {"exit_status": "done", "pr_url": "..."}
 ```
 
-### Tabela de labels — responsável e significado
+O motor lê o JSONL da sessão pelo `tab_id` gravado em `workflow_node_states.session_key`.
 
-| Label | Quem aplica | Quando | Significado |
-|---|---|---|---|
-| `flow:briefing` | 🧠 humano | ao criar a demanda | TL/PM abriu a task |
-| `flow:planning-specs` | 🧠 dev | ao iniciar spec | Dev montando critérios |
-| `flow:planning-review` | 🧠 dev | ao pedir revisão | Aguardando aprovação humana |
-| `flow:develop-waiting` | 🧠 humano | ao priorizar | **Gatilho do cron** — próxima no scan |
-| `flow:develop-running` | 🤖 cron | ao despachar dev | Lock atômico antes de abrir sessão |
-| `flow:review-waiting` | 🤖 agente (dev) | ao abrir PR | Agente sinalizou que terminou |
-| `flow:review-running` | 🤖 cron | ao despachar reviewer | Lock anti-loop por SHA |
-| `flow:review-approved` | 🤖 agente (reviewer) | ao aprovar | Cron lê e avança para QA |
-| `flow:review-refused` | 🤖 agente (reviewer) | ao reprovar | Gate humano — fluxo para |
-| `flow:qa-waiting` | 🤖 cron | após merge/review-ok | Aguardando QA manual |
-| `flow:qa-testing` | 🧠 QA | ao iniciar testes | QA sinalizou que está testando |
-| `flow:qa-approved` | 🧠 QA | ao aprovar | Gatilho de merge (se auto-merge) |
-| `flow:qa-refused` | 🧠 QA | ao reprovar | Gate humano — fluxo para |
-| `flow:done` | 🤖 cron | após merge final | Issue concluída |
-| `flow:blocked` | 🧠 humano ou 🤖 agente | ao detectar bloqueio | Para tudo — prioridade sobre estado |
-| `flow:merge-conflict` | 🤖 cron | ao detectar conflito | Dispara sessão de resolução |
+### Protocolo de gate (nós action/gate)
 
-> **Regra para o agente:** o agente one-shot nunca inicia uma sessão de outro agente
-> diretamente. Ao terminar, ele aplica a label de resultado (`flow:review-waiting`,
-> `flow:review-approved`, `flow:review-refused`, `flow:blocked`) e posta o comentário
-> `<!-- KIRO-FLOW-STATE -->`. O cron detecta a mudança no próximo ciclo e age.
+1. Motor cria `workflow_gate_tokens` com `token`, `run_id`, `node_id`, `prompt`, `options`, `expires_at`.
+2. UI chama `GET /api/apps/kirocrew-flow/gate/{token}` para renderizar o card de aprovação.
+3. Humano decide → `POST /api/apps/kirocrew-flow/gate/{token}/decide` com `{"decision": "approve"}`.
+4. Motor detecta a decisão no próximo tick e avança conforme `on_complete`.
 
-### Contrato de encerramento do agente
+### Diferenciação de erros (`error_kind`)
 
-Todo agente one-shot deve, ao encerrar com sucesso:
+| Valor | Quando |
+|---|---|
+| `failed` | Agente declarou `exit_status=failed` no WORKFLOW_EXIT |
+| `timed_out` | Sessão encerrou sem declaração dentro do TTL |
+| `error` | Exception não tratada no tick |
 
-1. Aplicar a label de resultado (ex: `flow:review-waiting`) e remover a de estado anterior (ex: `flow:develop-running`).
-2. Postar o comentário `<!-- KIRO-FLOW-STATE -->` com o histórico da transição.
-3. **Nunca chamar o cron, o próximo agente ou o webhook diretamente** — a label é o único canal de sinalização.
+### Workflow da squad Gateway
 
-Ao encerrar por bloqueio:
+`workflows/voomp-dev-flow.yaml` — 24 nós mapeando todos os stages da esteira atual
+(briefing → planning → develop → review → QA → done) para o schema YAML.
+Os 6 scripts helper em `deployment/flow/scripts/` são os `command:` referenciados
+pelo YAML.
 
-1. Aplicar `flow:blocked`.
-2. Remover o estado anterior (`flow:develop-running`, `flow:review-running`, etc.).
-3. Comentar o motivo do bloqueio na issue.
+> **Status:** o engine existe e está testado (22 testes em `test_backend_gate.py` +
+> testes de loader/tick). A integração com o `single_flow.py` ainda não está ativa —
+> o motor `ledger_tick` continua sendo o entrypoint do cron. O engine de nós tipados
+> entrará em uso quando o backend asyncio (`server.py`) for integrado ao cron.
 
-Diagrama de sequência completo: [`docs/fluxo.md`](fluxo.md).
+## Workspace isolado por task
 
-## Detalhes técnicos: para desenvolvedores
+Cada dispatch cria um **worktree efêmero** dedicado:
+
+```
+<dev_root>/<repo-short>/                 ← clone-base (nunca tocado)
+<dev_root>/.esteira-worktrees/
+    <repo-short>-<issue_number>/         ← worktree efêmero
+```
+
+`_worktree_path(dev_root, repo, issue_number)` é a **fonte única de verdade** —
+usada pelo dispatch e pelo prompt da sessão one-shot.
+
+## Detalhes para desenvolvedores
 
 Ver `.kiro/steering/arquitetura.md` — cobre convenções de código (StrEnum,
 `slots=True`, imports no topo, `with` múltiplos), como adicionar um novo

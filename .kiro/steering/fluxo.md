@@ -1,67 +1,78 @@
 ---
 inclusion: always
 name: fluxo-esteira
-description: Fluxo de desenvolvimento do KiroCrew Flow — da especificação ao merge, governado por labels flow:*, com motor de execução one-shot sobre o Kiro Crew. Merge sempre manual.
+description: Fluxo de desenvolvimento do KiroCrew Flow — single-flow ledger-driven. Estado canônico em SQLite local, motor O(1) por tick. Merge sempre manual.
 ---
 
 # Fluxo da esteira (KiroCrew Flow)
 
-Orquestração de esteira de desenvolvimento sobre o **Kiro Crew**. Uma vigia
-zero-token observa issues por label `flow:*` e, quando uma task está
-priorizada, dispara uma **sessão de execução one-shot** que implementa e **abre o
-PR** — uma passada, sem loop.
+Orquestração de esteira de desenvolvimento sobre o **Kiro Crew**. O motor é
+**single-flow, ledger-driven**: uma cron única (`flow-single`, 60s) processa a
+task ativa em O(1) — 1 query SQLite + 1 chamada de rede.
 
-> **Regra inviolável: a automação NUNCA faz deploy.** Ela entrega o PR no estado
-> `flow:review-waiting` e encerra (ou faz merge squash se `auto_merge: true`
-> estiver configurado para o repo em `squads/*.yaml`). Deploy é sempre manual.
-> Merge é **manual por padrão** (`auto_merge: false` por repo; `auto_merge_on_approve: false`
-> globalmente em `workflow_params`). Ative por repo via `auto_merge: true` no `squads/*.yaml`,
-> ou globalmente via `workflow_params.auto_merge_on_approve: true` no squad config.
+> **Regra inviolável: a automação NUNCA faz deploy.** Ela entrega o PR e encerra.
+> Deploy é sempre manual. Merge é **manual por padrão** (`auto_merge: false` por
+> repo; `auto_merge_on_approve: false` globalmente). Ative por repo via
+> `auto_merge: true` no `squads/*.yaml`.
 
-## Fluxo completo (namespace flow:*)
+## Fluxo completo (estados do ledger)
 
 ```
-flow:briefing → flow:planning-specs → flow:planning-review → flow:develop-waiting
-  → flow:develop-running → flow:review-waiting
-    → flow:review-approved → flow:qa-waiting → flow:qa-testing
-      → flow:qa-approved → flow:done
-      → flow:qa-refused → (gate humano: TL/dev move p/ develop-waiting|develop-running)
-    → flow:review-refused → (gate humano: TL/dev move p/ develop-waiting)
+BRIEFING → PLANNING_SPECS → PLANNING_REVIEW → DEVELOP_WAITING
+         → REVIEW_WAITING
+           → REVIEW_APPROVED → QA_WAITING → QA_APPROVED → DONE
+           → REVIEW_REFUSED  (gate humano — terminal)
+                                           → QA_REFUSED  (gate humano — terminal)
 ```
 
-Modificadores: `flow:blocked`, `flow:merge-conflict`.
+Modificadores que ainda influenciam o motor: `flow:blocked`, `flow:merge-conflict`.
 
-**Regra chave:** toda reprovação humana (`review-refused`, `qa-refused`) é gate humano
+**Regra chave:** toda reprovação humana (`REVIEW_REFUSED`, `QA_REFUSED`) é terminal
 — o fluxo para e aguarda decisão manual. Sem dispatch automático após reprovação.
 
 ## Protocolo de comunicação cron ↔ agente
 
-**Cron Python e agente one-shot nunca se chamam diretamente.** A comunicação
-é exclusivamente via labels `flow:*` na issue.
+O motor é **ledger-driven**: o estado canônico vive no SQLite (`run_ledger`).
+A comunicação com o agente one-shot é via **WORKFLOW_EXIT no JSONL da sessão**,
+não mais via labels na issue.
 
 ```
-Cron Python (zero token)
-  → lê labels → decide → aplica lock label → dispara sessão
+Cron flow-single (zero token, 60s)
+  → ledger.active()                    ← O(1): 1 query SQLite
+  → provider.get_work_item()           ← 1 chamada de rede
+  → ledger_tick.tick()
 
-Agente one-shot (gasta token)
-  → implementa/revisa → aplica label de resultado → posta KIRO-FLOW-STATE
+Estágio ATIVO (BRIEFING / PLANNING_SPECS):
+  → dispatch_stage() → sessão one-shot
+      Agente: executa trabalho
+      Agente: publica WORKFLOW_EXIT: {"exit_status": "done"}
+  → motor lê JSONL → ledger.advance(próximo_estado)
 
-Cron Python (zero token)
-  → detecta label de resultado → faz próxima transição
+Estágio ESPERA (DEVELOP / REVIEW / QA):
+  → motor observa sinal externo (PR aberto, review aprovado)
+  → ledger.advance(próximo_estado) quando sinal chega
 ```
 
 ### Contrato do agente one-shot
 
-Ao encerrar com **sucesso**, o agente DEVE:
+Ao encerrar com **sucesso**, o agente DEVE publicar na última mensagem:
 
-1. Aplicar a label de resultado (ex: `flow:review-waiting`) e remover a anterior (ex: `flow:develop-running`).
-2. Postar o comentário `<!-- KIRO-FLOW-STATE -->` com o histórico.
-3. **Nunca chamar o cron, outro agente ou o webhook diretamente** — a label é o canal exclusivo.
+```
+WORKFLOW_EXIT: {"exit_status": "done"}
+```
 
-Ao encerrar por **bloqueio**, o agente DEVE:
+O motor lê o JSONL de trás para frente e avança o estado conforme o mapeamento
+de transições. Sem o `WORKFLOW_EXIT`, o motor não avança (estado fica em espera).
 
-1. Aplicar `flow:blocked` e remover o estado ativo (ex: `flow:develop-running`).
-2. Comentar o motivo na issue.
+Ao encerrar por **bloqueio**, o agente publica:
+
+```
+WORKFLOW_EXIT: {"exit_status": "failed", "reason": "motivo"}
+```
+
+> **Legado (label-driven, até set/2026):** antes a comunicação era via labels
+> `flow:*` na issue + comentário `KIRO-FLOW-STATE`. Esse mecanismo foi removido na
+> PR #319. As labels `flow:*` ainda são aplicadas como espelho de visibilidade.
 
 ## Labels — duas dimensões
 

@@ -59,73 +59,77 @@ Aplique o metadado (tipo + prioridade):
 
 ## Como funciona
 
-```
-squads/*.yaml → SquadConfig → scan_candidates() → executor.decide() → deployment.run()
-```
-
-1. `scan_candidates()` varre as issues por labels `flow:*` sem gastar token — compara hash do estado atual com o cache SQLite, e só processa o que mudou.
-2. `executor.decide()` decide a ação (DISPATCH_DEV, DISPATCH_REVIEWER, NOTIFY_HUMAN, BLOCK, REBRAND ou SKIP) com base no template da squad e no estado da issue.
-3. `deployment.run()` executa a ação: dispara sessão one-shot, notifica humano ou aplica rebrand de template.
-
-A sessão one-shot **nunca mergeia e nunca faz deploy**. Ela entrega o PR em `flow:review-waiting` e encerra.
-
-### Protocolo cron ↔ agente
-
-**Cron Python e agente LLM não se chamam diretamente** — toda a comunicação acontece via labels `flow:*` na issue.
+O motor atual é **single-flow, ledger-driven** — uma cron única, custo O(1) por tick,
+estado guardado em SQLite local (não mais nas labels do GitHub).
 
 ```
-Cron Python (zero token)
-  │  scan_candidates() detecta flow:develop-waiting
-  ▼
-  aplica flow:develop-running  ──────────────► [ issue atualizada ]
-  _dispatch() dispara sessão one-shot ───────► Agente (gasta token)
-                                                │  implementa + abre PR
-                                                ▼
-  scan_candidates() detecta mudança ◄───────── aplica flow:review-waiting
+squads/my-squad.yaml
+    → run_single_flow(ctx)
+        → ledger.active()          ← 1 query SQLite (nada de gh issue list)
+        → provider.get_work_item() ← 1 chamada de rede (estado real da issue)
+        → ledger_tick.tick()       ← decide + avança estágio
+            → dispatcher.dispatch_stage() ← abre sessão one-shot quando necessário
+```
+
+1. **`ledger.active()`** — lê a task em execução em O(1) (1 registro SQLite). Se não há nada ativo e `claim_single_flow` ainda não reclamou uma issue, o tick é idle.
+2. **`claim_single_flow`** — reclamou uma issue? Cria o `RunLedger` com o estado inicial e o `squad_id` resolvido. A partir daqui o estado vive no banco local.
+3. **`ledger_tick.tick()`** — lê o estado do ledger, lê o sinal externo da issue (existe PR? review pronto?) e avança o estágio:
+   - **Estágios ativos** (`BRIEFING`, `PLANNING_SPECS`): o motor dispara a sessão e avança.
+   - **Estágios de espera** (`DEVELOP`, `REVIEW`, `QA`): o motor observa o sinal externo (PR aberto, review aprovado, QA ok) e avança quando o sinal chega.
+4. A sessão one-shot **nunca mergeia e nunca faz deploy**. Ela entrega o PR e encerra.
+
+> **Diferença do modelo label-driven legado:** antes o scan varria todas as issues abertas
+> por estado (O(n)), com N crons por estágio. Hoje é 1 cron + 1 query SQLite + 1 chamada
+> de rede, independente do volume de issues.
+
+### Sequência de uma task no single-flow
+
+```
+flow-single tick (a cada 60s, zero token)
   │
-  ▼
-  aplica flow:review-running ────────────────► Agente reviewer (gasta token)
-                                                │  lê PR + posta review
-                                                ▼
-  scan_candidates() detecta mudança ◄───────── aplica flow:review-approved
-  │                                               (ou flow:review-refused → gate humano)
-  ▼
-  merge squash → flow:qa-waiting → … → flow:done
+  ├─ ledger.active() → sem task ativa
+  │   └─ claim_single_flow() → issue VGAT-123 reclamada
+  │       → ledger criado: estado=BRIEFING
+  │
+  ├─ ledger.active() → VGAT-123, estado=BRIEFING
+  │   → dispatch_stage(BRIEFING) → sessão one-shot aberta
+  │       Agente: monta contexto, define objetivo, fecha em PLANNING_SPECS
+  │   → ledger avança: BRIEFING → PLANNING_SPECS
+  │
+  ├─ ledger.active() → VGAT-123, estado=PLANNING_SPECS
+  │   → dispatch_stage(PLANNING_SPECS) → sessão one-shot aberta
+  │       Agente: escreve spec, critérios de aceite, sub-tasks
+  │   → ledger avança: PLANNING_SPECS → DEVELOP_WAITING
+  │
+  ├─ ledger.active() → VGAT-123, estado=DEVELOP_WAITING
+  │   → aguarda PR aberto (sinal externo do dev)
+  │   → PR detectado → ledger avança: DEVELOP_WAITING → REVIEW_WAITING
+  │
+  ├─ ledger.active() → VGAT-123, estado=REVIEW_WAITING
+  │   → aguarda review aprovado
+  │   → review aprovado → ledger avança: REVIEW_WAITING → QA_WAITING
+  │
+  └─ ledger.active() → VGAT-123, estado=QA_WAITING
+      → aguarda QA
+      → QA ok → ledger avança: QA_WAITING → DONE
+          → ledger.release() → slot livre para próxima task
 ```
 
-Tabela completa de labels (quem aplica e quando): [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#protocolo-cron--agente).  
-Diagrama de sequência Mermaid: [`docs/fluxo.md`](docs/fluxo.md).
+### Dispatch de sessões (loopback interno)
 
-### Dispatch de sessões (webhook)
+O dispatch faz dois POST ao gateway local do Kiro Crew:
 
-Os crons de estágio que precisam acordar uma sessão de agente (`flow-develop-waiting`,
-`flow-review-waiting`, `flow-merge-conflict`) despacham via **POST ao webhook do
-dashboard** do Kiro Crew. Isso funciona nos crons `script`-based, cujo `ScriptContext`
-não expõe `_port`/`_secret` do gateway (a causa raiz da issue #212, em que a label era
-trocada mas nenhuma sessão era criada).
+1. `POST /api/chat/slots` — cria o slot de sessão e obtém o `tab_id`.
+2. `POST /api/chat` — injeta a instrução renderizada na sessão criada.
 
-Duas variáveis de ambiente controlam o transporte (registre-as como **Secrets do cron**
-no dashboard → Schedule → cron → Secrets):
+O secret é lido de `~/.kiro/crew/run/gateway-{port}.secret` (atualizado a cada
+restart), com fallback para `~/.kiro/crew/.local_secret`. O `ctx._secret` injetado
+pelo runtime não é usado (fica stale após restart).
 
-| Variável | Default | Descrição |
-|---|---|---|
-| `KIROCREW_WEBHOOK_URL` | `http://localhost:5478/api/hooks/agent` | Endpoint do webhook do dashboard. |
-| `KIROCREW_WEBHOOK_TOKEN` | *(vazio)* | Token Bearer do webhook configurado (Settings → Webhooks). Nunca é hard-coded. |
-
-Quando `KIROCREW_WEBHOOK_TOKEN` está setado, o dispatch faz
-`POST {KIROCREW_WEBHOOK_URL}` com header `Authorization: Bearer <token>`. Quando o token
-está **vazio**, cai no comportamento legado de loopback interno (`POST /api/chat` com
-`X-Internal-Secret`/`X-Session-Key`), preservando os crons `message`-based. O scan em si
-continua **zero-token** — o webhook só é chamado quando há um candidato real na fila.
-
-**Fix: secret path do gateway (#263/#274).** No fallback loopback, o cron lê o secret
-em `~/.kiro/crew/run/gateway-{port}.secret` (atualizado a cada restart do gateway),
-com fallback para `~/.kiro/crew/.local_secret`. O `ctx._secret` injetado pelo runtime
-não é usado — fica stale após restart e causava 403 nos despachos.
-
-**Fix: slots órfãos (#267/#273).** Quando o Step 2 do dispatch (`POST /api/chat`)
-falha após o Step 1 já ter criado o slot, o cron deleta o slot automaticamente.
-Isso elimina as sessões "New Session…" fantasmas que apareciam no sidebar do dashboard.
+O `tab_id` retornado pelo Step 1 é gravado no ledger como `session_key`. A detecção
+de encerramento da sessão é feita varrendo os arquivos `.jsonl` do gateway pelo
+`tab_id` — o nome do arquivo JSONL não contém o slot name, apenas um número
+sequencial interno.
 
 ## Fluxos disponíveis (Fase 1)
 
@@ -230,35 +234,18 @@ Para instalar manualmente ou atualizar os scripts instalados:
 ./scripts/install-cron.sh
 ```
 
-**Crons registrados automaticamente pelo App (namespace `flow:*`):**
+**Crons registrados automaticamente pelo App:**
 
-| Nome | Script | Intervalo | Estágio |
+| Nome | Script | Intervalo | O que faz |
 |---|---|---|---|
-| `flow-develop-waiting` | `deployment/flow/dev.py:run` | 300s | `flow:develop-waiting` → implementa + PR |
-| `flow-review-waiting` | `deployment/flow/reviewer.py:run` | 180s | `flow:review-waiting` → code review |
-| `flow-review-approved` | `deployment/flow/review_approved.py:run` | 120s | `flow:review-approved` → merge → QA |
-| `flow-review-refused` | `deployment/flow/rework.py:run` | 3600s | `flow:review-refused` → notifica TL |
-| `flow-merge-conflict` | `deployment/flow/conflict.py:run` | 300s | `flow:merge-conflict` → rebase |
-| `flow-qa-waiting` | `deployment/flow/qa_notify.py:run` | 600s | `flow:qa-waiting` → notifica QA |
-| `flow-qa-approved` | `deployment/flow/qa_approved.py:run` | 120s | `flow:qa-approved` → merge → done |
-| `flow-qa-refused` | `deployment/flow/qa_refused.py:run` | 3600s | `flow:qa-refused` → notifica TL+dev |
-| `flow-update-check` | `flow_update_check.py:run` | 3600s | verifica canal `stable` e aplica a política de update ([`docs/RELEASE.md`](docs/RELEASE.md)) |
+| `flow-single` | `deployment/flow/single_flow.py:run` | 60s | Tick principal — ledger-driven, O(1) por ciclo |
+| `flow-update-check` | `flow_update_check.py:run` | 3600s | Verifica canal `stable` e aplica política de update ([`docs/RELEASE.md`](docs/RELEASE.md)) |
 
-Para registrar manualmente (cron monolítico legado, todos os estágios em sequência):
-
-```
-cron_add(name="crewflow-scan", script="~/.kiro/crew/crons/deployment.py:run", every=600)
-```
-
-> **Update do App.** O antigo cron `flow-auto-update` (que fazia `git pull --rebase`
-> incondicional a cada 5 minutos e podia auto-quebrar produção) foi **removido**. O
-> update passa pelo caminho oficial do Crew App — o hook `setup.onUpdate` do
-> `app.json` — e é **gated** pela política _auto vs manual_ de
-> [`docs/RELEASE.md`](docs/RELEASE.md): apenas releases de **patch** (`fix`)
-> auto-aplicam; releases **minor/major** (`feat`/breaking) apenas **notificam** e
-> aguardam ação manual. O cron `flow-update-check` compara a versão instalada com o
-> canal `stable` e delega a decisão à lógica pura `flow.domain.update_policy` — nunca
-> puxa o `main` cegamente.
+> **Histórico:** antes da frente 6 (set/2026) havia 8 crons por estágio
+> (`flow-develop-waiting`, `flow-review-waiting`, etc.) mais o monolítico
+> `crewflow-scan`. Todos foram substituídos pelo `flow-single` único.
+> O cron `flow-auto-update` também foi removido (update via hook `setup.onUpdate`
+> do App, gated por [`docs/RELEASE.md`](docs/RELEASE.md)).
 
 ### 3. Aplique as labels
 
@@ -350,39 +337,27 @@ python3 -m ruff check flow/ && python3 -m pytest flow/tests/ --cov=flow --cov-fa
 
 630 testes, cobertura ≥75% (piso do CI), ruff limpo.
 
+> Após o cleanup do modo legado (PR #319), a suite passou de 1121 para 827 testes —
+> os testes dos crons por estágio foram removidos junto com o código que testavam.
+
 ## Dry-run — inspecionar sem despachar
 
-Antes de ativar o `auto_dispatch`, use o modo dry-run para validar o que o motor faria:
+O single-flow não tem dry-run nativo na linha de comando. Para inspecionar o estado
+do ledger sem despachar, use o SQLite diretamente:
 
 ```bash
-CREWFLOW_DRY_RUN=1 python3 deployment/deployment.py
+# Ver runs ativos
+sqlite3 ~/.kiro/crew/crons/deployment/data/flow.db \
+  "SELECT issue_key, state, squad_id FROM run_ledger WHERE status='active'"
+
+# Ver histórico de avanços de uma issue
+sqlite3 ~/.kiro/crew/crons/deployment/data/flow.db \
+  "SELECT state, entered_at FROM run_ledger_history WHERE issue_key='VGAT-123' ORDER BY entered_at"
 ```
 
-Ou via config (`deployment.config.yaml`):
-
-```yaml
-dry_run: true
-```
-
-Saída esperada:
-
-```
-[DRY-RUN] ──────────────────────────────────────────
-[DRY-RUN] 2 issue(s) processada(s) pelo scan
-[DRY-RUN] Decisões (nenhuma será executada):
-
-[DRY-RUN] owner/repo#73 → DISPATCH_DEV (template via executor) — [repo] feat: dry-run
-[DRY-RUN] owner/repo#74 → NOTIFY_HUMAN tl — [repo] Fix: aguarda gate-tl
-
-[DRY-RUN] ── Nenhuma sessão despachada, label alterada ou notificação enviada. ──
-```
-
-Garantias do modo dry-run:
-- O scan roda normalmente (lê issues, executa o executor, decide ações)
-- `_dispatch()` **não** é chamado — nenhuma sessão one-shot é aberta
-- `provider.set_labels()` **não** é chamado — nenhuma label é alterada
-- `ctx.notify()` **não** é chamado — nenhuma notificação é enviada
-- Nenhum lock é criado
+Para simular um tick sem efeitos colaterais, monte um `ctx` sintético e chame
+`ledger_tick.tick()` diretamente — o motor é puro (sem I/O de rede), testável com
+um `Dispatcher` fake.
 
 ## Roadmap
 
@@ -391,6 +366,27 @@ Garantias do modo dry-run:
 | **Fase 1** — fluxos fixos, sem editor | ✅ Concluída (set/2026) |
 | **Fase 2** — editor read-only no dashboard | 🔲 Planejada |
 | **Fase 3** — canvas editável estilo n8n | 🔲 Futura |
+
+### Engine de workflow por nós tipados (PR #316)
+
+O projeto inclui um **engine de workflow declarativo** baseado em YAML — fluxos
+definidos como grafos de nós tipados, inspirado no AWS Step Functions.
+
+**Tipos de nó disponíveis:**
+
+| Tipo | O que faz |
+|---|---|
+| `trigger` | Ponto de entrada (cron ou manual) |
+| `action/script` | Executa shell; captura `exit_code` + output JSON |
+| `action/open_session` | Abre sessão Kiro Crew one-shot; aguarda `WORKFLOW_EXIT` |
+| `action/gate` | Pausa e aguarda decisão humana via UI (aprovação, reprovação) |
+| `end` | Terminal de sucesso |
+| `fail` | Terminal de falha |
+
+O workflow da squad Gateway (`workflows/voomp-dev-flow.yaml`) já mapeia os 24 nós
+do fluxo completo. A integração com o cron `flow-single` é o próximo passo.
+
+Ver [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#engine-de-workflow-por-nós-tipados-pr-316) para o schema YAML e o protocolo de gate.
 
 Ver [`docs/ROADMAP.md`](docs/ROADMAP.md) para detalhes.
 

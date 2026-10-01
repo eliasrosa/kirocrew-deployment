@@ -12,7 +12,7 @@ description: Arquitetura hexagonal, stack, convenções de código e qualidade d
 |---|---|---|
 | Linguagem | **Python 3.12** | |
 | Servidor web | **aiohttp** | NÃO usar FastAPI, Flask, Starlette ou Pydantic |
-| Testes | **pytest** + **pytest-cov** | 630 testes, 75% de cobertura mínima |
+| Testes | **pytest** + **pytest-cov** | 827 testes, 75% de cobertura mínima |
 | Linting | **ruff** | zero warnings permitidos |
 | Type check | **mypy** | `--ignore-missing-imports` no CI |
 
@@ -53,18 +53,22 @@ flow/
     └── workflow.py             — WorkflowTemplate, get_template(), 4 templates fixos
 
 deployment/
-├── deployment.py               — driving adapter (cron do Kiro Crew)
+├── deployment.py               — driving adapter (run_single_flow + claim_single_flow)
 ├── deployment.config.yaml      — config de paths, flags globais e concorrência
-└── flow/                       — módulos de estágio e utilitários do cron
-    ├── dev.py                  — run_dev (flow:develop-waiting → implementa + PR)
-    ├── reviewer.py             — run_reviewer (flow:review-waiting → code review)
-    ├── review_approved.py      — run_review_approved (flow:review-approved → merge)
-    ├── rework.py               — run_rework (flow:review-refused → notifica TL)
-    ├── merge_conflict.py       — run_conflito (flow:merge-conflict → rebase)
-    ├── qa_waiting.py           — run_qa_waiting (flow:qa-waiting → notifica QA)
-    ├── qa_approved.py          — run_qa_approved (flow:qa-approved → merge)
-    ├── qa_refused.py           — run_qa_refused (flow:qa-refused → notifica TL+dev)
-    └── watch_issue.py          — monitor zero-token por issue (check: PR aberta, merge, timeout)
+└── flow/                       — módulos do cron single-flow
+    ├── single_flow.py          — entrypoint do cron flow-single (ledger-driven, O(1))
+    └── scripts/                — scripts helper de integração com o engine de workflow
+        ├── check_dispatchable.py
+        ├── route_state.py
+        ├── advance_state.py
+        ├── check_pr_state.py
+        ├── check_qa_state.py
+        └── merge_pr.py
+
+> **Legado removido (PR #319, out/2026):** os arquivos `dev.py`, `reviewer.py`,
+> `review_approved.py`, `rework.py`, `merge_conflict.py`, `qa_waiting.py`,
+> `qa_approved.py`, `qa_refused.py` e `watch_issue.py` foram removidos junto com
+> as funções `run()`, `_run_stage()` e `scan_candidates()` do `deployment.py`.
 
 flow/tests/
 ├── test_domain_boundary.py     — garante domain/ isolado (NUNCA viola)
@@ -115,7 +119,41 @@ Um módulo **não pode** ser verificado estaticamente contra um Protocol. O gate
 garante paridade é `test_provider_parity.py`. Se você adicionar um terceiro adapter,
 registre-o também na tabela `CLIENTS` do teste — senão o CI passa sem verificar.
 
-## Fluxo de uma issue pela arquitetura
+## Motor: single-flow ledger-driven (atual)
+
+O motor atual é **ledger-driven** (frentes 6–8, set/2026). O estado da task vive
+num SQLite local, não nas labels da issue.
+
+```
+deployment.run_single_flow(ctx)
+    │
+    ├─ ledger.active()                       ← 1 query SQLite (O(1))
+    │   sem task ativa → claim_single_flow() ← busca próxima issue
+    │
+    ├─ provider.get_work_item(issue_key)     ← 1 chamada de rede
+    │
+    └─ ledger_tick.tick(ledger, work_item, dispatcher)
+           │
+           ├─ estado ATIVO (BRIEFING/PLANNING_SPECS)
+           │   → dispatcher.dispatch_stage()  ← abre sessão one-shot
+           │   → ledger.advance(próximo_estado)
+           │
+           └─ estado ESPERA (DEVELOP/REVIEW/QA)
+               → observa sinal externo (PR aberto, review aprovado)
+               → ledger.advance(próximo_estado) quando sinal chega
+```
+
+**Protocolo de encerramento:** o agente one-shot publica `WORKFLOW_EXIT: {"exit_status": "done"}`
+na última mensagem. O motor lê o JSONL da sessão de trás para frente e avança.
+
+**Dispatch:** 2 POSTs ao gateway local — `/api/chat/slots` (cria slot, obtém `tab_id`)
++ `/api/chat` (injeta instrução). Secret lido de `~/.kiro/crew/run/gateway-{port}.secret`.
+
+> **Legado (label-driven, até set/2026):** antes o fluxo era guiado por `scan_candidates()`
+> + `executor.decide()` + labels `flow:*` + `KIRO-FLOW-STATE` comment. Esse código foi
+> removido na PR #319. Ver `docs/ARCHITECTURE.md` para o histórico.
+
+## Fluxo de uma issue pela arquitetura (legado — referência histórica)
 
 ```
 squads/*.yaml  →  SquadConfig.resolve_workflow()  →  template (feature/bug/hotfix/debt)
