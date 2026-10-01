@@ -59,8 +59,9 @@ def main() -> None:
             sys.exit(1)
 
         # Localiza e faz o merge da PR via github_client
-        from flow.adapters import github_client as gh_client  # noqa: E402
         import contextlib
+
+        from flow.adapters import github_client as gh_client
 
         pr = gh_client.get_pr_for_issue(run.repo, issue_number)
         if pr is None:

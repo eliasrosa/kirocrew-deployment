@@ -21,37 +21,30 @@ if str(APP_ROOT) not in sys.path:
 from backend.ctx import BackendCronCtx  # noqa: E402
 from backend.engine.db import apply_migrations  # noqa: E402
 from backend.version import get_version  # noqa: E402
-from deployment.deployment import (  # noqa: E402
-    _STAGE_CONFLITO,
-    _STAGE_DEV,
-    _STAGE_MERGE,
-    _STAGE_REVIEWER,
-    _run_stage,
-)
+from deployment.deployment import run_single_flow  # noqa: E402
 
 
 async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "app": "kirocrew-flow", "version": get_version()})
 
 
-async def _run_stage_loop(stage: str, interval: int) -> None:
-    """Loop zero-token para um estágio da esteira.
+async def _single_flow_loop(interval: int) -> None:
+    """Loop zero-token do single-flow.
 
-    _run_stage é síncrono (I/O com gh CLI e APIs) — rodado em executor
+    run_single_flow é síncrono (I/O com gh CLI e APIs) — rodado em executor
     para não bloquear o event loop do aiohttp.
-    Token só gasto dentro de _dispatch() quando há trabalho real.
+    Token só gasto dentro do dispatcher quando há trabalho real.
 
     Args:
-        stage:    um dos valores _STAGE_* (dev/reviewer/merge/conflito)
         interval: segundos entre cada ciclo
     """
     ctx = BackendCronCtx()
     while True:
         try:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, _run_stage, ctx, stage)
+            await loop.run_in_executor(None, run_single_flow, ctx)
         except Exception as exc:
-            print(f"[crewflow-{stage} loop] erro: {exc}", flush=True)
+            print(f"[crewflow single-flow loop] erro: {exc}", flush=True)
         await asyncio.sleep(interval)
 
 
@@ -59,27 +52,8 @@ async def start_background_loops(app: web.Application) -> None:
     apply_migrations()
     app["tasks"] = [
         asyncio.create_task(
-            _run_stage_loop(
-                _STAGE_DEV,
-                int(os.environ.get("CREWFLOW_DEV_INTERVAL", "300")),
-            )
-        ),
-        asyncio.create_task(
-            _run_stage_loop(
-                _STAGE_REVIEWER,
-                int(os.environ.get("CREWFLOW_REVIEWER_INTERVAL", "180")),
-            )
-        ),
-        asyncio.create_task(
-            _run_stage_loop(
-                _STAGE_MERGE,
-                int(os.environ.get("CREWFLOW_MERGE_INTERVAL", "120")),
-            )
-        ),
-        asyncio.create_task(
-            _run_stage_loop(
-                _STAGE_CONFLITO,
-                int(os.environ.get("CREWFLOW_CONFLITO_INTERVAL", "300")),
+            _single_flow_loop(
+                int(os.environ.get("CREWFLOW_SINGLE_FLOW_INTERVAL", "60")),
             )
         ),
     ]

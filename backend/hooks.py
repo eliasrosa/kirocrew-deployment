@@ -28,13 +28,12 @@ _TASKS: list[asyncio.Task] = []
 
 
 async def on_startup(ctx: object) -> None:
-    """Inicia os 4 loops asyncio de polling da esteira quando o app é habilitado.
+    """Inicia o loop asyncio de polling do single-flow quando o app é habilitado.
 
     Invocado pelo gateway como ``func(ctx)`` (aguardado por ser coroutine).
-    Reutiliza ``backend.server._run_stage_loop`` e as constantes de estágio de
-    ``deployment.deployment`` — importados de forma preguiçosa dentro da função
-    (com o guard ``sys.path.insert(app_root)``) para funcionar sob o namespace
-    de módulo sintético do gateway.
+    Reutiliza ``backend.server._single_flow_loop`` — importado de forma preguiçosa
+    dentro da função (com o guard ``sys.path.insert(app_root)``) para funcionar
+    sob o namespace de módulo sintético do gateway.
 
     Erros de import/startup são registrados (log), nunca propagados.
     """
@@ -43,44 +42,19 @@ async def on_startup(ctx: object) -> None:
         sys.path.insert(0, str(app_root))
 
     try:
-        from backend.server import _run_stage_loop
-        from deployment.deployment import (
-            _STAGE_CONFLITO,
-            _STAGE_DEV,
-            _STAGE_MERGE,
-            _STAGE_REVIEWER,
-        )
+        from backend.server import _single_flow_loop
 
         _TASKS.clear()
         _TASKS.extend(
             [
                 asyncio.create_task(
-                    _run_stage_loop(
-                        _STAGE_DEV,
-                        int(os.environ.get("CREWFLOW_DEV_INTERVAL", "300")),
-                    )
-                ),
-                asyncio.create_task(
-                    _run_stage_loop(
-                        _STAGE_REVIEWER,
-                        int(os.environ.get("CREWFLOW_REVIEWER_INTERVAL", "180")),
-                    )
-                ),
-                asyncio.create_task(
-                    _run_stage_loop(
-                        _STAGE_MERGE,
-                        int(os.environ.get("CREWFLOW_MERGE_INTERVAL", "120")),
-                    )
-                ),
-                asyncio.create_task(
-                    _run_stage_loop(
-                        _STAGE_CONFLITO,
-                        int(os.environ.get("CREWFLOW_CONFLITO_INTERVAL", "300")),
+                    _single_flow_loop(
+                        int(os.environ.get("CREWFLOW_SINGLE_FLOW_INTERVAL", "60")),
                     )
                 ),
             ]
         )
-        print("[kirocrew-flow] on_startup: 4 loops asyncio iniciados", flush=True)
+        print("[kirocrew-flow] on_startup: single-flow loop iniciado", flush=True)
     except Exception as exc:
         print(f"[kirocrew-flow] on_startup error: {exc}", flush=True)
 
