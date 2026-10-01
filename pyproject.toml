@@ -9,6 +9,7 @@ description = "KiroCrew Flow — orquestração de esteira de desenvolvimento mu
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9",
+    "yoyo-migrations>=8.2",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,345 @@
+# voomp-dev-flow.yaml
+# Mapeamento dos stages do kirocrew-flow no engine de workflow por nós tipados.
+#
+# Este YAML é o equivalente declarativo do que hoje está hardcoded em:
+#   flow/engine/ledger_tick.py  (_NEXT_STATE, tick())
+#   flow/domain/state.py        (State enum + _TERMINAL_STATES)
+#   deployment/deployment.py    (dispatch real)
+#
+# Máquina de estados (linear, single-flow):
+#   BRIEFING → PLANNING_SPECS → PLANNING_REVIEW → DEVELOP_WAITING
+#            → DEVELOP_RUNNING → REVIEW_WAITING → QA_WAITING → DONE
+#
+# Gates humanos:
+#   REVIEW_REFUSED → volta para DEVELOP_WAITING  (rework)
+#   QA_REFUSED     → volta para DEVELOP_WAITING  (rework)
+#
+# Modificadores que pausam a esteira (não mapeados como nós; verificados
+# no script check_dispatchable antes do dispatch):
+#   flow:blocked        → impede dispatch mesmo em develop-waiting
+#   flow:merge-conflict → aciona o stage de resolução de conflito
+
+id: voomp-dev-flow
+name: "Dev Flow — Squad Gateway"
+version: "1.0"
+tick_interval_secs: 60
+node_ttl_secs: 7200   # 2h por nó de sessão antes de timed_out
+
+start: check_dispatchable
+
+nodes:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # SCAN — zero-token, determinístico
+  # Equivalente a: ledger.active() + provider.read_state() do ledger_tick.py
+  # ─────────────────────────────────────────────────────────────────────────
+
+  check_dispatchable:
+    type: action/script
+    # Lê a task ativa do RunLedger + estado real da issue (1 query + 1 chamada)
+    # Retorna JSON: {"dispatchable": bool, "state": "flow:...", "issue_key": "VGAT-XXX",
+    #                "repo": "...", "blocked": bool, "conflict": bool}
+    command: "python3 ~/.kiro/crew/crons/deployment/flow/scripts/check_dispatchable.py"
+    capture_output: true
+    next:
+      - condition: "output.dispatchable == true"
+        goto: route_by_state
+      - condition: "output.blocked == true"
+        goto: notify_blocked
+      - condition: "output.conflict == true"
+        goto: resolve_conflict
+      - condition: default
+        goto: idle_wait             # sem task ativa — aguarda próximo tick do trigger
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # ROTEADOR DE ESTADO
+  # Equivalente a: o match de current in _ACTIVE_STAGES do ledger_tick.py
+  # ─────────────────────────────────────────────────────────────────────────
+
+  route_by_state:
+    type: action/script
+    # Lê output.state do nó anterior e emite o próximo nó como {"next_node": "..."}
+    # Não tem I/O de rede — só resolve o roteamento pelo estado.
+    command: "python3 ~/.kiro/crew/crons/deployment/flow/scripts/route_state.py '$nodes.check_dispatchable.output.state'"
+    capture_output: true
+    next:
+      # Estados ATIVOS (o motor dispara uma sessão)
+      - condition: "output.next_node == briefing"
+        goto: stage_briefing
+      - condition: "output.next_node == planning_specs"
+        goto: stage_planning_specs
+      # Estados de ESPERA (o motor observa sinal externo)
+      - condition: "output.next_node == planning_review"
+        goto: wait_planning_review
+      - condition: "output.next_node == develop_waiting"
+        goto: stage_develop
+      - condition: "output.next_node == review_waiting"
+        goto: wait_review
+      - condition: "output.next_node == qa_waiting"
+        goto: wait_qa
+      - condition: "output.next_node == done"
+        goto: workflow_done
+      - condition: default
+        goto: idle_wait
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # ESTÁGIO: BRIEFING
+  # Equivalente a: State.BRIEFING em _ACTIVE_STAGES — dispara sessão one-shot
+  # A sessão lê o briefing da issue e monta a spec inicial
+  # ─────────────────────────────────────────────────────────────────────────
+
+  stage_briefing:
+    type: action/open_session
+    mode: one_shot
+    instruction_path: "flow/prompts/briefing.md"
+    context:
+      issue_key:  "$nodes.check_dispatchable.output.issue_key"
+      repo:       "$nodes.check_dispatchable.output.repo"
+    exit_statuses:
+      done:    "Briefing concluído, spec inicial criada"
+      blocked: "Agente encontrou bloqueio que precisa de intervenção humana"
+      failed:  "Erro inesperado"
+    on_complete:
+      - condition: "exit_status == done"
+        goto: advance_to_planning_specs
+      - condition: "exit_status == blocked"
+        goto: notify_blocked
+      - condition: default
+        goto: notify_error
+
+  advance_to_planning_specs:
+    type: action/script
+    command: "python3 ~/.kiro/crew/crons/deployment/flow/scripts/advance_state.py '$nodes.check_dispatchable.output.issue_key' flow:planning-specs"
+    next: idle_wait       # avançou o estado; próximo tick pega o novo estado
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # ESTÁGIO: PLANNING_SPECS
+  # Equivalente a: State.PLANNING_SPECS em _ACTIVE_STAGES — dispara sessão one-shot
+  # A sessão monta critérios de aceite, sub-tasks, payloads de teste
+  # ─────────────────────────────────────────────────────────────────────────
+
+  stage_planning_specs:
+    type: action/open_session
+    mode: one_shot
+    instruction_path: "flow/prompts/planning_specs.md"
+    context:
+      issue_key:  "$nodes.check_dispatchable.output.issue_key"
+      repo:       "$nodes.check_dispatchable.output.repo"
+    exit_statuses:
+      done:    "Spec finalizada, pronta para revisão do TL/PM"
+      blocked: "Bloqueio — TL/PM precisa decidir escopo"
+      failed:  "Erro inesperado"
+    on_complete:
+      - condition: "exit_status == done"
+        goto: advance_to_planning_review
+      - condition: "exit_status == blocked"
+        goto: notify_blocked
+      - condition: default
+        goto: notify_error
+
+  advance_to_planning_review:
+    type: action/script
+    command: "python3 ~/.kiro/crew/crons/deployment/flow/scripts/advance_state.py '$nodes.check_dispatchable.output.issue_key' flow:planning-review"
+    next: idle_wait
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # ESPERA: PLANNING_REVIEW
+  # Equivalente a: estado de espera não ativo em ledger_tick.py
+  # Motor aguarda TL/PM aprovar ou pedir alteração na spec
+  # Sinal externo: issue avança para flow:develop-waiting (TL aprovou)
+  #                ou volta para flow:planning-specs (alteração pedida)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  wait_planning_review:
+    type: action/gate
+    prompt: "Spec da issue $nodes.check_dispatchable.output.issue_key está pronta para revisão. Aprovar ou pedir alteração?"
+    options: ["approve", "request_changes"]
+    on_complete:
+      - condition: "exit_status == approve"
+        goto: advance_to_develop_waiting
+      - condition: "exit_status == request_changes"
+        goto: advance_to_planning_specs_rework
+      - condition: default       # timed_out — lembra TL
+        goto: notify_review_pending
+
+  advance_to_develop_waiting:
+    type: action/script
+    command: "python3 ~/.kiro/crew/crons/deployment/flow/scripts/advance_state.py '$nodes.check_dispatchable.output.issue_key' flow:develop-waiting"
+    next: idle_wait
+
+  advance_to_planning_specs_rework:
+    type: action/script
+    command: "python3 ~/.kiro/crew/crons/deployment/flow/scripts/advance_state.py '$nodes.check_dispatchable.output.issue_key' flow:planning-specs"
+    next: idle_wait
+
+  notify_review_pending:
+    type: action/script
+    command: "bash ~/.kiro/skills/voxlocal/tools/vox_say.sh 'Spec da issue $nodes.check_dispatchable.output.issue_key aguarda revisão do TL'"
+    next: idle_wait
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # ESTÁGIO: DEVELOP
+  # Equivalente a: dispatch de flow:develop-waiting em deployment.py
+  # Abre sessão one-shot para o agente implementar a feature
+  # ─────────────────────────────────────────────────────────────────────────
+
+  stage_develop:
+    type: action/open_session
+    mode: one_shot
+    instruction_path: "flow/prompts/develop.md"
+    context:
+      issue_key:  "$nodes.check_dispatchable.output.issue_key"
+      repo:       "$nodes.check_dispatchable.output.repo"
+    exit_statuses:
+      pr_opened:  "PR aberta com sucesso"
+      blocked:    "Agente encontrou bloqueio"
+      failed:     "Erro inesperado"
+    on_complete:
+      - condition: "exit_status == pr_opened"
+        goto: advance_to_review_waiting
+      - condition: "exit_status == blocked"
+        goto: notify_blocked
+      - condition: default
+        goto: notify_error
+
+  advance_to_review_waiting:
+    type: action/script
+    command: "python3 ~/.kiro/crew/crons/deployment/flow/scripts/advance_state.py '$nodes.check_dispatchable.output.issue_key' flow:review-waiting"
+    next: idle_wait
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # ESPERA: REVIEW_WAITING
+  # Motor aguarda o reviewer aprovar ou reprovar a PR
+  # Sinal externo: issue avança para flow:review-approved ou flow:review-refused
+  # ─────────────────────────────────────────────────────────────────────────
+
+  wait_review:
+    type: action/script
+    # Lê o estado atual da PR (aprovada / reprovada / pendente)
+    command: "python3 ~/.kiro/crew/crons/deployment/flow/scripts/check_pr_state.py '$nodes.check_dispatchable.output.issue_key'"
+    capture_output: true
+    next:
+      - condition: "output.state == review_approved"
+        goto: advance_to_qa_waiting
+      - condition: "output.state == review_refused"
+        goto: handle_review_refused
+      - condition: default
+        goto: idle_wait   # PR ainda em revisão
+
+  advance_to_qa_waiting:
+    type: action/script
+    command: "python3 ~/.kiro/crew/crons/deployment/flow/scripts/advance_state.py '$nodes.check_dispatchable.output.issue_key' flow:qa-waiting"
+    next: idle_wait
+
+  handle_review_refused:
+    # Gate humano: reviewer reprovou — TL decide rework ou fechar
+    # Equivalente a: State.REVIEW_REFUSED → State.DEVELOP_WAITING (rework) no _NEXT_STATE
+    type: action/gate
+    prompt: "PR da issue $nodes.check_dispatchable.output.issue_key foi reprovada no code review. O que fazer?"
+    options: ["rework", "close_issue"]
+    on_complete:
+      - condition: "exit_status == rework"
+        goto: advance_to_develop_waiting
+      - condition: "exit_status == close_issue"
+        goto: workflow_fail
+      - condition: default
+        goto: notify_blocked
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # ESPERA: QA_WAITING / QA_TESTING
+  # Motor aguarda QA aprovar ou reprovar
+  # ─────────────────────────────────────────────────────────────────────────
+
+  wait_qa:
+    type: action/script
+    command: "python3 ~/.kiro/crew/crons/deployment/flow/scripts/check_qa_state.py '$nodes.check_dispatchable.output.issue_key'"
+    capture_output: true
+    next:
+      - condition: "output.state == qa_approved"
+        goto: stage_merge
+      - condition: "output.state == qa_refused"
+        goto: handle_qa_refused
+      - condition: default
+        goto: idle_wait   # QA ainda testando
+
+  handle_qa_refused:
+    # Gate humano: QA reprovou — mesma lógica do review_refused
+    type: action/gate
+    prompt: "QA reprovou a issue $nodes.check_dispatchable.output.issue_key. Rework ou fechar?"
+    options: ["rework", "close_issue"]
+    on_complete:
+      - condition: "exit_status == rework"
+        goto: advance_to_develop_waiting
+      - condition: "exit_status == close_issue"
+        goto: workflow_fail
+      - condition: default
+        goto: notify_blocked
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # ESTÁGIO: MERGE
+  # QA aprovou → merge da PR
+  # ─────────────────────────────────────────────────────────────────────────
+
+  stage_merge:
+    type: action/script
+    command: "python3 ~/.kiro/crew/crons/deployment/flow/scripts/merge_pr.py '$nodes.check_dispatchable.output.issue_key'"
+    capture_output: true
+    next:
+      - condition: "exit_code == 0"
+        goto: workflow_done
+      - condition: default
+        goto: notify_error
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # RESOLUÇÃO DE CONFLITO
+  # Equivalente a: Modifier.MERGE_CONFLICT → crewflow-conflito
+  # ─────────────────────────────────────────────────────────────────────────
+
+  resolve_conflict:
+    type: action/open_session
+    mode: one_shot
+    instruction_path: "flow/prompts/merge_conflict.md"
+    context:
+      issue_key: "$nodes.check_dispatchable.output.issue_key"
+      repo:      "$nodes.check_dispatchable.output.repo"
+    exit_statuses:
+      resolved: "Conflito resolvido, PR atualizada"
+      failed:   "Não foi possível resolver — precisa de intervenção humana"
+    on_complete:
+      - condition: "exit_status == resolved"
+        goto: idle_wait
+      - condition: default
+        goto: notify_blocked
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # NOTIFICAÇÕES E IDLE
+  # ─────────────────────────────────────────────────────────────────────────
+
+  notify_blocked:
+    type: action/script
+    command: "bash ~/.kiro/skills/voxlocal/tools/vox_say.sh 'Issue $nodes.check_dispatchable.output.issue_key bloqueada, precisa de atenção'"
+    next: idle_wait
+
+  notify_error:
+    type: action/script
+    command: "bash ~/.kiro/skills/voxlocal/tools/vox_say.sh 'Erro no estágio da issue $nodes.check_dispatchable.output.issue_key'"
+    next: idle_wait
+
+  idle_wait:
+    type: trigger
+    triggers:
+      - kind: cron
+        cron_expr: "*/1 * * * *"   # tick a cada 1 min (igual ao every=60 do cron atual)
+      - kind: manual
+        label: "Verificar agora"
+    next: check_dispatchable
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # TERMINAIS
+  # ─────────────────────────────────────────────────────────────────────────
+
+  workflow_done:
+    type: end    # workflow_runs.status = completed
+
+  workflow_fail:
+    type: fail   # workflow_runs.status = failed

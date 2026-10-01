@@ -126,6 +126,8 @@ def register_routes(ctx: object) -> list:
         AppRoute("POST", "/dispatch", handle_dispatch),
         AppRoute("POST", "/qa-fail", handle_qa_fail),
         AppRoute("POST", "/qa-approve", handle_qa_approve),
+        AppRoute("POST", "/gate/{token}/decide", handle_gate_decide),
+        AppRoute("GET",  "/gate/{token}", handle_gate_get),
     ]
 
 
@@ -699,3 +701,167 @@ def _mark_qa_approve(repo: str, issue_number: int) -> dict:
         return {"ok": False, "error": f"erro ao aplicar flow:qa-approved: {exc}"}
 
     return {"ok": True, "qa_approved": True}
+
+
+# ── Gate de aprovação humana (workflow engine) ──────────────────────────────
+
+async def handle_gate_get(request: web.Request, ctx: object = None) -> web.Response:
+    """GET /gate/{token} -- Retorna o estado atual de um gate de aprovação.
+
+    Usado pela UI para renderizar o card do gate (prompt + opções + estado).
+    Resposta:
+        {"token": "...", "run_id": "...", "node_id": "...", "prompt": "...",
+         "options": [...], "decision": null|"approve"|..., "expires_at": "..."}
+    """
+    token = request.match_info.get("token", "")
+    if not token:
+        return web.json_response({"ok": False, "error": "token ausente"}, status=400)
+
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _gate_get, token)
+        if result is None:
+            return web.json_response({"ok": False, "error": "token não encontrado"}, status=404)
+        return web.json_response(result)
+    except Exception as exc:
+        logger.exception("handle_gate_get: erro: %s", exc)
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+async def handle_gate_decide(request: web.Request, ctx: object = None) -> web.Response:
+    """POST /gate/{token}/decide -- Registra a decisão humana num gate.
+
+    Body JSON: {"decision": "approve"} (ou qualquer opção declarada no YAML).
+    Idempotente: um segundo POST com a mesma decisão retorna ok=true sem erro.
+    Um segundo POST com decisão diferente retorna ok=false (já decidido).
+
+    Resposta sucesso:  {"ok": true,  "token": "...", "decision": "approve"}
+    Resposta conflito: {"ok": false, "error": "already_decided", "decision": "<decisão anterior>"}
+    Resposta expirado: {"ok": false, "error": "token_expired"}
+    """
+    token = request.match_info.get("token", "")
+    if not token:
+        return web.json_response({"ok": False, "error": "token ausente"}, status=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "body JSON inválido"}, status=400)
+
+    decision = body.get("decision", "").strip()
+    if not decision:
+        return web.json_response(
+            {"ok": False, "error": "campo 'decision' é obrigatório"},
+            status=400,
+        )
+
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _gate_decide, token, decision)
+        status = 200 if result.get("ok") else 409
+        return web.json_response(result, status=status)
+    except Exception as exc:
+        logger.exception("handle_gate_decide: erro: %s", exc)
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+def _gate_get(token: str) -> dict | None:
+    """Lê o estado de um gate token no SQLite do engine."""
+    import sys
+    from pathlib import Path
+
+    app_root = Path(__file__).parent.parent
+    if str(app_root) not in sys.path:
+        sys.path.insert(0, str(app_root))
+
+    from backend.engine import db
+
+    # Busca pelo token (PK da tabela)
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM workflow_gate_tokens WHERE token = ?",
+            (token,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    import json as _json
+    data = dict(row)
+    data["options"] = _json.loads(data.get("options_json") or "[]")
+    data.pop("options_json", None)
+    return data
+
+
+def _gate_decide(token: str, decision: str) -> dict:
+    """Registra a decisão humana num gate. Validações:
+    - Token inexistente → erro not_found
+    - Token expirado    → erro token_expired
+    - Já decidido com a mesma opção → ok=true (idempotente)
+    - Já decidido com outra opção   → erro already_decided
+    - Decisão não está nas opções   → erro invalid_option
+    """
+    import json as _json
+    import sys
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    app_root = Path(__file__).parent.parent
+    if str(app_root) not in sys.path:
+        sys.path.insert(0, str(app_root))
+
+    from backend.engine import db
+
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM workflow_gate_tokens WHERE token = ?",
+            (token,),
+        ).fetchone()
+
+    if row is None:
+        return {"ok": False, "error": "not_found"}
+
+    data = dict(row)
+    options = _json.loads(data.get("options_json") or "[]")
+
+    # Verifica expiração antes de qualquer coisa
+    expires_at = data.get("expires_at", "")
+    if expires_at:
+        try:
+            exp = datetime.fromisoformat(expires_at)
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) > exp:
+                return {"ok": False, "error": "token_expired", "token": token}
+        except ValueError:
+            pass
+
+    # Verifica se a decisão é uma opção válida
+    if options and decision not in options:
+        return {
+            "ok": False,
+            "error": "invalid_option",
+            "valid_options": options,
+        }
+
+    existing_decision = data.get("decision")
+
+    # Já decidido
+    if existing_decision is not None:
+        if existing_decision == decision:
+            # Idempotente -- mesma decisão
+            return {"ok": True, "token": token, "decision": decision, "idempotent": True}
+        return {
+            "ok": False,
+            "error": "already_decided",
+            "decision": existing_decision,
+        }
+
+    # Grava a decisão
+    accepted = db.decide_gate_token(token, decision)
+    if not accepted:
+        # Race condition improvável -- token foi decidido entre o SELECT e o UPDATE
+        return {"ok": False, "error": "already_decided"}
+
+    logger.info("gate_decide: token=%s decision=%s", token, decision)
+    return {"ok": True, "token": token, "decision": decision}

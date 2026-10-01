@@ -42,7 +42,7 @@ class TestRegisterRoutesContract:
         return result
 
     def test_returns_exactly_three_routes(self) -> None:
-        assert len(self._routes()) == 5
+        assert len(self._routes()) == 7
 
     def test_exact_method_path_pairs(self) -> None:
         pairs = {(r.method, r.path) for r in self._routes()}
@@ -52,6 +52,8 @@ class TestRegisterRoutesContract:
             ("POST", "/dispatch"),
             ("POST", "/qa-fail"),
             ("POST", "/qa-approve"),
+            ("POST", "/gate/{token}/decide"),
+            ("GET", "/gate/{token}"),
         }
 
     def test_handlers_are_callable(self) -> None:
