@@ -109,7 +109,7 @@ class TestHookSignatures:
 
 
 # ---------------------------------------------------------------------------
-# on_startup cria 4 tasks; on_shutdown cancela e limpa
+# on_startup cria 1 task (single-flow); on_shutdown cancela e limpa
 # ---------------------------------------------------------------------------
 
 
@@ -118,29 +118,23 @@ class TestLoopLifecycle:
         self, capsys: pytest.CaptureFixture
     ) -> None:  # type: ignore[type-arg]
         hooks._TASKS.clear()
-        fake_tasks = [mock.MagicMock() for _ in range(4)]
+        fake_tasks = [mock.MagicMock()]
         with mock.patch.dict(
             "sys.modules",
             {
                 "backend.server": mock.MagicMock(
-                    _run_stage_loop=mock.MagicMock(return_value=mock.MagicMock())
-                ),
-                "deployment.deployment": mock.MagicMock(
-                    _STAGE_DEV="dev",
-                    _STAGE_REVIEWER="reviewer",
-                    _STAGE_MERGE="merge",
-                    _STAGE_CONFLITO="conflito",
+                    _single_flow_loop=mock.MagicMock(return_value=mock.MagicMock())
                 ),
             },
         ), mock.patch("backend.hooks.asyncio.create_task") as mock_create_task:
             mock_create_task.side_effect = fake_tasks
             asyncio.get_event_loop().run_until_complete(on_startup(mock.MagicMock()))
 
-        assert mock_create_task.call_count == 4
-        assert len(hooks._TASKS) == 4
+        assert mock_create_task.call_count == 1
+        assert len(hooks._TASKS) == 1
         captured = capsys.readouterr()
         assert "on_startup" in captured.out
-        assert "4 loops asyncio iniciados" in captured.out
+        assert "single-flow loop iniciado" in captured.out
         hooks._TASKS.clear()
 
     def test_on_shutdown_cancels_and_clears(

@@ -383,36 +383,30 @@ class TestEmptyColumns:
 
 class TestStartLoops:
     def test_creates_four_tasks(self, capsys: pytest.CaptureFixture) -> None:  # type: ignore[type-arg]
-        """_start_loops deve criar 4 tasks no app e imprimir log."""
+        """_start_loops deve criar 1 task do single-flow no app e imprimir log."""
         app = web.Application()
 
         with mock.patch("backend.routes.asyncio.create_task") as mock_create_task:
-            fake_tasks = [mock.MagicMock() for _ in range(4)]
+            fake_tasks = [mock.MagicMock()]
             mock_create_task.side_effect = fake_tasks
 
             with mock.patch.dict(
                 "sys.modules",
                 {
                     "backend.server": mock.MagicMock(
-                        _run_stage_loop=mock.MagicMock(return_value=mock.MagicMock())
-                    ),
-                    "deployment.deployment": mock.MagicMock(
-                        _STAGE_DEV="dev",
-                        _STAGE_REVIEWER="reviewer",
-                        _STAGE_MERGE="merge",
-                        _STAGE_CONFLITO="conflito",
+                        _single_flow_loop=mock.MagicMock(return_value=mock.MagicMock())
                     ),
                 },
             ):
                 asyncio.get_event_loop().run_until_complete(_start_loops(app))
 
-        assert mock_create_task.call_count == 4
+        assert mock_create_task.call_count == 1
         assert "crewflow_tasks" in app
-        assert len(app["crewflow_tasks"]) == 4
+        assert len(app["crewflow_tasks"]) == 1
 
         captured = capsys.readouterr()
         assert "on_startup" in captured.out
-        assert "4 loops asyncio iniciados" in captured.out
+        assert "single-flow loop iniciado" in captured.out
 
     def test_handles_import_error_gracefully(self, capsys: pytest.CaptureFixture) -> None:  # type: ignore[type-arg]
         """_start_loops não deve propagar exceção se imports falharem."""

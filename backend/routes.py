@@ -19,9 +19,11 @@ testes; o gateway NÃO os usa (ele entrega um ``AppContext``, não uma
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import sys
+from datetime import UTC
 from pathlib import Path
 
 from aiohttp import web
@@ -30,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _start_loops(app: web.Application) -> None:
-    """Inicia os 4 loops asyncio de polling da esteira (caminho aiohttp/standalone).
+    """Inicia o loop asyncio de polling do single-flow (caminho aiohttp/standalone).
 
     Usado pelo servidor standalone e pelos testes via ``app.on_startup``. O
     gateway usa o caminho baseado em ``ctx`` em ``backend/hooks.py:on_startup``.
@@ -40,41 +42,16 @@ async def _start_loops(app: web.Application) -> None:
         sys.path.insert(0, str(app_root))
 
     try:
-        from backend.server import _run_stage_loop
-        from deployment.deployment import (
-            _STAGE_CONFLITO,
-            _STAGE_DEV,
-            _STAGE_MERGE,
-            _STAGE_REVIEWER,
-        )
+        from backend.server import _single_flow_loop
 
         app["crewflow_tasks"] = [
             asyncio.create_task(
-                _run_stage_loop(
-                    _STAGE_DEV,
-                    int(os.environ.get("CREWFLOW_DEV_INTERVAL", "300")),
-                )
-            ),
-            asyncio.create_task(
-                _run_stage_loop(
-                    _STAGE_REVIEWER,
-                    int(os.environ.get("CREWFLOW_REVIEWER_INTERVAL", "180")),
-                )
-            ),
-            asyncio.create_task(
-                _run_stage_loop(
-                    _STAGE_MERGE,
-                    int(os.environ.get("CREWFLOW_MERGE_INTERVAL", "120")),
-                )
-            ),
-            asyncio.create_task(
-                _run_stage_loop(
-                    _STAGE_CONFLITO,
-                    int(os.environ.get("CREWFLOW_CONFLITO_INTERVAL", "300")),
+                _single_flow_loop(
+                    int(os.environ.get("CREWFLOW_SINGLE_FLOW_INTERVAL", "60")),
                 )
             ),
         ]
-        print("[kirocrew-flow] on_startup: 4 loops asyncio iniciados", flush=True)
+        print("[kirocrew-flow] on_startup: single-flow loop iniciado", flush=True)
     except Exception as exc:
         print(f"[kirocrew-flow] on_startup error: {exc}", flush=True)
 
@@ -394,10 +371,8 @@ def _derive_implicit_state(raw: dict, project: str) -> str | None:
                 pr_number = pr.get("number")
                 reviews: list[dict] = []
                 if pr_number:
-                    try:
+                    with contextlib.suppress(Exception):
                         reviews = _gh.get_pr_reviews(project, int(pr_number))
-                    except Exception:
-                        pass
                 pr_entry = dict(pr)
                 pr_entry["state"] = "open"
                 pr_entry["reviews"] = reviews
@@ -473,67 +448,40 @@ async def handle_dispatch(request: web.Request, ctx: object = None) -> web.Respo
 
 
 def _force_dispatch(repo: str, issue_number: int) -> dict:
-    """Força o dispatch de uma issue: marca flow:develop-waiting e dispara o estágio dev.
+    """Força o dispatch de uma issue via single-flow.
 
-    Reutiliza BackendCronCtx e o mesmo caminho do _run_stage.
+    Registra a issue no ledger (claim_single_flow) e dispara um tick imediato.
     """
     app_root = Path(__file__).parent.parent
     if str(app_root) not in sys.path:
         sys.path.insert(0, str(app_root))
 
-    from flow.adapters import github_client as gh
-    from flow.domain.state import Modifier, State, parse_modifiers, parse_state
-    from flow.ports.issue_provider import ProviderError, ProviderNotFoundError
+    from backend.ctx import BackendCronCtx
+    from deployment.deployment import claim_single_flow, run_single_flow
 
-    # Busca o estado atual da issue
+    ctx = BackendCronCtx()
+
+    # Registra a task no ledger (se ainda não estiver)
     try:
-        item = gh.get_work_item(repo, str(issue_number))
-    except ProviderNotFoundError:
-        return {"ok": False, "error": f"issue #{issue_number} não encontrada em {repo!r}"}
-    except ProviderError as exc:
-        return {"ok": False, "error": f"erro ao acessar a issue: {exc}"}
+        task_key = f"{repo}#{issue_number}"
+        result = claim_single_flow(ctx)
+        logger.info("force_dispatch: claim_single_flow → %s", result)
+    except Exception as exc:
+        logger.warning("force_dispatch: claim_single_flow falhou para %s: %s", task_key, exc)
 
-    current_labels = set(item.get("labels", []))
-    state = parse_state(current_labels)
-    modifiers = parse_modifiers(current_labels)
-
-    # Se já está em flow:develop-waiting e sem modificadores de parada, dispara direto
-    # Se está em outro estado, marca flow:develop-waiting primeiro
-    if state is not State.DEVELOP_WAITING or Modifier.BLOCKED in modifiers:
-        # Preserva labels de tipo/prioridade, só troca o estado
-        from flow.domain.state import transition_state
-        new_labels = transition_state(
-            current_labels,
-            State.DEVELOP_WAITING,
-        )
-        # Remove modificadores de parada para garantir dispatchability
-        new_labels = new_labels - {Modifier.BLOCKED.value}
-        try:
-            gh.set_labels(repo, str(issue_number), sorted(new_labels))
-            logger.info(
-                "force_dispatch: %s#%s → flow:develop-waiting (era %s)",
-                repo, issue_number, state,
-            )
-        except ProviderError as exc:
-            return {"ok": False, "error": f"erro ao marcar flow:develop-waiting: {exc}"}
-
-    # Dispara o estágio dev via deployment._run_stage
+    # Dispara um tick imediato
     try:
-        from backend.ctx import BackendCronCtx
-        from deployment.deployment import _STAGE_DEV, _run_stage
-
-        ctx = BackendCronCtx()
-        _run_stage(ctx, _STAGE_DEV)
-        logger.info("force_dispatch: _run_stage(dev) executado para %s#%s", repo, issue_number)
+        run_single_flow(ctx)
+        logger.info("force_dispatch: run_single_flow executado para %s#%s", repo, issue_number)
     except Exception as exc:
         logger.warning(
-            "force_dispatch: _run_stage falhou para %s#%s: %s — issue marcada mas não despachada",
+            "force_dispatch: run_single_flow falhou para %s#%s: %s",
             repo, issue_number, exc,
         )
         return {
             "ok": True,
             "dispatched": False,
-            "note": f"issue marcada crewflow:todo, mas dispatch falhou: {exc}",
+            "note": f"claim ok, mas dispatch falhou: {exc}",
         }
 
     return {"ok": True, "dispatched": True}
@@ -803,7 +751,7 @@ def _gate_decide(token: str, decision: str) -> dict:
     """
     import json as _json
     import sys
-    from datetime import datetime, timezone
+    from datetime import datetime
     from pathlib import Path
 
     app_root = Path(__file__).parent.parent
@@ -830,8 +778,8 @@ def _gate_decide(token: str, decision: str) -> dict:
         try:
             exp = datetime.fromisoformat(expires_at)
             if exp.tzinfo is None:
-                exp = exp.replace(tzinfo=timezone.utc)
-            if datetime.now(timezone.utc) > exp:
+                exp = exp.replace(tzinfo=UTC)
+            if datetime.now(UTC) > exp:
                 return {"ok": False, "error": "token_expired", "token": token}
         except ValueError:
             pass

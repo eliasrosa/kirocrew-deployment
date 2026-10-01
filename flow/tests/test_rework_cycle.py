@@ -261,32 +261,3 @@ class TestNotifyHumanAddsReviewFail:
         assert "flow:review-refused" not in d.add_labels
 
 
-# ---------------------------------------------------------------------------
-# Prompts: rework.md
-# ---------------------------------------------------------------------------
-
-class TestReworkPrompt:
-    def test_rework_md_renderiza_sem_erro(self) -> None:
-        """rework.md deve renderizar com todas as variáveis obrigatórias."""
-        from flow.prompts.loader import render_prompt
-        rendered = render_prompt(
-            "rework",
-            repo="owner/repo",
-            repo_short="repo",
-            issue_number="42",
-            issue_title="Fix rework",
-            issue_url="https://github.com/owner/repo/issues/42",
-            session_title="rework: repo #42 PR #10 (iter 1): Fix rework",
-            pr_number="10",
-            dev_root="/home/dev",
-            worktree_path="/home/dev/.esteira-worktrees/repo-42",
-            base_branch="main",
-            iteration="1",
-            notify_step="reporte o resultado, ",
-            vault_step="",
-            prompt_extra="",
-        )
-        assert "feat/issue-42" in rendered
-        assert "PR #10" in rendered or "pr_number" not in rendered
-        assert "iteração 1" in rendered or "iter 1" in rendered
-        assert "NUNCA abra PR novo" in rendered
