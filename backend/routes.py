@@ -286,7 +286,15 @@ def _do_advance(task_key: str) -> dict:
     dispatched = False
     if nxt in _ACTIVE_STAGES:
         try:
-            from backend.ctx import BackendCronCtx
+            try:
+                from backend.ctx import BackendCronCtx
+            except ImportError:
+                import importlib.util as _ilu2
+                _cpath = Path(__file__).parent / "ctx.py"
+                _cspec = _ilu2.spec_from_file_location("_kf_ctx", str(_cpath))
+                _cmod = _ilu2.module_from_spec(_cspec)  # type: ignore[arg-type]
+                _cspec.loader.exec_module(_cmod)  # type: ignore[union-attr]
+                BackendCronCtx = _cmod.BackendCronCtx
             ctx_cron = BackendCronCtx(message=task_key)
             run_single_flow(ctx_cron)
             dispatched = True
