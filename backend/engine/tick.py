@@ -12,22 +12,28 @@ Gaps de alta prioridade implementados:
 """
 from __future__ import annotations
 
+import glob
 import json
 import re
 import subprocess
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib import request as _urllib
 
 from backend.engine import db
-from backend.engine.loader import WorkflowDefinition, load as load_workflow
+from backend.engine.loader import WorkflowDefinition
+from backend.engine.loader import load as load_workflow
 
 # Dir de sessões do Kiro Crew
 SESSIONS_DIR = Path.home() / ".kiro/crew/sessions"
 
 # Regex para extrair WORKFLOW_EXIT da última mensagem do agente
 EXIT_PATTERN = re.compile(r"WORKFLOW_EXIT:\s*(\{.*?\})", re.DOTALL)
+
+# Agente padrão para sessões one-shot do engine
+_DEFAULT_AGENT = "kirocrew"
 
 
 # ── Entry point ───────────────────────────────────────────────────────────
@@ -47,7 +53,7 @@ def run_tick(
     for run in runs:
         try:
             _tick_run(wf, run)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             # Falha no próprio tick: registra error_kind=error, não deixa run preso
             _handle_tick_error(run, str(exc))
 
@@ -103,7 +109,7 @@ def _tick_script(
     capture = node_def.get("capture_output", False)
 
     result = subprocess.run(
-        cmd, shell=True, capture_output=capture, text=True, timeout=120
+        cmd, shell=True, capture_output=capture, text=True, timeout=120, check=False
     )
     exit_code = result.returncode
 
@@ -142,10 +148,15 @@ def _tick_open_session(
 ) -> None:
     session_key = run.get("session_key")
     if not session_key:
-        # Sessão ainda não foi aberta (dispatch pendente) — aguarda próximo tick
+        # Nenhuma sessão aberta ainda -- fazer o dispatch agora
+        db.start_node(run["id"], node_id)
+        dispatched_key = _dispatch_open_session(run, node_id, node_def, wf)
+        if dispatched_key:
+            db.set_run_session_key(run["id"], dispatched_key)
+        # Seja sucesso ou falha temporária, aguarda próximo tick para verificar
         return
 
-    closed, closed_at = _session_is_closed(session_key)
+    closed, _closed_at = _session_is_closed(session_key)
 
     if not closed:
         # Verificar TTL: se ultrapassou o prazo, tratar como timed_out (gap #2)
@@ -264,6 +275,217 @@ def _handle_tick_error(run: dict[str, Any], message: str) -> None:
     db.fail_run(run["id"])
 
 
+# ── Dispatch de sessão one-shot ────────────────────────────────────────────
+
+def _dispatch_open_session(
+    run: dict[str, Any],
+    node_id: str,
+    node_def: dict[str, Any],
+    wf: WorkflowDefinition,
+) -> str | None:
+    """Abre a sessão one-shot para um nó action/open_session.
+
+    Fluxo:
+      1. Renderiza a instrução (instruction_path + context do YAML + seção WORKFLOW_EXIT)
+      2. POST /api/chat/slots  → cria o slot
+      3. POST /api/chat        → envia a mensagem com slot_key no body
+      4. Retorna o slot_key (session_key) para gravar no run
+
+    Retorna None em caso de falha (fire-and-forget -- próximo tick retenta).
+    """
+
+    slot = f"engine-{run['id'][:8]}-{node_id}"
+    agent = node_def.get("agent", _DEFAULT_AGENT)
+
+    # Monta a instrução
+    message = _render_instruction(run, node_id, node_def, wf)
+    if not message:
+        return None  # template não encontrado -- sem dispatch
+
+    port = _get_gateway_port()
+    secret = _get_gateway_secret(port)
+    if not port or not secret:
+        return None
+
+    base_url = f"http://localhost:{port}"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Internal-Secret": secret,
+    }
+
+    # Step 1: criar o slot
+    slot_body = json.dumps({"name": slot, "agent": agent, "memory_mode": "temporary"}).encode()
+    slot_req = _urllib.Request(
+        f"{base_url}/api/chat/slots",
+        data=slot_body,
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with _urllib.urlopen(slot_req, timeout=10) as resp:
+            resp.read(1)
+    except _urllib.HTTPError as exc:
+        if exc.code != 409:
+            return None  # falha real
+        # 409 = slot já existe (tick anterior criou mas não gravou o session_key)
+    except Exception:
+        return None
+
+    # Step 2: enviar a mensagem
+    chat_body = json.dumps({"slot_key": slot, "message": message, "agent": agent}).encode()
+    chat_req = _urllib.Request(
+        f"{base_url}/api/chat",
+        data=chat_body,
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with _urllib.urlopen(chat_req, timeout=12) as resp:
+            resp.read(1)
+    except Exception:
+        # Limpar slot órfão
+        _delete_slot(base_url, headers, slot)
+        return None
+
+    # O session_key que o gateway cria para esta sessão é derivado do slot name
+    # Padrão: "dashboard_chat-{slot_name}-{timestamp}" -- não temos o timestamp aqui.
+    # Usamos o slot como chave de lookup: ao verificar fechamento, procuramos o
+    # arquivo JSONL cujo metadata.slot == slot.
+    return slot  # armazena o slot como chave de busca no filesystem
+
+
+def _render_instruction(
+    run: dict[str, Any],
+    node_id: str,
+    node_def: dict[str, Any],
+    wf: WorkflowDefinition,
+) -> str | None:
+    """Renderiza a instrução do nó: lê o template e injeta contexto + seção WORKFLOW_EXIT."""
+    instruction_path = node_def.get("instruction_path", "")
+    if not instruction_path:
+        return None
+
+    # Resolve relativo ao repo do kirocrew-flow
+    app_root = Path(__file__).parent.parent.parent
+    full_path = app_root / instruction_path
+    if not full_path.exists():
+        return None
+
+    template = full_path.read_text()
+
+    # Substitui variáveis de contexto: {issue_key}, {repo}, {run_id}, {node_id}
+    context = _resolve_context(node_def.get("context", {}), run)
+    context["run_id"] = run["id"]
+    context["node_id"] = node_id
+    for key, val in context.items():
+        template = template.replace(f"{{{key}}}", str(val) if val is not None else "")
+
+    # Injeta seção de encerramento obrigatória com os exit_statuses válidos
+    exit_statuses = list(node_def.get("exit_statuses", {}).keys())
+    exit_section = _exit_section(run["id"], node_id, exit_statuses)
+    return f"{template}\n\n{exit_section}"
+
+
+def _resolve_context(raw_context: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+    """Resolve referências $nodes.*.output.* no context do YAML contra o SQLite."""
+    resolved: dict[str, Any] = {}
+    for key, val in raw_context.items():
+        if isinstance(val, str) and val.startswith("$nodes."):
+            # Ex: "$nodes.check_dispatchable.output.issue_key"
+            parts = val.lstrip("$").split(".")
+            # parts = ["nodes", "check_dispatchable", "output", "issue_key"]
+            if len(parts) >= 4 and parts[0] == "nodes" and parts[2] == "output":
+                ref_node = parts[1]
+                field = ".".join(parts[3:])
+                resolved[key] = _get_node_output_field(run["id"], ref_node, field)
+            else:
+                resolved[key] = val
+        else:
+            resolved[key] = val
+    return resolved
+
+
+def _get_node_output_field(run_id: str, node_id: str, field: str) -> Any:
+    """Lê um campo do output_json de um nó completado."""
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT output_json FROM workflow_node_states WHERE run_id=? AND node_id=?",
+            (run_id, node_id),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        output = json.loads(row["output_json"] or "{}")
+        parts = field.split(".")
+        val: Any = output
+        for part in parts:
+            if not isinstance(val, dict):
+                return None
+            val = val.get(part)
+        return val
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def _exit_section(run_id: str, node_id: str, exit_statuses: list[str]) -> str:
+    """Gera a seção obrigatória de encerramento injetada no final do template."""
+    options = " | ".join(f"`{s}`" for s in exit_statuses) if exit_statuses else "`failed`"
+    app_root = Path(__file__).parent.parent.parent
+    app_root / ".kiro/crew/runs" / run_id / f"{node_id}.exit.json"
+    return f"""---
+## Encerramento obrigatório
+
+Ao concluir, declare o resultado na **última linha** da sua resposta final:
+
+`WORKFLOW_EXIT: {{"exit_status": "<status>", "output": {{}}}}`
+
+**Exit statuses válidos para este nó:** {options}
+
+**run_id:** `{run_id}` | **node_id:** `{node_id}`
+
+Não encerre o turno sem essa linha. Em caso de erro inesperado, use `failed`.
+---"""
+
+
+# ── Helpers de gateway (port/secret) ──────────────────────────────────────
+
+def _get_gateway_port() -> int | None:
+    """Detecta a porta do gateway via socket file (igual ao deployment.py)."""
+    pattern = str(Path.home() / ".kiro/crew/dashboard-*.sock")
+    socks = glob.glob(pattern)
+    if socks:
+        m = re.search(r"dashboard-(\d+)\.sock", socks[0])
+        if m:
+            return int(m.group(1))
+    return 5478  # fallback
+
+
+def _get_gateway_secret(port: int | None) -> str:
+    """Lê o secret do gateway na ordem de precedência correta (igual ao deployment.py)."""
+    if port:
+        run_secret = Path.home() / f".kiro/crew/run/gateway-{port}.secret"
+        if run_secret.exists():
+            return run_secret.read_text().strip()
+    local_secret = Path.home() / ".kiro/crew/.local_secret"
+    if local_secret.exists():
+        return local_secret.read_text().strip()
+    return ""
+
+
+def _delete_slot(base_url: str, headers: dict[str, str], slot: str) -> None:
+    """Tenta deletar um slot órfão (fire-and-forget, ignora erros)."""
+    try:
+        req = _urllib.Request(
+            f"{base_url}/api/chat/slots/{slot}",
+            headers=headers,
+            method="DELETE",
+        )
+        with _urllib.urlopen(req, timeout=5) as resp:
+            resp.read(1)
+    except Exception:
+        pass
+
+
 # ── Resolução de transição ─────────────────────────────────────────────────
 
 def _resolve_transition(
@@ -327,9 +549,21 @@ def _resolve_path(path: str, context: dict[str, Any]) -> Any:
 # ── Leitura de sessão (filesystem JSONL) ──────────────────────────────────
 
 def _session_is_closed(session_key: str) -> tuple[bool, float | None]:
+    """Verifica se a sessão encerrou lendo o header JSONL.
+
+    Aceita dois formatos de session_key:
+      1. Nome exato do arquivo JSONL (ex: "dashboard_chat-42-1790808147")
+      2. Slot name (ex: "engine-abc12345-stage_briefing") -- faz glob para achar o JSONL
+    """
+    # Tenta arquivo exato primeiro
     jsonl = SESSIONS_DIR / f"{session_key}.jsonl"
     if not jsonl.exists():
-        return False, None
+        # Busca por slot: o gateway nomeia o arquivo com base no slot name
+        matches = list(SESSIONS_DIR.glob(f"*{session_key}*.jsonl"))
+        if not matches:
+            return False, None
+        jsonl = matches[0]
+
     try:
         first = jsonl.open().readline()
         meta = json.loads(first)
@@ -341,7 +575,14 @@ def _session_is_closed(session_key: str) -> tuple[bool, float | None]:
 
 
 def _extract_exit_status(session_key: str) -> tuple[str, dict[str, Any]]:
+    """Lê WORKFLOW_EXIT da última mensagem do agente no JSONL da sessão."""
     jsonl = SESSIONS_DIR / f"{session_key}.jsonl"
+    if not jsonl.exists():
+        matches = list(SESSIONS_DIR.glob(f"*{session_key}*.jsonl"))
+        if not matches:
+            return "failed", {}
+        jsonl = matches[0]
+
     try:
         lines = jsonl.read_text().splitlines()
     except OSError:
@@ -366,14 +607,14 @@ def _extract_exit_status(session_key: str) -> tuple[str, dict[str, Any]]:
 # ── Helpers de tempo ──────────────────────────────────────────────────────
 
 def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _elapsed_secs(iso_ts: str) -> float:
     try:
         started = datetime.fromisoformat(iso_ts)
         if started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
+            started = started.replace(tzinfo=UTC)
         return (_now_utc() - started).total_seconds()
     except ValueError:
         return 0.0
@@ -383,7 +624,7 @@ def _is_expired(iso_ts: str) -> bool:
     try:
         expires = datetime.fromisoformat(iso_ts)
         if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
+            expires = expires.replace(tzinfo=UTC)
         return _now_utc() > expires
     except ValueError:
         return False
